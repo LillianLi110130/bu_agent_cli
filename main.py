@@ -71,7 +71,7 @@ async def main():
     # Default Zhipu API key (for testing - replace with your own)
     if not api_key:
         # For GLM models
-        api_key = os.getenv("ZHIPU_API_KEY", "your_key")
+        api_key = os.getenv("ZHIPU_API_KEY", "d769dcfa826642f29229da88b6bd8de9.U18q6iUvXpcX5GuC")
 
     if not api_key:
         print("Please set OPENAI_API_KEY or ZHIPU_API_KEY environment variable.")
