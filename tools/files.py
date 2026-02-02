@@ -22,7 +22,7 @@ async def read(
     if path.is_dir():
         return f"Path is a directory: {file_path}"
     try:
-        lines = path.read_text().splitlines()
+        lines = path.read_text(encoding="utf-8").splitlines()
         numbered = [f"{i + 1:4d}  {line}" for i, line in enumerate(lines)]
         return "\n".join(numbered)
     except Exception as e:
@@ -43,7 +43,7 @@ async def write(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
         return f"Wrote {len(content)} bytes to {file_path}"
     except Exception as e:
         return f"Error writing file: {e}"
@@ -65,12 +65,12 @@ async def edit(
     if not path.exists():
         return f"File not found: {file_path}"
     try:
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         if old_string not in content:
             return f"String not found in {file_path}"
         count = content.count(old_string)
         new_content = content.replace(old_string, new_string)
-        path.write_text(new_content)
+        path.write_text(new_content, encoding="utf-8")
         return f"Replaced {count} occurrence(s) in {file_path}"
     except Exception as e:
         return f"Error editing file: {e}"
