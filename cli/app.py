@@ -4,6 +4,7 @@ Contains the main ClaudeCodeCLI class and loading indicator.
 Pure UI logic - receives pre-configured Agent and context.
 """
 
+import os
 import sys
 import threading
 import time
@@ -17,11 +18,22 @@ from bu_agent_sdk.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.lexers import PygmentsLexer
+from pygments.lexers import BashLexer
 from rich.console import Console
 from rich.panel import Panel
 
+from cli.slash_commands import (
+    SlashCommand,
+    SlashCommandCompleter,
+    SlashCommandRegistry,
+    is_slash_command,
+    parse_slash_command,
+)
 from tools import SandboxContext
 
 
@@ -106,6 +118,7 @@ class ClaudeCodeCLI:
         self._ctx = context
         self._step_number = 0
         self._loading: _LoadingIndicator | None = None
+        self._slash_registry = SlashCommandRegistry()
 
     def _start_loading(self, message: str = "Thinking") -> _LoadingIndicator:
         """Start a loading animation."""
@@ -125,8 +138,8 @@ class ClaudeCodeCLI:
             Panel(
                 f"[bold cyan]Claude Code CLI[/bold cyan]\n\n"
                 f"Type your message and press Enter to send.\n"
-                f"Press Ctrl+D or type 'exit' to quit.\n"
-                f"Type 'help' for available commands.\n",
+                f"Press [cyan]/[/cyan] to see available commands.\n"
+                f"Press Ctrl+D or type [cyan]/exit[/cyan] to quit.\n",
                 title="[bold blue]Welcome[/bold blue]",
                 border_style="bright_blue",
             )
@@ -137,6 +150,7 @@ class ClaudeCodeCLI:
         self._console.print(f"[dim]Working directory:[/] {self._ctx.working_dir}")
         self._console.print(f"[dim]Model:[/] {self._agent.llm.model}")
         self._console.print(f"[dim]Tools:[/] bash, read, write, edit, glob, grep, todos")
+        self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
         self._console.print()
 
     def _print_help(self):
@@ -165,6 +179,102 @@ class ClaudeCodeCLI:
   - The AI will use tools automatically to help you
 """
         self._console.print(Panel(help_text, border_style="dim"))
+
+    def _print_slash_help(self):
+        """Print slash command help information."""
+        self._console.print()
+        self._console.print("[bold cyan]Slash Commands:[/bold cyan]")
+        self._console.print("[dim]Press / to see available commands, Tab to autocomplete[/dim]")
+        self._console.print()
+
+        categories = self._slash_registry.get_by_category()
+        for category, commands in sorted(categories.items()):
+            self._console.print(f"[bold blue]{category}:[/bold blue]")
+            for cmd in commands:
+                self._console.print(f"  [cyan]/{cmd.name}[/cyan] - {cmd.description}")
+        self._console.print()
+
+    def _print_slash_command_detail(self, command_name: str):
+        """Print detailed help for a specific slash command.
+
+        Args:
+            command_name: Name of the command (without /)
+        """
+        cmd = self._slash_registry.get(command_name)
+        if not cmd:
+            self._console.print(f"[red]Unknown command: /{command_name}[/red]")
+            return
+
+        self._console.print()
+        self._console.print(Panel(
+            f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
+            f"[dim]{cmd.description}[/dim]\n\n"
+            f"[bold]Usage:[/bold] {cmd.usage}\n\n"
+            + (f"[bold]Examples:[/bold]\n" + "\n".join(f"  • {ex}" for ex in cmd.examples) if cmd.examples else ""),
+            title="[bold blue]Command Details[/bold blue]",
+            border_style="bright_blue",
+        ))
+        self._console.print()
+
+    def _handle_slash_command(self, text: str) -> bool:
+        """Handle a slash command.
+
+        Args:
+            text: The slash command text
+
+        Returns:
+            True if the command was handled, False otherwise
+        """
+        command_name, args = parse_slash_command(text)
+
+        # Handle help command
+        if command_name in ("help", "h"):
+            if args and args[0].startswith("/"):
+                # Show details for a specific command
+                self._print_slash_command_detail(args[0][1:])
+            elif args:
+                self._print_slash_command_detail(args[0])
+            else:
+                self._print_slash_help()
+            return True
+
+        # Handle exit/quit commands
+        if command_name in ("exit", "quit", "q"):
+            self._console.print("[yellow]Goodbye![/yellow]")
+            raise EOFError()
+
+        # Handle pwd command
+        if command_name == "pwd":
+            self._console.print(f"{self._ctx.working_dir}")
+            return True
+
+        # Handle clear command
+        if command_name == "clear" or command_name == "cls":
+            os.system("cls" if os.name == "nt" else "clear")
+            return True
+
+        # Handle model command
+        if command_name == "model":
+            if not args:
+                self._console.print(f"Current model: {self._agent.llm.model}")
+            else:
+                self._console.print(f"[dim]Model change not implemented yet. Current: {self._agent.llm.model}[/dim]")
+            return True
+
+        # Handle reset command
+        if command_name == "reset":
+            self._console.print("[yellow]Conversation context reset.[/yellow]")
+            return True
+
+        # Handle history command
+        if command_name == "history":
+            self._console.print("[dim]Command history not implemented yet.[/dim]")
+            return True
+
+        # Unknown command
+        self._console.print(f"[red]Unknown command: /{command_name}[/red]")
+        self._console.print(f"[dim]Type /help for available commands.[/dim]")
+        return True
 
     async def _run_agent(self, user_input: str):
         """Run the agent with user input and display events."""
@@ -241,6 +351,7 @@ class ClaudeCodeCLI:
     async def run(self):
         """Run the interactive CLI."""
         from prompt_toolkit import PromptSession
+        from prompt_toolkit.styles import Style
 
         # Print welcome
         self._print_welcome()
@@ -255,10 +366,28 @@ class ClaudeCodeCLI:
         # Mark as intentionally used
         _ = _exit
 
-        # Create prompt session
+        # Create slash command completer
+        slash_completer = SlashCommandCompleter(self._slash_registry)
+        threaded_completer = ThreadedCompleter(slash_completer)
+
+        # Define style for better visual feedback
+        style = Style.from_dict({
+            "completion-menu.completion": "bg:#008888 #ffffff",
+            "completion-menu.completion.current": "bg:#ffffff #000000",
+            "completion-menu.meta.completion": "bg:#00aaaa #000000",
+            "completion-menu.meta.current": "bg:#00ffff #000000",
+            "completion-menu": "bg:#008888 #ffffff",
+        })
+
+        # Create prompt session with completer
         session = PromptSession(
             message=lambda: HTML("<ansiblue>>> </ansiblue>"),
             key_bindings=kb,
+            completer=threaded_completer,
+            complete_while_typing=True,
+            auto_suggest=AutoSuggestFromHistory(),
+            style=style,
+            enable_history_search=True,
         )
 
         while True:
@@ -274,7 +403,16 @@ class ClaudeCodeCLI:
             if not user_input:
                 continue
 
-            # Handle built-in commands
+            # Handle slash commands
+            if is_slash_command(user_input):
+                try:
+                    if self._handle_slash_command(user_input):
+                        continue
+                except EOFError:
+                    break
+                continue
+
+            # Handle legacy built-in commands (without slash)
             if user_input.lower() in ["exit", "quit"]:
                 self._console.print("[yellow]Goodbye![/yellow]")
                 break
