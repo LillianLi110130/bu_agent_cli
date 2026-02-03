@@ -1,8 +1,6 @@
 tmp
 build
 dist
-
-# Python
 __pycache__/
 *.pyc
 *.pyo
