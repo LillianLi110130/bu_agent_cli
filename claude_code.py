@@ -23,6 +23,7 @@ from pathlib import Path
 
 from bu_agent_sdk import Agent
 from bu_agent_sdk.llm import ChatOpenAI
+from bu_agent_sdk.agent.config import AgentConfig
 
 from bu_agent_sdk.skill.loader import load_skills
 from bu_agent_sdk.skill.types import Skill
@@ -105,7 +106,7 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
     """Create LLM instance based on environment or model parameter."""
     model = model or os.getenv("LLM_MODEL", "GLM-4.7")
     base_url = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
-    api_key = os.getenv("OPENAI_API_KEY", "d769dcfa826642f29229da88b6bd8de9.U18q6iUvXpcX5GuC")
+    api_key = os.getenv("OPENAI_API_KEY", "OPENAI_API_KEY")
 
     return ChatOpenAI(
         model=model,
@@ -115,7 +116,8 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
 
 
 def create_agent(
-    model: str | None, root_dir: Path | str | None = None
+    model: str | None, root_dir: Path | str | None = None,
+    mode: str = "primary", agent_config: AgentConfig | None = None
 ) -> tuple[Agent, SandboxContext]:
     """Create configured Agent and SandboxContext.
 
@@ -125,13 +127,14 @@ def create_agent(
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
 
-
     system_prompt = _build_system_prompt(ctx.working_dir)
     agent = Agent(
         llm=llm,
         tools=ALL_TOOLS,
         system_prompt=system_prompt,
         dependency_overrides={get_sandbox_context: lambda: ctx},
+        mode=mode,
+        agent_config=agent_config,
     )
     return agent, ctx
 
