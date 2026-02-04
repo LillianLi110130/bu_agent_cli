@@ -94,5 +94,10 @@ async def main():
         print("\n[yellow]Goodbye![/yellow]")
 
 
-if __name__ == "__main__":
+def cli_main():
+    """Console script entry point."""
     asyncio.run(main())
+
+
+if __name__ == "__main__":
+    cli_main()
