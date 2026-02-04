@@ -88,9 +88,9 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="model",
-                description="Show or change the current LLM model",
-                usage="/model [model-name]",
-                examples=["/model", "/model gpt-4o"],
+                description="Show current model or switch using configured presets",
+                usage="/model [current|list|use <preset>]",
+                examples=["/model", "/model current", "/model list", "/model use gpt4o"],
                 category="Settings",
             ),
             SlashCommand(

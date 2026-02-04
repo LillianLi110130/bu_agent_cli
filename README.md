@@ -79,6 +79,36 @@ python main.py
 | `LLM_MODEL` | Model name | `GLM-4.7` |
 | `LLM_BASE_URL` | API base URL | `https://open.bigmodel.cn/api/coding/paas/v4` |
 
+### Model Presets (In-session switching)
+
+Configure preset models in `config/model_presets.json`:
+
+```json
+{
+  "default": "glm",
+  "presets": {
+    "glm": {
+      "model": "GLM-4.7",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key_env": "ZHIPU_API_KEY"
+    },
+    "gpt4o": {
+      "model": "gpt-4o",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
+```
+
+Then switch models during a running session (context is preserved):
+
+```text
+/model list
+/model current
+/model use gpt4o
+```
+
 ## Project Structure
 
 ```

@@ -4,6 +4,7 @@ Contains the main ClaudeCodeCLI class and loading indicator.
 Pure UI logic - receives pre-configured Agent and context.
 """
 
+import json
 import os
 import sys
 import threading
@@ -18,6 +19,7 @@ from bu_agent_sdk.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from bu_agent_sdk.llm import ChatOpenAI
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -119,6 +121,142 @@ class ClaudeCodeCLI:
         self._step_number = 0
         self._loading: _LoadingIndicator | None = None
         self._slash_registry = SlashCommandRegistry()
+        self._model_presets_path = (
+            Path(__file__).resolve().parent.parent
+            / "config"
+            / "model_presets.json"
+        )
+        self._default_model_preset: str | None = None
+        self._model_presets = self._load_model_presets()
+
+    def _load_model_presets(self) -> dict[str, dict[str, str]]:
+        """Load model presets from config/model_presets.json."""
+        if not self._model_presets_path.exists():
+            return {}
+
+        try:
+            raw = self._model_presets_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except Exception as e:
+            self._console.print(
+                f"[yellow]Failed to load model presets: {e}[/yellow]"
+            )
+            return {}
+
+        if not isinstance(data, dict):
+            self._console.print(
+                "[yellow]model_presets.json must be a JSON object.[/yellow]"
+            )
+            return {}
+
+        default_name = data.get("default")
+        if isinstance(default_name, str) and default_name.strip():
+            self._default_model_preset = default_name.strip()
+
+        preset_data = data.get("presets")
+        if not isinstance(preset_data, dict):
+            return {}
+
+        presets: dict[str, dict[str, str]] = {}
+        for name, config in preset_data.items():
+            if not isinstance(name, str) or not isinstance(config, dict):
+                continue
+
+            model = config.get("model")
+            if not isinstance(model, str) or not model.strip():
+                continue
+
+            cleaned: dict[str, str] = {"model": model.strip()}
+
+            base_url = config.get("base_url")
+            if isinstance(base_url, str) and base_url.strip():
+                cleaned["base_url"] = base_url.strip()
+
+            api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
+            if isinstance(api_key_env, str) and api_key_env.strip():
+                cleaned["api_key_env"] = api_key_env.strip()
+            else:
+                cleaned["api_key_env"] = "OPENAI_API_KEY"
+
+            presets[name.strip()] = cleaned
+
+        return presets
+
+    def _print_current_model(self):
+        """Print the current model configuration."""
+        model = str(self._agent.llm.model)
+        base_url = getattr(self._agent.llm, "base_url", None)
+        base_url_display = str(base_url) if base_url else "(default)"
+        self._console.print(f"Current model: [cyan]{model}[/cyan]")
+        self._console.print(f"Base URL: [dim]{base_url_display}[/dim]")
+        self._console.print(
+            f"Context messages: [dim]{len(self._agent.messages)}[/dim]"
+        )
+
+    def _print_model_presets(self):
+        """Print configured model presets."""
+        if not self._model_presets:
+            self._console.print(
+                f"[yellow]No model presets found at {self._model_presets_path}[/yellow]"
+            )
+            return
+
+        self._console.print("[bold cyan]Model presets:[/bold cyan]")
+        for name, preset in self._model_presets.items():
+            model = preset["model"]
+            base_url = preset.get("base_url", "(inherit current)")
+            api_key_env = preset.get("api_key_env", "OPENAI_API_KEY")
+            marker = (
+                " [green](default)[/green]"
+                if name == self._default_model_preset
+                else ""
+            )
+            self._console.print(
+                f"  [cyan]{name}[/cyan]{marker} -> {model} "
+                f"[dim](base_url: {base_url}, key: {api_key_env})[/dim]"
+            )
+
+    def _switch_model_preset(self, preset_name: str):
+        """Switch to a configured model preset without clearing conversation context."""
+        preset = self._model_presets.get(preset_name)
+        if not preset:
+            self._console.print(f"[red]Unknown preset: {preset_name}[/red]")
+            self._console.print("[dim]Use /model list to see available presets.[/dim]")
+            return
+
+        model = preset["model"]
+        api_key_env = preset.get("api_key_env", "OPENAI_API_KEY")
+        api_key = os.getenv(api_key_env)
+        if not api_key:
+            self._console.print(
+                f"[red]Missing API key env var: {api_key_env}. Switch aborted.[/red]"
+            )
+            return
+
+        old_llm = self._agent.llm
+        old_model = str(old_llm.model)
+        old_base_url = getattr(old_llm, "base_url", None)
+        new_base_url = preset.get("base_url")
+        if new_base_url is None and old_base_url is not None:
+            new_base_url = str(old_base_url)
+
+        try:
+            self._agent.llm = ChatOpenAI(
+                model=model,
+                api_key=api_key,
+                base_url=new_base_url,
+            )
+        except Exception as e:
+            self._agent.llm = old_llm
+            self._console.print(f"[red]Failed to switch model: {e}[/red]")
+            return
+
+        self._console.print(
+            f"[green]Model switched:[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
+        )
+        self._console.print(
+            f"[dim]Context preserved ({len(self._agent.messages)} messages).[/dim]"
+        )
 
     def _start_loading(self, message: str = "Thinking") -> _LoadingIndicator:
         """Start a loading animation."""
@@ -151,6 +289,10 @@ class ClaudeCodeCLI:
         self._console.print(f"[dim]Model:[/] {self._agent.llm.model}")
         self._console.print(f"[dim]Tools:[/] bash, read, write, edit, glob, grep, todos")
         self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
+        if self._model_presets:
+            self._console.print(
+                f"[dim]Model presets:[/] {', '.join(self._model_presets.keys())}"
+            )
         self._console.print()
 
     def _print_help(self):
@@ -256,9 +398,26 @@ class ClaudeCodeCLI:
         # Handle model command
         if command_name == "model":
             if not args:
-                self._console.print(f"Current model: {self._agent.llm.model}")
-            else:
-                self._console.print(f"[dim]Model change not implemented yet. Current: {self._agent.llm.model}[/dim]")
+                self._print_current_model()
+                self._console.print("[dim]Use /model list or /model use <preset>[/dim]")
+                return True
+
+            subcommand = args[0].lower()
+            if subcommand in ("current", "show"):
+                self._print_current_model()
+                return True
+            if subcommand in ("list", "ls"):
+                self._print_model_presets()
+                return True
+            if subcommand == "use":
+                if len(args) < 2:
+                    self._console.print("[red]Usage: /model use <preset>[/red]")
+                    return True
+                self._switch_model_preset(args[1])
+                return True
+
+            # Convenience: /model <preset>
+            self._switch_model_preset(args[0])
             return True
 
         # Handle reset command
