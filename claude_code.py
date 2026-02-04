@@ -71,8 +71,24 @@ def _build_system_prompt(working_dir: Path) -> str:
 
     # Load skills and Format skills
     skills = load_skills(working_dir / "bu_agent_sdk" / "skills")
-
     skills_text = _format_skills(skills)
+
+    # Load subagents
+    from bu_agent_sdk.agent.registry import get_agent_registry
+    registry = get_agent_registry()
+    callable_agents = registry.list_callable_agents()
+
+    # Format subagents
+    agents_text = ""
+    if callable_agents:
+        agents_lines = []
+        for agent_name in callable_agents:
+            config = registry.get_config(agent_name)
+            if config:
+                agents_lines.append(f"- {agent_name}: {config.description}")
+        agents_text = "\n".join(agents_lines)
+    else:
+        agents_text = "No subagents available."
 
     template_str = _load_prompt_template("system.md")
 
@@ -80,6 +96,7 @@ def _build_system_prompt(working_dir: Path) -> str:
     prompt = template.substitute(
         SKILLS=skills_text,
         WORKING_DIR=str(working_dir),
+        SUBAGENTS=agents_text,
     )
 
     return prompt

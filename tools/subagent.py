@@ -1,5 +1,6 @@
 import json
 import time
+import sys
 from pathlib import Path
 from typing import Annotated, Any
 from dataclasses import dataclass
@@ -7,6 +8,9 @@ from dataclasses import dataclass
 from bu_agent_sdk.tools import Depends, tool
 from bu_agent_sdk.agent import Agent
 from bu_agent_sdk.agent.config import AgentConfig
+from bu_agent_sdk.agent.events import (
+    ToolCallEvent, ToolResultEvent, ThinkingEvent, TextEvent, FinalResponseEvent,
+)
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 
@@ -94,25 +98,52 @@ async def task(
     tools_used = set()
 
     final_response = ""
-    async for event in subagent.query_stream(prompt):
-        from bu_agent_sdk.agent.events import (
-            ToolCallEvent, ToolResultEvent, FinalResponseEvent
-        )
 
+    async for event in subagent.query_stream(prompt):
         if isinstance(event, ToolCallEvent):
             tool_calls.append({
                 "tool": event.tool,
                 "args": event.args,
                 "timestamp": time.time()
             })
+            sys.stdout.write(f"  [{subagent_name}] 🔧 Calling: {event.tool}\n")
+            sys.stdout.flush()
 
-        if isinstance(event, ToolResultEvent):
+        elif isinstance(event, ToolResultEvent):
             tools_used.add(event.tool)
+            status = "✓" if not event.is_error else "✗"
+            result_preview = str(event.result)[:100]
+            if len(str(event.result)) > 100:
+                result_preview += "..."
+            sys.stdout.write(f"  [{subagent_name}] {status} {event.tool}: {result_preview}\n")
+            sys.stdout.flush()
 
-        if isinstance(event, FinalResponseEvent):
+        elif isinstance(event, ThinkingEvent):
+            thinking_preview = event.content[:50]
+            if len(event.content) > 50:
+                thinking_preview += "..."
+            sys.stdout.write(f"  [{subagent_name}] 🧠 {thinking_preview}\n")
+            sys.stdout.flush()
+
+        elif isinstance(event, TextEvent):
+            text_preview = event.content[:80]
+            if len(event.content) > 80:
+                text_preview += "..."
+            sys.stdout.write(f"  [{subagent_name}] 💬 {text_preview}\n")
+            sys.stdout.flush()
+
+        elif isinstance(event, FinalResponseEvent):
             final_response = event.content
+            final_preview = event.content[:100]
+            if len(event.content) > 100:
+                final_preview += "..."
+            sys.stdout.write(f"  [{subagent_name}] ✅ Complete: {final_preview}\n")
+            sys.stdout.flush()
 
     execution_time_ms = (time.time() - start_time) * 1000
+
+    sys.stdout.write(f"  [{subagent_name}] ⏱️  Executed in {execution_time_ms:.0f}ms\n\n")
+    sys.stdout.flush()
 
     result = SubagentResult(
         agent_name=subagent_name,
