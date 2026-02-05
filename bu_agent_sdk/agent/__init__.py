@@ -7,7 +7,6 @@ from bu_agent_sdk.agent.compaction import (
     CompactionResult,
     CompactionService,
 )
-from bu_agent_sdk.agent.config import AgentConfig, parse_agent_config
 from bu_agent_sdk.agent.events import (
     AgentEvent,
     FinalResponseEvent,
@@ -18,6 +17,7 @@ from bu_agent_sdk.agent.events import (
 )
 from bu_agent_sdk.agent.registry import AgentRegistry, get_agent_registry
 from bu_agent_sdk.agent.service import Agent, TaskComplete
+from bu_agent_sdk.agent.config import AgentConfig, parse_agent_config
 
 __all__ = [
     "Agent",
