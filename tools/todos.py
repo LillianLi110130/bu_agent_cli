@@ -1,6 +1,7 @@
 """Todo management tools."""
 
 from bu_agent_sdk.tools import Depends, tool
+from bu_agent_sdk.agent import TaskComplete
 from typing import Annotated
 
 from tools.sandbox import SandboxContext, get_sandbox_context
@@ -42,5 +43,5 @@ async def todo_write(
 
 @tool("Signal that the task is complete")
 async def done(message: str) -> str:
-    """Call this when the task is finished."""
-    return f"TASK COMPLETE: {message}"
+    """Call this when the task is finished. Raises TaskComplete to stop the agent."""
+    raise TaskComplete(message)
