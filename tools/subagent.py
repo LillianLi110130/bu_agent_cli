@@ -1,7 +1,6 @@
 import json
 import time
 import sys
-from pathlib import Path
 from typing import Annotated, Any
 from dataclasses import dataclass
 
@@ -12,6 +11,7 @@ from bu_agent_sdk.agent.events import (
     ToolCallEvent, ToolResultEvent, ThinkingEvent, TextEvent, FinalResponseEvent,
 )
 from tools.sandbox import SandboxContext, get_sandbox_context
+from config.model_config import get_model_config
 
 
 @dataclass
@@ -33,11 +33,8 @@ def _create_subagent_agent(
 ) -> Agent:
     """创建subagent实例"""
     from bu_agent_sdk.llm import ChatOpenAI
-    import os
 
-    model = config.model or os.getenv("LLM_MODEL", "GLM-4.7")
-    base_url = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
-    api_key = os.getenv("OPENAI_API_KEY")
+    model, base_url, api_key = get_model_config(config.model)
 
     llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url)
 
