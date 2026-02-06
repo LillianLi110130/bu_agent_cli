@@ -1,0 +1,634 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>百度一下，你就知道</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background-color: #ffffff;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* 顶部导航 */
+        .top-nav {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            padding: 10px 24px;
+            font-size: 13px;
+            background-color: #fff;
+        }
+
+        .top-nav a {
+            color: #333;
+            text-decoration: none;
+            margin-left: 24px;
+            transition: color 0.3s ease;
+        }
+
+        .top-nav a:hover {
+            color: #4e6ef2;
+        }
+
+        .top-nav .dropdown {
+            position: relative;
+            cursor: pointer;
+        }
+
+        .top-nav .dropdown:hover .dropdown-menu {
+            display: block;
+        }
+
+        .top-nav .dropdown-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            right: 0;
+            background: #fff;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            border-radius: 6px;
+            padding: 8px 0;
+            min-width: 100px;
+            z-index: 100;
+        }
+
+        .top-nav .dropdown-menu a {
+            display: block;
+            padding: 8px 16px;
+            margin: 0;
+            text-align: left;
+        }
+
+        .top-nav .dropdown-menu a:hover {
+            background-color: #f5f5f5;
+        }
+
+        /* 主内容区域 */
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        /* Logo */
+        .logo {
+            margin-bottom: 20px;
+            transition: transform 0.3s ease;
+        }
+
+        .logo:hover {
+            transform: scale(1.02);
+        }
+
+        .logo img {
+            max-width: 270px;
+            height: auto;
+        }
+
+        /* 搜索框容器 */
+        .search-container {
+            width: 100%;
+            max-width: 654px;
+            position: relative;
+        }
+
+        /* 搜索框 */
+        .search-box {
+            display: flex;
+            align-items: center;
+            border: 2px solid #c4c7ce;
+            border-radius: 10px;
+            padding: 10px 16px;
+            transition: all 0.3s ease;
+            background: #fff;
+        }
+
+        .search-box:focus-within {
+            border-color: #4e6ef2;
+            box-shadow: 0 0 0 3px rgba(78, 110, 242, 0.1);
+        }
+
+        .search-input {
+            flex: 1;
+            border: none;
+            outline: none;
+            font-size: 16px;
+            padding: 8px 12px;
+            background: transparent;
+            color: #333;
+        }
+
+        .search-input::placeholder {
+            color: #9195a3;
+        }
+
+        .search-icon {
+            width: 24px;
+            height: 24px;
+            color: #9195a3;
+            cursor: pointer;
+            transition: color 0.3s ease;
+        }
+
+        .search-icon:hover {
+            color: #4e6ef2;
+        }
+
+        .clear-btn {
+            display: none;
+            width: 20px;
+            height: 20px;
+            background: #e0e0e0;
+            border: none;
+            border-radius: 50%;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            line-height: 1;
+            margin-right: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .clear-btn:hover {
+            background: #d0d0d0;
+        }
+
+        .clear-btn.show {
+            display: block;
+        }
+
+        /* 搜索按钮 */
+        .search-button {
+            background: linear-gradient(135deg, #4e6ef2 0%, #3b5bd9 100%);
+            color: #fff;
+            border: none;
+            border-radius: 10px;
+            padding: 12px 32px;
+            font-size: 17px;
+            cursor: pointer;
+            margin-top: 16px;
+            font-weight: 500;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(78, 110, 242, 0.3);
+        }
+
+        .search-button:hover {
+            background: linear-gradient(135deg, #3b5bd9 0%, #2a4bb8 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(78, 110, 242, 0.4);
+        }
+
+        .search-button:active {
+            transform: translateY(0);
+        }
+
+        /* 热搜词 */
+        .hot-search {
+            margin-top: 30px;
+            max-width: 654px;
+            width: 100%;
+        }
+
+        .hot-search-title {
+            font-size: 14px;
+            color: #9195a3;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            transition: color 0.3s ease;
+        }
+
+        .hot-search-title:hover {
+            color: #4e6ef2;
+        }
+
+        .hot-search-title .icon {
+            margin-right: 6px;
+            font-size: 16px;
+        }
+
+        .hot-search-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .hot-search-item {
+            font-size: 14px;
+            color: #333;
+            text-decoration: none;
+            transition: all 0.3s ease;
+            cursor: pointer;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .hot-search-item:hover {
+            background: #f5f5f5;
+            color: #4e6ef2;
+        }
+
+        .hot-search-item.hot {
+            color: #ff6b6b;
+        }
+
+        .hot-search-item.hot:hover {
+            background: #fff5f5;
+        }
+
+        /* 底部导航 */
+        .bottom-nav {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 16px;
+            gap: 30px;
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+
+        .bottom-nav a {
+            color: #333;
+            text-decoration: none;
+            transition: color 0.3s ease;
+        }
+
+        .bottom-nav a:hover {
+            color: #4e6ef2;
+        }
+
+        /* 底部版权 */
+        .footer {
+            text-align: center;
+            padding: 10px 20px 30px;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .footer a {
+            color: #999;
+            text-decoration: none;
+            margin: 0 10px;
+            transition: color 0.3s ease;
+        }
+
+        .footer a:hover {
+            color: #4e6ef2;
+        }
+
+        .footer .copyright {
+            margin-top: 10px;
+        }
+
+        /* 响应式设计 */
+        @media (max-width: 768px) {
+            .top-nav {
+                padding: 8px 16px;
+            }
+
+            .top-nav a {
+                margin-left: 16px;
+                font-size: 12px;
+            }
+
+            .logo img {
+                max-width: 200px;
+            }
+
+            .search-container {
+                max-width: 90%;
+            }
+
+            .search-input {
+                font-size: 15px;
+            }
+
+            .search-button {
+                padding: 10px 24px;
+                font-size: 16px;
+            }
+
+            .hot-search {
+                margin-top: 20px;
+            }
+
+            .hot-search-list {
+                gap: 8px;
+            }
+
+            .bottom-nav {
+                gap: 15px;
+                padding: 12px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .logo img {
+                max-width: 160px;
+            }
+
+            .top-nav {
+                justify-content: space-between;
+            }
+
+            .top-nav a {
+                margin-left: 12px;
+                font-size: 11px;
+            }
+
+            .search-box {
+                padding: 8px 12px;
+            }
+
+            .search-input {
+                font-size: 14px;
+                padding: 6px 8px;
+            }
+
+            .search-button {
+                padding: 10px 20px;
+                font-size: 15px;
+                width: 100%;
+            }
+
+            .bottom-nav {
+                gap: 10px;
+                font-size: 12px;
+            }
+
+            .footer {
+                font-size: 11px;
+            }
+
+            .footer a {
+                margin: 0 5px;
+            }
+        }
+
+        /* 动画效果 */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .logo {
+            animation: fadeIn 0.6s ease;
+        }
+
+        .search-container {
+            animation: fadeIn 0.6s ease 0.1s backwards;
+        }
+
+        .hot-search {
+            animation: fadeIn 0.6s ease 0.2s backwards;
+        }
+
+        /* 加载动画 */
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+        }
+
+        .loading.show {
+            display: block;
+        }
+
+        .loading-spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4e6ef2;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <nav class="top-nav">
+        <a href="https://news.baidu.com" target="_blank">新闻</a>
+        <a href="https://www.hao123.com" target="_blank">hao123</a>
+        <a href="https://map.baidu.com" target="_blank">地图</a>
+        <a href="https://tieba.baidu.com" target="_blank">贴吧</a>
+        <a href="https://v.baidu.com" target="_blank">视频</a>
+        <a href="https://image.baidu.com" target="_blank">图片</a>
+        <a href="https://pan.baidu.com" target="_blank">网盘</a>
+        <div class="dropdown">
+            <a href="#">更多 ▼</a>
+            <div class="dropdown-menu">
+                <a href="https://wenku.baidu.com" target="_blank">文库</a>
+                <a href="https://baike.baidu.com" target="_blank">百科</a>
+                <a href="https://jingyan.baidu.com" target="_blank">经验</a>
+                <a href="https://zhidao.baidu.com" target="_blank">知道</a>
+                <a href="https://zhanhang.baidu.com" target="_blank">站内搜索</a>
+            </div>
+        </div>
+        <a href="https://passport.baidu.com/v2/?login" target="_blank">登录</a>
+        <a href="https://passport.baidu.com/v2/?reg" target="_blank">注册</a>
+    </nav>
+
+    <!-- 主内容 -->
+    <main class="main-content">
+        <!-- Logo -->
+        <div class="logo">
+            <img src="https://www.baidu.com/img/flexible/logo/pc/result.png" alt="百度">
+        </div>
+
+        <!-- 搜索框 -->
+        <div class="search-container">
+            <div class="search-box">
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"></circle>
+                    <path d="m21 21-4.35-4.35"></path>
+                </svg>
+                <input type="text" class="search-input" id="searchInput" placeholder="百度一下，你就知道" autocomplete="off">
+                <button class="clear-btn" id="clearBtn">×</button>
+            </div>
+            <button class="search-button" id="searchButton">百度一下</button>
+        </div>
+
+        <!-- 热搜词 -->
+        <div class="hot-search">
+            <div class="hot-search-title">
+                <span class="icon">🔥</span>
+                <span>百度热搜</span>
+            </div>
+            <div class="hot-search-list" id="hotSearchList">
+                <!-- 热搜词将通过JavaScript动态加载 -->
+            </div>
+        </div>
+    </main>
+
+    <!-- 底部导航 -->
+    <nav class="bottom-nav">
+        <a href="https://baike.baidu.com" target="_blank">百科</a>
+        <a href="https://wenku.baidu.com" target="_blank">文库</a>
+        <a href="https://zhidao.baidu.com" target="_blank">知道</a>
+        <a href="https://jingyan.baidu.com" target="_blank">经验</a>
+        <a href="https://image.baidu.com" target="_blank">图片</a>
+        <a href="https://map.baidu.com" target="_blank">地图</a>
+    </nav>
+
+    <!-- 底部版权 -->
+    <footer class="footer">
+        <a href="https://home.baidu.com" target="_blank">关于百度</a>
+        <a href="https://ir.baidu.com" target="_blank">About Baidu</a>
+        <a href="https://www.baidu.com/duty" target="_blank">使用百度前必读</a>
+        <a href="https://help.baidu.com" target="_blank">帮助中心</a>
+        <a href="https://e.baidu.com/?refer=1271" target="_blank">企业推广</a>
+        <div class="copyright">© 2025 Baidu <a href="https://beian.miit.gov.cn" target="_blank">京ICP证030173号</a></div>
+    </footer>
+
+    <!-- 加载动画 -->
+    <div class="loading" id="loading">
+        <div class="loading-spinner"></div>
+    </div>
+
+    <script>
+        // 获取DOM元素
+        const searchInput = document.getElementById('searchInput');
+        const searchButton = document.getElementById('searchButton');
+        const clearBtn = document.getElementById('clearBtn');
+        const hotSearchList = document.getElementById('hotSearchList');
+        const loading = document.getElementById('loading');
+
+        // 模拟热搜数据
+        const hotSearchData = [
+            { title: '人工智能最新进展', hot: true },
+            { title: 'ChatGPT新功能发布', hot: true },
+            { title: '2025科技趋势', hot: true },
+            { title: '新能源汽车销量', hot: false },
+            { title: '5G网络覆盖', hot: false },
+            { title: '量子计算突破', hot: false },
+            { title: '元宇宙发展现状', hot: false },
+            { title: '区块链技术应用', hot: false }
+        ];
+
+        // 渲染热搜词
+        function renderHotSearch() {
+            hotSearchList.innerHTML = hotSearchData.map((item, index) => {
+                const rank = index + 1;
+                const hotClass = index < 3 ? 'hot' : '';
+                const hotIcon = item.hot ? '🔥' : '';
+                return `
+                    <span class="hot-search-item ${hotClass}" onclick="search('${item.title}')">
+                        ${hotIcon} ${rank}. ${item.title}
+                    </span>
+                `;
+            }).join('');
+        }
+
+        // 执行搜索
+        function search(query) {
+            const searchQuery = query || searchInput.value.trim();
+            
+            if (!searchQuery) {
+                // 如果搜索框为空，聚焦并晃动
+                searchInput.focus();
+                searchInput.style.animation = 'none';
+                setTimeout(() => {
+                    searchInput.style.animation = 'shake 0.5s ease';
+                }, 10);
+                return;
+            }
+
+            // 显示加载动画
+            loading.classList.add('show');
+
+            // 在新标签页打开百度搜索
+            const searchUrl = `https://www.baidu.com/s?wd=${encodeURIComponent(searchQuery)}`;
+            setTimeout(() => {
+                window.open(searchUrl, '_blank');
+                loading.classList.remove('show');
+            }, 300);
+        }
+
+        // 搜索框输入事件
+        searchInput.addEventListener('input', function() {
+            const value = this.value.trim();
+            clearBtn.classList.toggle('show', value.length > 0);
+        });
+
+        // 清除按钮点击事件
+        clearBtn.addEventListener('click', function() {
+            searchInput.value = '';
+            clearBtn.classList.remove('show');
+            searchInput.focus();
+        });
+
+        // 搜索按钮点击事件
+        searchButton.addEventListener('click', function() {
+            search();
+        });
+
+        // 回车键搜索
+        searchInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                search();
+            }
+        });
+
+        // 添加晃动动画
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes shake {
+                0%, 100% { transform: translateX(0); }
+                25% { transform: translateX(-5px); }
+                75% { transform: translateX(5px); }
+            }
+        `;
+        document.head.appendChild(style);
+
+        // 页面加载完成后聚焦搜索框
+        window.addEventListener('load', function() {
+            searchInput.focus();
+            renderHotSearch();
+        });
+
+        // 键盘快捷键：按 / 聚焦搜索框
+        document.addEventListener('keydown', function(e) {
+            if (e.key === '/' && document.activeElement !== searchInput) {
+                e.preventDefault();
+                searchInput.focus();
+            }
+        });
+
+        // 搜索框获得焦点时隐藏快捷键提示
+        searchInput.addEventListener('focus', function() {
+            this.placeholder = '按回车键搜索';
+        });
+
+        searchInput.addEventListener('blur', function() {
+            this.placeholder = '百度一下，你就知道';
+        });
+    </script>
+</body>
+</html>

@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from bu_agent_sdk.agent.compaction import CompactionConfig, CompactionService
+from bu_agent_sdk.agent.config import AgentConfig
 
 logger = logging.getLogger("bu_agent_sdk.agent")
 from bu_agent_sdk.agent.events import (
@@ -133,6 +134,8 @@ class Agent:
         compaction: Optional configuration for automatic context compaction.
         include_cost: Whether to calculate costs (requires fetching pricing data).
         dependency_overrides: Optional dict to override tool dependencies.
+        mode: Agent mode ('primary', 'subagent', 'all').
+        agent_config: Agent configuration (used for subagent and all modes).
     """
 
     llm: BaseChatModel
@@ -157,6 +160,10 @@ class Agent:
         default_factory=lambda: {429, 500, 502, 503, 504}
     )
     """HTTP status codes that trigger retries (matches browser-use)."""
+    mode: str = "primary"
+    """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
+    agent_config: AgentConfig | None = None
+    """Agent configuration with tool permissions and other metadata."""
 
     # Internal state
     _messages: list[BaseMessage] = field(default_factory=list, repr=False)
@@ -173,6 +180,10 @@ class Agent:
 
         # Build tool lookup map
         self._tool_map = {t.name: t for t in self.tools}
+
+        # Filter tools based on mode and agent_config
+        if self.mode in ("subagent", "all") and self.agent_config and self.agent_config.tools:
+            self._filter_tools_by_config()
 
         # Initialize token cost service
         self._token_cost = TokenCost(include_cost=self.include_cost)
@@ -215,6 +226,22 @@ class Agent:
         """Clear the message history and token usage."""
         self._messages = []
         self._token_cost.clear_history()
+
+    def _filter_tools_by_config(self):
+        """根据agent配置过滤工具"""
+        if not self.agent_config or not self.agent_config.tools:
+            return
+
+        tools_config = self.agent_config.tools
+        filtered_tools = []
+
+        for tool in self.tools:
+            tool_allowed = tools_config.get(tool.name, True)
+            if tool_allowed:
+                filtered_tools.append(tool)
+
+        self.tools = filtered_tools
+        self._tool_map = {t.name: t for t in self.tools}
 
     def load_history(self, messages: list[BaseMessage]) -> None:
         """Load message history to continue a previous conversation.
