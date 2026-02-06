@@ -88,9 +88,14 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="model",
-                description="Show current model or switch using configured presets",
-                usage="/model [current|list|use <preset>]",
-                examples=["/model", "/model current", "/model list", "/model use gpt4o"],
+                description="Open numbered picker or switch model using configured presets",
+                usage="/model [show|list|<preset>]",
+                examples=[
+                    "/model",
+                    "/model show",
+                    "/model list",
+                    "/model glm",
+                ],
                 category="Settings",
             ),
             SlashCommand(

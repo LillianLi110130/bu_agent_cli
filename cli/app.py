@@ -128,6 +128,8 @@ class ClaudeCodeCLI:
         )
         self._default_model_preset: str | None = None
         self._model_presets = self._load_model_presets()
+        self._model_pick_active = False
+        self._model_pick_order: list[str] = []
 
     def _load_model_presets(self) -> dict[str, dict[str, str]]:
         """Load model presets from config/model_presets.json."""
@@ -216,13 +218,110 @@ class ClaudeCodeCLI:
                 f"[dim](base_url: {base_url}, key: {api_key_env})[/dim]"
             )
 
-    def _switch_model_preset(self, preset_name: str):
+    def _resolve_current_preset_name(self) -> str | None:
+        """Best-effort preset match for current model/base URL."""
+        exact_match = self._resolve_exact_current_preset_name()
+        if exact_match is not None:
+            return exact_match
+
+        if self._default_model_preset in self._model_presets:
+            return self._default_model_preset
+
+        return next(iter(self._model_presets.keys()), None)
+
+    def _resolve_exact_current_preset_name(self) -> str | None:
+        """Exact preset match for current model/base URL, without fallback."""
+        if not self._model_presets:
+            return None
+
+        current_model = str(self._agent.llm.model)
+        current_base_url = getattr(self._agent.llm, "base_url", None)
+        current_base_url_str = str(current_base_url) if current_base_url else None
+
+        for name, preset in self._model_presets.items():
+            if preset.get("model") != current_model:
+                continue
+            preset_base_url = preset.get("base_url")
+            if preset_base_url is None or preset_base_url == current_base_url_str:
+                return name
+
+        return None
+
+    def _start_model_pick_mode(self):
+        """Show numbered model presets and enter pick mode."""
+        if not self._model_presets:
+            self._console.print("[yellow]No model presets configured.[/yellow]")
+            self._model_pick_active = False
+            self._model_pick_order = []
+            return
+
+        self._model_pick_order = list(self._model_presets.keys())
+        self._model_pick_active = True
+        current_preset = self._resolve_current_preset_name()
+
+        self._console.print()
+        self._console.print("[bold cyan]Select a model preset:[/bold cyan]")
+        for idx, name in enumerate(self._model_pick_order, 1):
+            preset = self._model_presets[name]
+            model = preset["model"]
+            markers: list[str] = []
+            if name == current_preset:
+                markers.append("current")
+            if name == self._default_model_preset:
+                markers.append("default")
+            marker_text = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
+            self._console.print(f"  {idx}. [cyan]{name}[/cyan] -> {model}{marker_text}")
+        self._console.print(
+            "[dim]Type the number and press Enter to switch, or 'q' to cancel.[/dim]"
+        )
+
+    async def _handle_model_pick_input(self, user_input: str) -> bool:
+        """Handle one line of input while in numbered model-pick mode."""
+        if not self._model_pick_active:
+            return False
+
+        value = user_input.strip()
+        if not value:
+            self._console.print("[dim]Enter a number, or 'q' to cancel.[/dim]")
+            return True
+
+        if value.lower() in {"q", "quit", "cancel", "exit"}:
+            self._model_pick_active = False
+            self._model_pick_order = []
+            self._console.print("[yellow]Model selection cancelled.[/yellow]")
+            return True
+
+        if not value.isdigit():
+            self._console.print("[red]Invalid selection. Please enter a number.[/red]")
+            return True
+
+        index = int(value)
+        if index < 1 or index > len(self._model_pick_order):
+            self._console.print(
+                f"[red]Selection out of range. Choose 1-{len(self._model_pick_order)}.[/red]"
+            )
+            return True
+
+        preset_name = self._model_pick_order[index - 1]
+        self._model_pick_active = False
+        self._model_pick_order = []
+        await self._switch_model_preset(preset_name)
+        return True
+
+    async def _switch_model_preset(self, preset_name: str) -> bool:
         """Switch to a configured model preset without clearing conversation context."""
         preset = self._model_presets.get(preset_name)
         if not preset:
             self._console.print(f"[red]Unknown preset: {preset_name}[/red]")
             self._console.print("[dim]Use /model list to see available presets.[/dim]")
-            return
+            return False
+
+        current_preset = self._resolve_exact_current_preset_name()
+        if current_preset == preset_name:
+            self._console.print(
+                f"[dim]Already using preset [cyan]{preset_name}[/cyan].[/dim]"
+            )
+            return True
 
         model = preset["model"]
         api_key_env = preset.get("api_key_env", "OPENAI_API_KEY")
@@ -231,7 +330,19 @@ class ClaudeCodeCLI:
             self._console.print(
                 f"[red]Missing API key env var: {api_key_env}. Switch aborted.[/red]"
             )
-            return
+            return False
+
+        preflight = await self._agent.preflight_model_switch(model)
+        if not preflight.ok:
+            self._console.print(
+                f"[red]Model switch preflight failed: {preflight.reason or 'context is too large'}[/red]"
+            )
+            self._console.print(
+                f"[dim]Estimated tokens: {preflight.estimated_tokens}, "
+                f"threshold: {preflight.threshold}, "
+                f"utilization: {preflight.threshold_utilization:.0%}[/dim]"
+            )
+            return False
 
         old_llm = self._agent.llm
         old_model = str(old_llm.model)
@@ -249,7 +360,12 @@ class ClaudeCodeCLI:
         except Exception as e:
             self._agent.llm = old_llm
             self._console.print(f"[red]Failed to switch model: {e}[/red]")
-            return
+            return False
+
+        if preflight.compacted:
+            self._console.print(
+                "[yellow]Context was compacted before switching to fit target model.[/yellow]"
+            )
 
         self._console.print(
             f"[green]Model switched:[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
@@ -257,6 +373,7 @@ class ClaudeCodeCLI:
         self._console.print(
             f"[dim]Context preserved ({len(self._agent.messages)} messages).[/dim]"
         )
+        return True
 
     def _start_loading(self, message: str = "Thinking") -> _LoadingIndicator:
         """Start a loading animation."""
@@ -358,7 +475,7 @@ class ClaudeCodeCLI:
         ))
         self._console.print()
 
-    def _handle_slash_command(self, text: str) -> bool:
+    async def _handle_slash_command(self, text: str) -> bool:
         """Handle a slash command.
 
         Args:
@@ -398,30 +515,28 @@ class ClaudeCodeCLI:
         # Handle model command
         if command_name == "model":
             if not args:
-                self._print_current_model()
-                self._console.print("[dim]Use /model list or /model use <preset>[/dim]")
+                self._start_model_pick_mode()
+                return True
+
+            if len(args) > 1:
+                self._console.print("[red]Usage: /model [show|list|<preset>][/red]")
                 return True
 
             subcommand = args[0].lower()
-            if subcommand in ("current", "show"):
+            if subcommand == "show":
                 self._print_current_model()
                 return True
-            if subcommand in ("list", "ls"):
+            if subcommand == "list":
                 self._print_model_presets()
-                return True
-            if subcommand == "use":
-                if len(args) < 2:
-                    self._console.print("[red]Usage: /model use <preset>[/red]")
-                    return True
-                self._switch_model_preset(args[1])
                 return True
 
             # Convenience: /model <preset>
-            self._switch_model_preset(args[0])
+            await self._switch_model_preset(args[0])
             return True
 
         # Handle reset command
         if command_name == "reset":
+            self._agent.clear_history()
             self._console.print("[yellow]Conversation context reset.[/yellow]")
             return True
 
@@ -562,10 +677,15 @@ class ClaudeCodeCLI:
             if not user_input:
                 continue
 
+            # Handle numbered model picker mode
+            if self._model_pick_active:
+                if await self._handle_model_pick_input(user_input):
+                    continue
+
             # Handle slash commands
             if is_slash_command(user_input):
                 try:
-                    if self._handle_slash_command(user_input):
+                    if await self._handle_slash_command(user_input):
                         continue
                 except EOFError:
                     break

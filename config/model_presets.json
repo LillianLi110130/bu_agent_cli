@@ -10,6 +10,11 @@
       "model": "GLM-4.6",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
       "api_key_env": "OPENAI_API_KEY"
+    },
+    "glm4vFlash": {
+      "model": "GLM-4V-Flash",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key_env": "OPENAI_API_KEY"
     }
   }
 }
