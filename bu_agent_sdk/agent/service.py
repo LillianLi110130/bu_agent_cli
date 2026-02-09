@@ -235,7 +235,13 @@ class Agent:
         tools_config = self.agent_config.tools
         filtered_tools = []
 
+        # 如果mode是subagent，应该禁用todo工具以及禁用任务工具（防止递归）
+        forced_disabled = {"subagent", "todo_read", "todo_write"} \
+            if self.mode == "subagent" else set()
+
         for tool in self.tools:
+            if tool.name in forced_disabled:
+                continue
             tool_allowed = tools_config.get(tool.name, True)
             if tool_allowed:
                 filtered_tools.append(tool)
