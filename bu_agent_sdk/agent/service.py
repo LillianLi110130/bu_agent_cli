@@ -63,7 +63,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bu_agent_sdk.agent.compaction import CompactionConfig, CompactionService
+from bu_agent_sdk.agent.compaction import CompactionConfig
+from bu_agent_sdk.agent.context import ContextManager
 
 logger = logging.getLogger("bu_agent_sdk.agent")
 from bu_agent_sdk.agent.events import (
@@ -144,9 +145,8 @@ class Agent:
     """HTTP status codes that trigger retries (matches browser-use)."""
 
     # Internal state
-    _messages: list[BaseMessage] = field(default_factory=list, repr=False)
+    _context: ContextManager = field(default_factory=ContextManager, repr=False)
     _tool_map: dict[str, Tool] = field(default_factory=dict, repr=False)
-    _compaction_service: CompactionService | None = field(default=None, repr=False)
     _token_cost: TokenCost = field(default=None, repr=False)  # type: ignore
 
     def __post_init__(self):
@@ -162,12 +162,12 @@ class Agent:
         # Initialize token cost service
         self._token_cost = TokenCost(include_cost=self.include_cost)
 
-        # Initialize compaction service (enabled by default)
+        # Initialize compaction service in context (enabled by default)
         # Use provided config or create default (which has enabled=True)
         compaction_config = (
             self.compaction if self.compaction is not None else CompactionConfig()
         )
-        self._compaction_service = CompactionService(
+        self._context.configure_compaction(
             config=compaction_config,
             llm=self.llm,
             token_cost=self._token_cost,
@@ -181,7 +181,7 @@ class Agent:
     @property
     def messages(self) -> list[BaseMessage]:
         """Get the current message history (read-only copy)."""
-        return list(self._messages)
+        return self._context.get_messages()
 
     @property
     def token_cost(self) -> TokenCost:
@@ -198,7 +198,7 @@ class Agent:
 
     def clear_history(self):
         """Clear the message history and token usage."""
-        self._messages = []
+        self._context.clear_messages()
         self._token_cost.clear_history()
 
     def load_history(self, messages: list[BaseMessage]) -> None:
@@ -208,7 +208,7 @@ class Agent:
         e.g., when loading from a database on a new machine.
 
         Note: The system prompt will NOT be re-added on the next query()
-        call since _messages will be non-empty.
+        call since _context will be non-empty.
 
         Args:
                 messages: List of BaseMessage instances to load.
@@ -223,7 +223,7 @@ class Agent:
                 # Continue with follow-up
                 response = await agent.query("Continue the task...")
         """
-        self._messages = list(messages)
+        self._context.replace_messages(messages)
         self._token_cost.clear_history()
 
     # 对标记为ephemeral 的 ToolMessage，按 tool 维度，只保留最近N条
@@ -240,66 +240,10 @@ class Agent:
 
         This should be called after each LLM invocation.
         """
-        # Group ephemeral messages by tool name, preserving order
-        ephemeral_by_tool: dict[str, list[ToolMessage]] = {}
-
-        for msg in self._messages:
-            # 过滤条件：必须是toolmessage、必须标记为ephemeral、必须还没被销毁
-            if not isinstance(msg, ToolMessage):
-                continue
-            if not msg.ephemeral:
-                continue
-            # Skip already-destroyed messages
-            if msg.destroyed:
-                continue
-
-            # 按tool_name分组，每个tool有自己独立的保留窗口
-            if msg.tool_name not in ephemeral_by_tool:
-                ephemeral_by_tool[msg.tool_name] = []
-            ephemeral_by_tool[msg.tool_name].append(msg)
-
-        # For each tool, keep only the last N messages
-        for tool_name, messages in ephemeral_by_tool.items():
-            # Get the keep limit from the tool's ephemeral attribute
-            tool = self._tool_map.get(tool_name)
-            if tool is None:
-                keep_count = 1
-            else:
-                keep_count = tool.ephemeral if isinstance(tool.ephemeral, int) else 1
-
-            # Destroy messages beyond the keep limit (older ones first)
-            messages_to_destroy = messages[:-keep_count] if keep_count > 0 else messages
-
-            for msg in messages_to_destroy:
-                # Log which message is being destroyed
-                logger.debug(
-                    f"🗑️  Destroying ephemeral: {msg.tool_name} (keeping last {keep_count})"
-                )
-
-                # Save to disk if storage path is configured
-                # 存储用于log、故障排查、训练数据收集等
-                if self.ephemeral_storage_path is not None:
-                    self.ephemeral_storage_path.mkdir(parents=True, exist_ok=True)
-                    filename = f"{msg.tool_call_id}.json"
-                    filepath = self.ephemeral_storage_path / filename
-
-                    # Serialize content
-                    if isinstance(msg.content, str):
-                        content_data = msg.content
-                    else:
-                        # List of content parts - serialize to JSON
-                        content_data = [part.model_dump() for part in msg.content]
-
-                    saved_data = {
-                        "tool_call_id": msg.tool_call_id,
-                        "tool_name": msg.tool_name,
-                        "content": content_data,
-                        "is_error": msg.is_error,
-                    }
-                    filepath.write_text(json.dumps(saved_data, indent=2))
-
-                # Mark as destroyed - serializers will use placeholder instead of content
-                msg.destroyed = True
+        self._context.prune_ephemeral(
+            tool_map=self._tool_map,
+            storage_path=self.ephemeral_storage_path,
+        )
 
     async def _execute_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         """Execute a single tool call and return the result as a ToolMessage."""
@@ -449,7 +393,7 @@ class Agent:
         for attempt in range(self.llm_max_retries):
             try:
                 response = await self.llm.ainvoke(
-                    messages=self._messages,
+                    messages=self._context.get_messages(),
                     tools=self.tool_definitions if self.tools else None,
                     tool_choice=self.tool_choice if self.tools else None,
                 )
@@ -553,12 +497,12 @@ Please provide a concise summary of:
 Keep the summary brief but informative."""
 
         # Add the summary request as a user message temporarily
-        self._messages.append(UserMessage(content=summary_prompt))
+        self._context.add_message(UserMessage(content=summary_prompt))
 
         try:
             # Invoke LLM without tools to get a summary response
             response = await self.llm.ainvoke(
-                messages=self._messages,
+                messages=self._context.get_messages(),
                 tools=None,
                 tool_choice=None,
             )
@@ -568,7 +512,7 @@ Keep the summary brief but informative."""
             summary = f"Task stopped after {self.max_iterations} iterations. Unable to generate summary due to error."
         finally:
             # Remove the temporary summary prompt
-            self._messages.pop()
+            self._context.remove_message_at()
 
         return f"[Max iterations reached]\n\n{summary}"
 
@@ -585,34 +529,18 @@ Keep the summary brief but informative."""
         """
         return None
 
-    async def _check_and_compact(self, response: ChatInvokeCompletion) -> bool:
-        """Check token usage and compact if threshold exceeded.
+    async def _maintain_context(self, response: ChatInvokeCompletion) -> None:
+        """Apply sliding window and then compaction using the best token signal."""
+        did_slide = False
+        if self._context.sliding_window_messages is not None:
+            did_slide = await self._context.apply_sliding_window_with_summary(
+                keep_count=self._context.sliding_window_messages,
+            )
 
-        The threshold is calculated dynamically based on the model's context window.
-
-        Args:
-                response: The latest LLM response with usage information.
-
-        Returns:
-                True if compaction was performed, False otherwise.
-        """
-        if self._compaction_service is None:
-            return False
-
-        # Update token usage tracking
-        self._compaction_service.update_usage(response.usage)
-
-        # Perform compaction check (threshold is calculated based on model)
-        new_messages, result = await self._compaction_service.check_and_compact(
-            self._messages,
-            self.llm,
-        )
-
-        if result.compacted:
-            self._messages = list(new_messages)
-            return True
-
-        return False
+        if did_slide:
+            await self._context.check_and_compact_estimated(self.llm)
+        else:
+            await self._context.check_and_compact(self.llm, response.usage)
 
     @observe(name="agent_query")
     async def query(self, message: str) -> str:
@@ -634,12 +562,12 @@ Keep the summary brief but informative."""
             The agent's response text.
         """
         # Add system prompt on first message
-        if not self._messages and self.system_prompt:
+        if not self._context and self.system_prompt:
             # Cache the static system prompt when provider supports it (Anthropic).
-            self._messages.append(SystemMessage(content=self.system_prompt, cache=True))
+            self._context.add_message(SystemMessage(content=self.system_prompt, cache=True))
 
         # Add the user message
-        self._messages.append(UserMessage(content=message))
+        self._context.add_message(UserMessage(content=message))
 
         iterations = 0
         tool_calls_made = 0
@@ -662,7 +590,7 @@ Keep the summary brief but informative."""
                 content=response.content,
                 tool_calls=response.tool_calls if response.tool_calls else None,
             )
-            self._messages.append(assistant_msg)
+            self._context.add_message(assistant_msg)
 
             # If no tool calls, check if should finish
             if not response.has_tool_calls:
@@ -677,14 +605,14 @@ Keep the summary brief but informative."""
                             # 如果有没做完的，修改标识符，更新messages，继续循环
                             # 是一个最低程度的自我纠正，只会重复一次
                             incomplete_todos_prompted = True
-                            self._messages.append(
+                            self._context.add_message(
                                 UserMessage(content=incomplete_prompt)
                             )
                             continue  # Give the LLM a chance to handle incomplete todos
 
                     # All done - return the response
                     # todo: 看看代码，大概就是做一下压缩
-                    await self._check_and_compact(response)
+                    await self._maintain_context(response)
                     # 返回最终文本
                     return response.content or ""
                 # Autonomous mode: require done tool, continue loop
@@ -698,10 +626,10 @@ Keep the summary brief but informative."""
                 try:
                     # todo: 看看这个代码
                     tool_result = await self._execute_tool_call(tool_call)
-                    self._messages.append(tool_result)
+                    self._context.add_message(tool_result)
                 except TaskComplete as e:
                     # 工具可以通过抛异常来结束agent
-                    self._messages.append(
+                    self._context.add_message(
                         ToolMessage(
                             tool_call_id=tool_call.id,
                             tool_name=tool_call.function.name,
@@ -712,7 +640,7 @@ Keep the summary brief but informative."""
                     return e.message
 
             # Check for compaction after tool execution
-            await self._check_and_compact(response)
+            await self._maintain_context(response)
 
         # Max iterations reached - generate summary of what was accomplished
         return await self._generate_max_iterations_summary()
@@ -750,12 +678,12 @@ Keep the summary brief but informative."""
                         print(f"Done: {text}")
         """
         # Add system prompt on first message
-        if not self._messages and self.system_prompt:
+        if not self._context and self.system_prompt:
             # Cache the static system prompt when provider supports it (Anthropic).
-            self._messages.append(SystemMessage(content=self.system_prompt, cache=True))
+            self._context.add_message(SystemMessage(content=self.system_prompt, cache=True))
 
         # Add the user message (supports both string and multi-modal content)
-        self._messages.append(UserMessage(content=message))
+        self._context.add_message(UserMessage(content=message))
 
         iterations = 0
         incomplete_todos_prompted = (
@@ -781,7 +709,7 @@ Keep the summary brief but informative."""
                 content=response.content,
                 tool_calls=response.tool_calls if response.tool_calls else None,
             )
-            self._messages.append(assistant_msg)
+            self._context.add_message(assistant_msg)
 
             # If no tool calls, check if should finish
             if not response.has_tool_calls:
@@ -791,14 +719,14 @@ Keep the summary brief but informative."""
                         incomplete_prompt = await self._get_incomplete_todos_prompt()
                         if incomplete_prompt:
                             incomplete_todos_prompted = True
-                            self._messages.append(
+                            self._context.add_message(
                                 UserMessage(content=incomplete_prompt)
                             )
                             yield HiddenUserMessageEvent(content=incomplete_prompt)
                             continue  # Give the LLM a chance to handle incomplete todos
 
                     # All done - return the response
-                    await self._check_and_compact(response)
+                    await self._maintain_context(response)
                     if response.content:
                         yield TextEvent(content=response.content)
                     yield FinalResponseEvent(content=response.content or "")
@@ -842,7 +770,7 @@ Keep the summary brief but informative."""
                 step_start_time = time.time()
                 try:
                     tool_result = await self._execute_tool_call(tool_call)
-                    self._messages.append(tool_result)
+                    self._context.add_message(tool_result)
 
                     # Extract screenshot if present (for browser tools)
                     screenshot_base64 = self._extract_screenshot(tool_result)
@@ -866,7 +794,7 @@ Keep the summary brief but informative."""
                 except TaskComplete as e:
                     # done_autonomous already validates todos before raising TaskComplete,
                     # so can complete immediately
-                    self._messages.append(
+                    self._context.add_message(
                         ToolMessage(
                             tool_call_id=tool_call.id,
                             tool_name=tool_call.function.name,
@@ -884,7 +812,7 @@ Keep the summary brief but informative."""
                     return
 
             # Check for compaction after tool execution
-            await self._check_and_compact(response)
+            await self._maintain_context(response)
 
         # Max iterations reached - generate summary of what was accomplished
         summary = await self._generate_max_iterations_summary()
