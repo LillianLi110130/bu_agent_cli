@@ -112,6 +112,27 @@ class SlashCommandRegistry:
                 examples=["/reset"],
                 category="Session",
             ),
+            SlashCommand(
+                name="tasks",
+                description="List all background tasks",
+                usage="/tasks",
+                examples=["/tasks"],
+                category="Background Tasks",
+            ),
+            SlashCommand(
+                name="task",
+                description="Get details for a specific background task",
+                usage="/task <task_id>",
+                examples=["/task abc123"],
+                category="Background Tasks",
+            ),
+            SlashCommand(
+                name="task_cancel",
+                description="Cancel a running background task",
+                usage="/task_cancel <task_id>",
+                examples=["/task_cancel abc123"],
+                category="Background Tasks",
+            ),
         ]
 
         for cmd in default_commands:

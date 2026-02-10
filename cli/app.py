@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from bu_agent_sdk import Agent
 from bu_agent_sdk.agent import (
@@ -130,6 +131,9 @@ class ClaudeCodeCLI:
         self._model_presets = self._load_model_presets()
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
+
+        if context.subagent_manager:
+            context.subagent_manager.set_result_callback(self._on_task_completed)
 
     def _load_model_presets(self) -> dict[str, dict[str, str]]:
         """Load model presets from config/model_presets.json."""
@@ -540,6 +544,43 @@ class ClaudeCodeCLI:
             self._console.print("[yellow]Conversation context reset.[/yellow]")
             return True
 
+        if command_name == "tasks":
+            if not self._ctx.subagent_manager:
+                self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
+                return True
+            tasks_info = self._ctx.subagent_manager.list_all_tasks()
+            self._console.print("[bold cyan]Background Tasks:[/bold cyan]")
+            self._console.print(tasks_info)
+            return True
+
+        if command_name == "task":
+            if not self._ctx.subagent_manager:
+                self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
+                return True
+            if not args:
+                self._console.print("[red]Usage: /task <task_id>[/red]")
+                return True
+            task_id = args[0]
+            task_info = self._ctx.subagent_manager.get_task_status(task_id)
+            if task_info is None:
+                self._console.print(f"[red]Task '{task_id}' not found.[/red]")
+                return True
+            self._console.print("[bold cyan]Task Details:[/bold cyan]")
+            self._console.print(task_info)
+            return True
+
+        if command_name == "task_cancel":
+            if not self._ctx.subagent_manager:
+                self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
+                return True
+            if not args:
+                self._console.print("[red]Usage: /task_cancel <task_id>[/red]")
+                return True
+            task_id = args[0]
+            result = await self._ctx.subagent_manager.cancel_task(task_id)
+            self._console.print(result)
+            return True
+
         # Handle history command
         if command_name == "history":
             self._console.print("[dim]Command history not implemented yet.[/dim]")
@@ -621,6 +662,61 @@ class ClaudeCodeCLI:
         self._stop_loading(self._loading)
         self._loading = None
         self._console.print()
+
+    async def _on_task_completed(self, result: Any):
+        """Handle background task completion notification.
+
+        Args:
+            result: TaskResult from SubagentManager
+        """
+        from bu_agent_sdk.agent.subagent_manager import TaskResult
+        from rich.panel import Panel
+
+        if not isinstance(result, TaskResult):
+            return
+
+        # Display completion notification
+        status_emoji = "✅" if result.status == "completed" else "❌"
+        status_color = "green" if result.status == "completed" else "red"
+
+        if result.status == "completed":
+            self._console.print()
+            self._console.print(
+                Panel(
+                    f"[{status_color}]{status_emoji} Task Completed:[/{status_color}]\n"
+                    f"[bold]Subagent:[/] {result.subagent_name}\n"
+                    f"[bold]Task ID:[/] {result.task_id}\n"
+                    f"[bold]Execution Time:[/] {result.execution_time_ms:.0f}ms\n"
+                    f"[bold]Tools Used:[/] {', '.join(result.tools_used) if result.tools_used else 'None'}\n"
+                    f"[bold]Result:[/] {result.final_response[:500]}..."
+                    if len(result.final_response) > 500 else "...",
+                    title="[bold blue]Background Task Notification[/bold blue]",
+                    border_style=status_color,
+                )
+            )
+        elif result.status == "failed":
+            self._console.print()
+            self._console.print(
+                Panel(
+                    f"[{status_color}]{status_emoji} Task Failed:[/{status_color}]\n"
+                    f"[bold]Subagent:[/] {result.subagent_name}\n"
+                    f"[bold]Task ID:[/] {result.task_id}\n"
+                    f"[bold]Error:[/] {result.error}",
+                    title="[bold blue]Background Task Notification[/bold blue]",
+                    border_style=status_color,
+                )
+            )
+        elif result.status == "cancelled":
+            self._console.print()
+            self._console.print(
+                Panel(
+                    f"[yellow]⏹️  Task Cancelled:[/yellow]\n"
+                    f"[bold]Subagent:[/] {result.subagent_name}\n"
+                    f"[bold]Task ID:[/] {result.task_id}",
+                    title="[bold blue]Background Task Notification[/bold blue]",
+                    border_style="yellow",
+                )
+            )
 
     async def run(self):
         """Run the interactive CLI."""

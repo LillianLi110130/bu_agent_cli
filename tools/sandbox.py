@@ -3,6 +3,7 @@
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 class SecurityError(Exception):
@@ -18,6 +19,7 @@ class SandboxContext:
     root_dir: Path  # 沙盒的根目录（边界）
     working_dir: Path  # 当前工作目录（在root_dir内）
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    subagent_manager: Any | None = None
 
     @classmethod
     def create(cls, root_dir: Path | str | None = None) -> "SandboxContext":

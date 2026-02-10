@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import os
 from pathlib import Path
+from typing import Any
 
 from bu_agent_sdk import Agent
 from bu_agent_sdk.llm import ChatOpenAI
@@ -141,10 +142,25 @@ def create_agent(
     Returns:
         Tuple of (Agent, SandboxContext)
     """
+    from bu_agent_sdk.agent.subagent_manager import SubagentManager
+
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
 
     system_prompt = _build_system_prompt(ctx.working_dir)
+
+    from bu_agent_sdk.agent.registry import get_agent_registry
+    registry = get_agent_registry()
+
+    subagent_manager = SubagentManager(
+        agent_factory=_create_subagent_factory,
+        registry=registry,
+        all_tools=ALL_TOOLS,
+        workspace=ctx.working_dir,
+        context=ctx,
+    )
+    ctx.subagent_manager = subagent_manager
+
     agent = Agent(
         llm=llm,
         tools=ALL_TOOLS,
@@ -153,7 +169,26 @@ def create_agent(
         mode=mode,
         agent_config=agent_config,
     )
+
+    if subagent_manager:
+        subagent_manager.set_main_agent(agent)
+
     return agent, ctx
+
+
+def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
+    """Factory function to create subagent instances."""
+    llm = create_llm(config.model)
+
+    agent = Agent(
+        llm=llm,
+        tools=all_tools,
+        system_prompt=config.system_prompt,
+        mode="subagent",
+        agent_config=config,
+        dependency_overrides={get_sandbox_context: lambda: parent_ctx},
+    )
+    return agent
 
 
 async def main():
