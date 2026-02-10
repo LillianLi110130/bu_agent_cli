@@ -107,6 +107,20 @@ class SlashCommandRegistry:
                 examples=["/reset"],
                 category="Session",
             ),
+            SlashCommand(
+                name="allow",
+                description="Add a directory to the sandbox allowed list",
+                usage="/allow <path>",
+                examples=["/allow /path/to/project", "/allow .."],
+                category="File System",
+            ),
+            SlashCommand(
+                name="allowed",
+                description="List all allowed directories in the sandbox",
+                usage="/allowed",
+                examples=["/allowed"],
+                category="File System",
+            ),
         ]
 
         for cmd in default_commands:
