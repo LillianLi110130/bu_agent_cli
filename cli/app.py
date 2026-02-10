@@ -586,6 +586,31 @@ class ClaudeCodeCLI:
             self._console.print("[dim]Command history not implemented yet.[/dim]")
             return True
 
+        # Handle allow command - add directory to sandbox
+        if command_name == "allow":
+            if not args:
+                self._console.print("[red]Usage: /allow <path>[/red]")
+                self._console.print("[dim]Example: /allow /path/to/project[/dim]")
+            else:
+                path_str = " ".join(args)
+                try:
+                    added_path = self._ctx.add_allowed_dir(path_str)
+                    self._console.print(f"[green]Added to allowed directories:[/] {added_path}")
+                except SecurityError as e:
+                    self._console.print(f"[red]{e}[/red]")
+            return True
+
+        # Handle allowed command - list allowed directories
+        if command_name == "allowed":
+            self._console.print()
+            self._console.print("[bold cyan]Allowed Directories:[/bold cyan]")
+            for i, allowed_dir in enumerate(self._ctx.allowed_dirs, 1):
+                # 标记当前工作目录
+                marker = " [dim](current)[/]" if str(allowed_dir.resolve()) == str(self._ctx.working_dir.resolve()) else ""
+                self._console.print(f"  {i}. {allowed_dir}{marker}")
+            self._console.print()
+            return True
+
         # Unknown command
         self._console.print(f"[red]Unknown command: /{command_name}[/red]")
         self._console.print(f"[dim]Type /help for available commands.[/dim]")
