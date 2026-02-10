@@ -33,7 +33,6 @@ Usage:
     # Access usage statistics:
     summary = await agent.usage
     print(f"Total tokens: {summary.total_tokens}")
-    print(f"Total cost: ${summary.total_cost:.4f}")
 """
 
 
@@ -117,7 +116,6 @@ class Agent:
         max_iterations: Maximum number of LLM calls before stopping.
         tool_choice: How the LLM should choose tools ('auto', 'required', 'none').
         compaction: Optional configuration for automatic context compaction.
-        include_cost: Whether to calculate costs (requires fetching pricing data).
         dependency_overrides: Optional dict to override tool dependencies.
     """
 
@@ -127,7 +125,6 @@ class Agent:
     max_iterations: int = 200  # 200 steps max for now
     tool_choice: ToolChoice = "auto"
     compaction: CompactionConfig | None = None
-    include_cost: bool = False
     dependency_overrides: dict | None = None
     ephemeral_storage_path: Path | None = None
     """Path to store destroyed ephemeral message content. If None, content is discarded."""
@@ -160,7 +157,7 @@ class Agent:
         self._tool_map = {t.name: t for t in self.tools}
 
         # Initialize token cost service
-        self._token_cost = TokenCost(include_cost=self.include_cost)
+        self._token_cost = TokenCost()
 
         # Initialize compaction service in context (enabled by default)
         # Use provided config or create default (which has enabled=True)
@@ -192,7 +189,7 @@ class Agent:
         """Get usage summary for the agent.
 
         Returns:
-            UsageSummary with token counts and costs.
+            UsageSummary with token counts.
         """
         return await self._token_cost.get_usage_summary()
 
@@ -536,6 +533,10 @@ Keep the summary brief but informative."""
             did_slide = await self._context.apply_sliding_window_with_summary(
                 keep_count=self._context.sliding_window_messages,
             )
+            # Alternative strategy (round-based):
+            # did_slide = await self._context.apply_sliding_window_by_rounds(
+            #     keep_rounds=self._context.sliding_window_messages,
+            # )
 
         if did_slide:
             await self._context.check_and_compact_estimated(self.llm)
