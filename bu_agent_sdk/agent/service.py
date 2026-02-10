@@ -64,6 +64,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from bu_agent_sdk.agent.compaction import CompactionConfig, CompactionService
+from bu_agent_sdk.agent.config import AgentConfig
 
 logger = logging.getLogger("bu_agent_sdk.agent")
 from bu_agent_sdk.agent.events import (
@@ -84,6 +85,7 @@ from bu_agent_sdk.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     ContentPartTextParam,
+    DeveloperMessage,
     SystemMessage,
     ToolCall,
     ToolMessage,
@@ -93,6 +95,20 @@ from bu_agent_sdk.llm.views import ChatInvokeCompletion
 from bu_agent_sdk.observability import Laminar, observe
 from bu_agent_sdk.tokens import TokenCost, UsageSummary
 from bu_agent_sdk.tools.decorator import Tool
+
+
+@dataclass
+class ModelSwitchPreflightResult:
+    """Result of preflight checks before switching to another model."""
+
+    ok: bool
+    target_model: str
+    estimated_tokens: int
+    threshold: int
+    context_limit: int
+    threshold_utilization: float
+    compacted: bool = False
+    reason: str | None = None
 
 
 @dataclass
@@ -118,6 +134,8 @@ class Agent:
         compaction: Optional configuration for automatic context compaction.
         include_cost: Whether to calculate costs (requires fetching pricing data).
         dependency_overrides: Optional dict to override tool dependencies.
+        mode: Agent mode ('primary', 'subagent', 'all').
+        agent_config: Agent configuration (used for subagent and all modes).
     """
 
     llm: BaseChatModel
@@ -142,6 +160,10 @@ class Agent:
         default_factory=lambda: {429, 500, 502, 503, 504}
     )
     """HTTP status codes that trigger retries (matches browser-use)."""
+    mode: str = "primary"
+    """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
+    agent_config: AgentConfig | None = None
+    """Agent configuration with tool permissions and other metadata."""
 
     # Internal state
     _messages: list[BaseMessage] = field(default_factory=list, repr=False)
@@ -158,6 +180,10 @@ class Agent:
 
         # Build tool lookup map
         self._tool_map = {t.name: t for t in self.tools}
+
+        # Filter tools based on mode and agent_config
+        if self.mode in ("subagent", "all") and self.agent_config and self.agent_config.tools:
+            self._filter_tools_by_config()
 
         # Initialize token cost service
         self._token_cost = TokenCost(include_cost=self.include_cost)
@@ -200,6 +226,22 @@ class Agent:
         """Clear the message history and token usage."""
         self._messages = []
         self._token_cost.clear_history()
+
+    def _filter_tools_by_config(self):
+        """根据agent配置过滤工具"""
+        if not self.agent_config or not self.agent_config.tools:
+            return
+
+        tools_config = self.agent_config.tools
+        filtered_tools = []
+
+        for tool in self.tools:
+            tool_allowed = tools_config.get(tool.name, True)
+            if tool_allowed:
+                filtered_tools.append(tool)
+
+        self.tools = filtered_tools
+        self._tool_map = {t.name: t for t in self.tools}
 
     def load_history(self, messages: list[BaseMessage]) -> None:
         """Load message history to continue a previous conversation.
@@ -585,6 +627,26 @@ Keep the summary brief but informative."""
         """
         return None
 
+    def _split_persistent_instruction_prefix(
+        self,
+    ) -> tuple[list[BaseMessage], list[BaseMessage]]:
+        """Split history into persistent prefix and compactable conversation.
+
+        Leading system/developer messages are long-lived behavior constraints.
+        Preserve them verbatim, and only compact the remaining conversation tail.
+        """
+        prefix: list[BaseMessage] = []
+        split_index = 0
+
+        for msg in self._messages:
+            if isinstance(msg, (SystemMessage, DeveloperMessage)):
+                prefix.append(msg)
+                split_index += 1
+                continue
+            break
+
+        return prefix, list(self._messages[split_index:])
+
     async def _check_and_compact(self, response: ChatInvokeCompletion) -> bool:
         """Check token usage and compact if threshold exceeded.
 
@@ -602,17 +664,181 @@ Keep the summary brief but informative."""
         # Update token usage tracking
         self._compaction_service.update_usage(response.usage)
 
+        prefix_messages, compactable_messages = (
+            self._split_persistent_instruction_prefix()
+        )
+        if not compactable_messages:
+            return False
+
         # Perform compaction check (threshold is calculated based on model)
         new_messages, result = await self._compaction_service.check_and_compact(
-            self._messages,
+            compactable_messages,
             self.llm,
         )
 
         if result.compacted:
-            self._messages = list(new_messages)
+            self._messages = [*prefix_messages, *list(new_messages)]
             return True
 
         return False
+
+    def _is_context_overflow_error(self, error: Exception) -> bool:
+        """Detect provider errors caused by context/token length limits."""
+        message = str(error).lower()
+        status_code = getattr(error, "status_code", None)
+
+        overflow_markers = (
+            "context length",
+            "maximum context",
+            "prompt too long",
+            "too many tokens",
+            "maximum tokens",
+            "context window",
+            "token limit",
+            "input is too long",
+        )
+
+        # 413 is a strong signal for payload/context overflow.
+        if status_code == 413:
+            return True
+
+        # Some providers return 400/422 for context overflow; verify by message.
+        if status_code in {400, 422} and any(marker in message for marker in overflow_markers):
+            return True
+
+        return any(marker in message for marker in overflow_markers)
+
+    async def _compact_messages_now(self) -> bool:
+        """Force compaction immediately and replace current message history."""
+        if self._compaction_service is None:
+            return False
+        if not self._compaction_service.config.enabled:
+            return False
+        if not self._messages:
+            return False
+
+        prefix_messages, compactable_messages = (
+            self._split_persistent_instruction_prefix()
+        )
+        if not compactable_messages:
+            return False
+
+        try:
+            result = await self._compaction_service.compact(
+                compactable_messages, self.llm
+            )
+        except Exception as e:
+            logger.warning(f"Failed to compact messages for recovery: {e}")
+            return False
+
+        self._messages = [
+            *prefix_messages,
+            *self._compaction_service.create_compacted_messages(result.summary or ""),
+        ]
+        return True
+
+    async def preflight_model_switch(
+        self,
+        target_model: str,
+        utilization_limit: float = 0.95,
+    ) -> ModelSwitchPreflightResult:
+        """Check whether current context is safe for a target model.
+
+        If usage is too high and compaction is enabled, compact once and reassess.
+        """
+        if self._compaction_service is None:
+            return ModelSwitchPreflightResult(
+                ok=True,
+                target_model=target_model,
+                estimated_tokens=0,
+                threshold=0,
+                context_limit=0,
+                threshold_utilization=0.0,
+                compacted=False,
+                reason="Compaction service unavailable; skipping preflight.",
+            )
+
+        assessment = await self._compaction_service.assess_messages_for_model(
+            self._messages,
+            target_model,
+        )
+
+        estimated_tokens = int(assessment["estimated_tokens"])
+        threshold = int(assessment["threshold"])
+        context_limit = int(assessment["context_limit"])
+        threshold_utilization = float(assessment["threshold_utilization"])
+
+        if threshold == 0 or threshold_utilization < utilization_limit:
+            return ModelSwitchPreflightResult(
+                ok=True,
+                target_model=target_model,
+                estimated_tokens=estimated_tokens,
+                threshold=threshold,
+                context_limit=context_limit,
+                threshold_utilization=threshold_utilization,
+                compacted=False,
+            )
+
+        if not self._compaction_service.config.enabled:
+            return ModelSwitchPreflightResult(
+                ok=False,
+                target_model=target_model,
+                estimated_tokens=estimated_tokens,
+                threshold=threshold,
+                context_limit=context_limit,
+                threshold_utilization=threshold_utilization,
+                compacted=False,
+                reason="Context too large for target model and compaction is disabled.",
+            )
+
+        compacted = await self._compact_messages_now()
+        if not compacted:
+            return ModelSwitchPreflightResult(
+                ok=False,
+                target_model=target_model,
+                estimated_tokens=estimated_tokens,
+                threshold=threshold,
+                context_limit=context_limit,
+                threshold_utilization=threshold_utilization,
+                compacted=False,
+                reason="Context too large and automatic compaction failed.",
+            )
+
+        reassessment = await self._compaction_service.assess_messages_for_model(
+            self._messages,
+            target_model,
+        )
+
+        new_estimated_tokens = int(reassessment["estimated_tokens"])
+        new_threshold = int(reassessment["threshold"])
+        new_context_limit = int(reassessment["context_limit"])
+        new_utilization = float(reassessment["threshold_utilization"])
+
+        if new_threshold > 0 and new_utilization >= utilization_limit:
+            return ModelSwitchPreflightResult(
+                ok=False,
+                target_model=target_model,
+                estimated_tokens=new_estimated_tokens,
+                threshold=new_threshold,
+                context_limit=new_context_limit,
+                threshold_utilization=new_utilization,
+                compacted=True,
+                reason=(
+                    "Context is still too large for target model after compaction. "
+                    "Try a larger-context model."
+                ),
+            )
+
+        return ModelSwitchPreflightResult(
+            ok=True,
+            target_model=target_model,
+            estimated_tokens=new_estimated_tokens,
+            threshold=new_threshold,
+            context_limit=new_context_limit,
+            threshold_utilization=new_utilization,
+            compacted=True,
+            reason="Context compacted before model switch.",
+        )
 
     @observe(name="agent_query")
     async def query(self, message: str) -> str:
@@ -643,6 +869,7 @@ Keep the summary brief but informative."""
 
         iterations = 0
         tool_calls_made = 0
+        overflow_recovery_attempted = False
         incomplete_todos_prompted = (
             False  # Track if we've already prompted about incomplete todos
         )
@@ -655,7 +882,21 @@ Keep the summary brief but informative."""
             self._destroy_ephemeral_messages()
 
             # Invoke the LLM
-            response = await self._invoke_llm()
+            try:
+                response = await self._invoke_llm()
+            except Exception as e:
+                if (
+                    not overflow_recovery_attempted
+                    and self._is_context_overflow_error(e)
+                ):
+                    overflow_recovery_attempted = True
+                    compacted = await self._compact_messages_now()
+                    if compacted:
+                        logger.warning(
+                            "Recovered from context overflow by compacting history and retrying once."
+                        )
+                        continue
+                raise
 
             # Add assistant message to history
             assistant_msg = AssistantMessage(
@@ -758,6 +999,7 @@ Keep the summary brief but informative."""
         self._messages.append(UserMessage(content=message))
 
         iterations = 0
+        overflow_recovery_attempted = False
         incomplete_todos_prompted = (
             False  # Track if already prompted about incomplete todos
         )
@@ -770,7 +1012,24 @@ Keep the summary brief but informative."""
             self._destroy_ephemeral_messages()
 
             # Invoke the LLM
-            response = await self._invoke_llm()
+            try:
+                response = await self._invoke_llm()
+            except Exception as e:
+                if (
+                    not overflow_recovery_attempted
+                    and self._is_context_overflow_error(e)
+                ):
+                    overflow_recovery_attempted = True
+                    compacted = await self._compact_messages_now()
+                    if compacted:
+                        yield HiddenUserMessageEvent(
+                            content=(
+                                "Context exceeded model window. "
+                                "Automatically compacted history and retried."
+                            )
+                        )
+                        continue
+                raise
 
             # Check for thinking content and yield it
             if response.thinking:

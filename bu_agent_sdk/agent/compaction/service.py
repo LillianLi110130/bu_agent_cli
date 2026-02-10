@@ -71,6 +71,51 @@ class CompactionService:
         """
         self._last_usage = TokenUsage.from_usage(usage)
 
+    def estimate_tokens_for_messages(self, messages: list[BaseMessage]) -> int:
+        """Estimate token usage for a message history.
+
+        This is a lightweight heuristic used for model-switch preflight checks.
+        It does not need to be exact; it only needs to be conservative enough
+        to trigger compaction when conversation history is likely too large.
+        """
+        if not messages:
+            return 0
+
+        total = 0
+        for msg in messages:
+            try:
+                serialized = msg.model_dump_json()
+            except Exception:
+                serialized = str(msg)
+
+            # Rough estimate: 1 token ~= 4 characters, plus small per-message overhead.
+            total += max(1, len(serialized) // 4) + 4
+
+        return total
+
+    async def assess_messages_for_model(
+        self,
+        messages: list[BaseMessage],
+        model: str,
+    ) -> dict[str, int | float | bool]:
+        """Assess whether a message history is likely to fit a target model."""
+        context_limit = await self.get_model_context_limit(model)
+        threshold = await self.get_threshold_for_model(model)
+        estimated_tokens = self.estimate_tokens_for_messages(messages)
+
+        threshold_utilization = estimated_tokens / max(1, threshold)
+        context_utilization = estimated_tokens / max(1, context_limit)
+
+        return {
+            "context_limit": context_limit,
+            "threshold": threshold,
+            "estimated_tokens": estimated_tokens,
+            "threshold_utilization": threshold_utilization,
+            "context_utilization": context_utilization,
+            "exceeds_threshold": estimated_tokens >= threshold,
+            "exceeds_context_limit": estimated_tokens >= context_limit,
+        }
+
     async def get_model_context_limit(self, model: str) -> int:
         """Get the context window limit for a model."""
         # Check cache first

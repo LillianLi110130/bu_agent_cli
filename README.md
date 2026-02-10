@@ -1,111 +1,154 @@
-# BU Agent CLI
+﻿# BU Agent CLI
 
-A simplified agent CLI framework for running LLM agents with tool calling.
+一个面向编码场景的 Agent CLI，基于 `bu_agent_sdk` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派和上下文压缩。
 
-## Features
+## 核心能力
 
-- **Agent SDK**: Complete bu_agent_sdk for building agentic applications
-- **Tool Calling**: Built-in support for OpenAI-compatible tool calling
-- **Streaming Events**: Real-time event streaming for agent actions
-- **Interactive Shell**: Beautiful terminal UI with rich output formatting
-- **Token Tracking**: Built-in token usage and cost tracking
+- 交互式 CLI：流式展示思考、工具调用和执行结果
+- 工具调用：内置 `bash`、文件读写编辑、搜索、todo、子代理工具
+- 子代理机制：通过 `task` 工具委派到专业代理（如 code_reviewer/frontend_developer）
+- 上下文管理：自动 compaction，缓解长对话上下文溢出
+- 模型切换：支持会话内通过 `/model` 命令切换预设模型（保留上下文）
+- Token 统计：记录 token 使用，并可选计算成本
 
-## Installation
+## 架构概览
+
+- 入口层：`claude_code.py`
+  - 负责组装 LLM、Agent、工具、Sandbox、系统提示词
+- UI 层：`cli/`
+  - `cli/app.py`：交互循环、事件渲染、slash 命令
+  - `cli/slash_commands.py`：命令注册与补全
+- Agent 核心：`bu_agent_sdk/agent/`
+  - 主循环、工具调度、重试、完成判定、流式事件
+- LLM 适配层：`bu_agent_sdk/llm/`
+  - 当前主要实现为 `ChatOpenAI`（兼容 OpenAI API schema）
+- 工具层：`tools/`
+  - Bash、文件、搜索、todo、subagent
+- 扩展层：
+  - Skills：`bu_agent_sdk/skills/`
+  - 子代理配置：`bu_agent_sdk/prompts/agents/*.md`
+
+## 安装
 
 ```bash
-# Clone the repository
-cd bu_agent_cli
-
-# Install dependencies
 pip install -e .
 ```
 
-## Usage
+## 环境变量
 
-### Basic Example
+可参考 `.env.example`：
 
-```python
-import asyncio
-from bu_agent_sdk import Agent
-from bu_agent_sdk.llm import ChatOpenAI
-from bu_agent_sdk.tools import tool
-from bu_agent import BUAgent, Shell
+- `OPENAI_API_KEY`：OpenAI-compatible API Key
+- `LLM_MODEL`：默认模型（默认 `GLM-4.7`）
+- `LLM_BASE_URL`：默认网关地址（默认 `https://open.bigmodel.cn/api/coding/paas/v4`）
+- `ZHIPU_API_KEY`：可按你的预设配置使用
 
-@tool("Calculator")
-async def calculate(expression: str) -> str:
-    """Calculate a math expression."""
-    return str(eval(expression))
-
-async def main():
-    llm = ChatOpenAI(
-        model="gpt-4o",
-        api_key="your-api-key",
-    )
-
-    agent = Agent(
-        llm=llm,
-        tools=[calculate],
-        system_prompt="You are a helpful assistant.",
-    )
-
-    bu_agent = BUAgent(agent)
-    shell = Shell(bu_agent)
-    await shell.run()
-
-asyncio.run(main())
-```
-
-### Running the CLI
+## 启动
 
 ```bash
-# Set your API key
-export OPENAI_API_KEY="your-api-key"
+# 方式 1：安装后的命令行入口
+bu-agent
 
-# Run with default settings
-python main.py
+# 方式 2：直接运行脚本
+python claude_code.py
 
-# Or with a custom model
-export LLM_MODEL="gpt-4o"
-export LLM_BASE_URL="https://api.openai.com/v1"
-python main.py
+# 指定模型
+bu-agent --model gpt-4o
+
+# 指定沙箱根目录
+bu-agent --root-dir ./your-project
 ```
 
-### Environment Variables
+## 模型预设与会话内切换
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key | - |
-| `ZHIPU_API_KEY` | Zhipu AI API key | - |
-| `LLM_MODEL` | Model name | `GLM-4.7` |
-| `LLM_BASE_URL` | API base URL | `https://open.bigmodel.cn/api/coding/paas/v4` |
+预设文件：`config/model_presets.json`
 
-## Project Structure
+示例：
 
+```json
+{
+  "default": "glm",
+  "presets": {
+    "glm": {
+      "model": "GLM-4.7",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "gpt4o": {
+      "model": "gpt-4o",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
 ```
+
+运行中可使用：
+
+```text
+/model           # 打开编号选择器
+/model list      # 查看预设
+/model show      # 查看当前模型
+/model <preset>  # 切换到某个预设
+```
+
+## Slash 命令
+
+- `/help`
+- `/exit` `/quit`
+- `/pwd`
+- `/clear` `/cls`
+- `/model [show|list|<preset>]`
+- `/reset`
+- `/history`（占位，暂未实现完整历史展示）
+
+## 内置工具
+
+- `bash`：执行 shell 命令
+- `read`：读取文件（带行号）
+- `write`：写入文件
+- `edit`：按字符串替换编辑文件
+- `glob_search`：按 glob 查找文件
+- `grep`：正则搜索文件内容
+- `todo_read` / `todo_write`：读写会话 todo
+- `done`：显式完成任务
+- `task`：调用子代理处理子任务
+
+## 子代理
+
+子代理定义在：`bu_agent_sdk/prompts/agents/*.md`
+
+- 通过 frontmatter 指定 `mode/model/tools` 等配置
+- `mode` 为 `subagent` 或 `all` 的代理可被 `task` 工具调用
+
+## 项目结构（实际）
+
+```text
 bu_agent_cli/
-├── bu_agent/              # Main agent framework
-│   ├── __init__.py
-│   ├── core.py            # BUAgent wrapper
-│   └── shell.py           # Interactive shell UI
-├── bu_agent_sdk/          # Agent SDK (source code)
-│   ├── agent/             # Agent implementation
-│   ├── llm/               # LLM abstractions
-│   ├── tools/             # Tool decorators
-│   └── tokens/            # Token tracking
-├── main.py                # Entry point
-├── pyproject.toml         # Project config
-└── README.md              # This file
+├── claude_code.py
+├── cli/
+│   ├── app.py
+│   └── slash_commands.py
+├── tools/
+│   ├── bash.py
+│   ├── files.py
+│   ├── search.py
+│   ├── todos.py
+│   ├── subagent.py
+│   └── sandbox.py
+├── config/
+│   ├── model_config.py
+│   └── model_presets.json
+└── bu_agent_sdk/
+    ├── agent/
+    ├── llm/
+    ├── tools/
+    ├── skill/
+    ├── skills/
+    ├── prompts/
+    └── tokens/
 ```
 
-## Built-in Tools
+## 说明
 
-The CLI comes with several built-in tools:
-
-- **Calculator**: Evaluate math expressions
-- **Echo**: Echo back messages
-- **Get current time**: Get current date and time
-- **Get system info**: Get system information
-
-## License
-
-MIT
+- README 以当前仓库代码为准，若你新增工具或子代理，请同步更新本文档。
