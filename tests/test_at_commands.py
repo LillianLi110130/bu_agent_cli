@@ -1,4 +1,6 @@
+import tempfile
 from pathlib import Path
+import yaml
 from cli.at_commands import AtCommand
 
 def test_at_command_creation():
@@ -28,3 +30,32 @@ def test_at_command_load_content_with_real_file():
     content = cmd.load_content()
     assert isinstance(content, str)
     assert "Calculator" in content
+
+def test_parse_skill_frontmatter():
+    """Test that skill.md frontmatter is parsed correctly"""
+
+    # Create a temporary skill.md file
+    skill_content = """---
+name: test-skill
+description: A test skill
+category: Test Category
+---
+
+# Test Skill Content
+
+This is the content of the skill.
+"""
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
+        f.write(skill_content)
+        temp_path = Path(f.name)
+
+    try:
+        cmd = AtCommand.from_file(temp_path)
+
+        assert cmd.name == "test-skill"
+        assert cmd.description == "A test skill"
+        assert cmd.category == "Test Category"
+        assert cmd.path == temp_path
+    finally:
+        temp_path.unlink()
