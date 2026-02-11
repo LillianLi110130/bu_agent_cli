@@ -574,7 +574,6 @@ class ClaudeCodeCLI:
                 content = config_path.read_text(encoding="utf-8").strip()
                 if content:
                     ctx.inject_message(UserMessage(content=content), pinned=True)
-            breakpoint()
             self._console.print("[yellow]Context initialized.[/yellow]")
             return True
 
