@@ -36,7 +36,7 @@ def parse_agent_config(md_file: Path) -> Optional[AgentConfig]:
         description=metadata.get("description", ""),
         mode=mode,
         model=metadata.get("model"),
-        temperature=metadata.get("temperature"),
+        temperature=metadata.get("temperature", 0.2),
         tools=metadata.get("tools"),
         system_prompt=parts[2].strip(),
     )
