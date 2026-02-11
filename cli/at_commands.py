@@ -79,3 +79,59 @@ class AtCommand:
             OSError: If the file cannot be read
         """
         return self.path.read_text(encoding="utf-8")
+
+
+# =============================================================================
+# AtCommandRegistry - Auto-discovers and manages all available skills
+# =============================================================================
+
+
+class AtCommandRegistry:
+    """Registry for auto-discovering and managing @ commands.
+
+    Scans skills directory for skill.md files and caches them for quick lookup.
+    """
+
+    def __init__(self):
+        self.commands = {}  # type: dict[str, AtCommand]
+
+    def discover_skills(self, skills_dir: Path) -> None:
+        """Auto-discover skills from a directory.
+
+        Looks for subdirectories containing skill.md files.
+
+        Args:
+            skills_dir: Path to the skills directory (e.g., bu_agent_sdk/skills)
+        """
+        if not skills_dir.exists():
+            return
+
+        for skill_path in skills_dir.glob("*/skill.md"):
+            try:
+                cmd = AtCommand.from_file(skill_path)
+                self.commands[cmd.name] = cmd
+            except (ValueError, FileNotFoundError, OSError):
+                # Skip invalid skill files silently
+                continue
+
+    def get_command(self, name: str):
+        """Get an AtCommand by name.
+
+        Args:
+            name: The skill name (without @ prefix)
+
+        Returns:
+            AtCommand instance, or None if not found
+        """
+        return self.commands.get(name)
+
+    def list_commands(self):
+        """List all commands grouped by category.
+
+        Returns:
+            Dictionary mapping category names to lists of AtCommand instances
+        """
+        categories = {}  # type: dict[str, list[AtCommand]]
+        for cmd in self.commands.values():
+            categories.setdefault(cmd.category, []).append(cmd)
+        return categories
