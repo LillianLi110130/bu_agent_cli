@@ -140,9 +140,9 @@ class SubagentManager:
         if not self._main_agent:
             return
 
-        # Get the messages list from main agent
-        messages = getattr(self._main_agent, "_messages", None)
-        if not messages:
+        # Get context from main agent
+        ctx = getattr(self._main_agent, "_context", None)
+        if not ctx:
             return
 
         # Format result as a system message
@@ -158,7 +158,7 @@ Result:
 """
         # Add as SystemMessage (like system prompt)
         from bu_agent_sdk.llm.messages import SystemMessage
-        messages.append(SystemMessage(content=content))
+        ctx.inject_message(SystemMessage(content=content), pinned=True)
 
     async def spawn(
         self,
