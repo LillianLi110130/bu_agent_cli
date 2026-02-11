@@ -7,6 +7,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from prompt_toolkit.completion import Completer, CompleteEvent, Completion
+from prompt_toolkit.document import Document
+
 
 # =============================================================================
 # AtCommand - Represents a single skill that can be invoked with @
@@ -135,3 +138,83 @@ class AtCommandRegistry:
         for cmd in self.commands.values():
             categories.setdefault(cmd.category, []).append(cmd)
         return categories
+
+
+# =============================================================================
+# AtCommandCompleter - Provides Tab autocomplete for @ commands
+# =============================================================================
+
+
+class AtCommandCompleter(Completer):
+    """Completer for @ commands.
+
+    Provides autocompletion for commands starting with '@'.
+    Shows command descriptions in the completion menu.
+    """
+
+    def __init__(self, registry: AtCommandRegistry):
+        self._registry = registry
+
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ):
+        """Get completions for the current document.
+
+        Args:
+            document: The current Document being edited
+            complete_event: The CompleteEvent that triggered this completion
+
+        Yields:
+            Completion objects for matching commands
+        """
+        text = document.text_before_cursor
+
+        # Only trigger on '@' or when text starts with '@'
+        if not text or not text[0] == "@":
+            return
+
+        # Extract the command part (without arguments)
+        # Remove the leading '@' and get the first word
+        command_part = text[1:].split()[0] if len(text) > 1 else ""
+
+        # Find matching commands
+        matching_commands = [
+            cmd for cmd in self._registry.commands.values()
+            if cmd.name.startswith(command_part)
+        ]
+
+        # Create completions with rich display
+        for cmd in matching_commands:
+            # Calculate the text to be inserted
+            # If the command is already fully typed, add a space
+            if command_part == cmd.name:
+                insert_text = cmd.name + " "
+            else:
+                # Insert the full command name to replace what user typed
+                insert_text = cmd.name
+
+            # Create display with description
+            display = f"@{cmd.name}"
+            display_meta = cmd.description
+
+            # Find the position of '@' in the current text
+            at_pos = text.find("@")
+
+            # Find where the command word starts (after '@')
+            cmd_word_start = at_pos + 1
+
+            # Find the end of the command word (end of first word)
+            cmd_word_end = cmd_word_start
+            while cmd_word_end < len(text) and text[cmd_word_end] != " ":
+                cmd_word_end += 1
+
+            # The completion replaces from @ position to current cursor
+            # But we only want to replace the command name part
+            completion_start_position = cmd_word_start
+
+            yield Completion(
+                text=insert_text,
+                start_position=completion_start_position - document.cursor_position,
+                display=display,
+                display_meta=display_meta,
+            )

@@ -1,7 +1,9 @@
 import tempfile
 from pathlib import Path
+from prompt_toolkit.document import Document
+from prompt_toolkit.completion import CompleteEvent
 import yaml
-from cli.at_commands import AtCommand, AtCommandRegistry
+from cli.at_commands import AtCommand, AtCommandRegistry, AtCommandCompleter
 
 def test_at_command_creation():
     skill_path = Path("/fake/path/skill.md")
@@ -103,4 +105,40 @@ def test_registry_list_commands():
 
     # Should be a dict with categories as keys
     assert isinstance(commands, dict)
+
+def test_at_command_completer():
+    """Test AtCommandCompleter provides completions for @ commands"""
+    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
+
+    registry = AtCommandRegistry()
+    registry.discover_skills(skills_dir)
+
+    completer = AtCommandCompleter(registry)
+
+    # Test completion for "@cal"
+    doc = Document("@cal", cursor_position=4)
+    event = CompleteEvent()
+    completions = list(completer.get_completions(doc, event))
+
+    # Should have at least 'calculator' in completions
+    assert len(completions) > 0
+    texts = [c.text for c in completions]
+    assert "calculator" in texts
+
+def test_at_command_completer_no_trigger_on_at_sign():
+    """Test completer doesn't trigger when not starting with @"""
+    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
+
+    registry = AtCommandRegistry()
+    registry.discover_skills(skills_dir)
+
+    completer = AtCommandCompleter(registry)
+
+    # Test completion for "cal" (without @) - should not trigger
+    doc = Document("cal", cursor_position=3)
+    event = CompleteEvent()
+    completions = list(completer.get_completions(doc, event))
+
+    # Should have no completions
+    assert len(completions) == 0
 
