@@ -52,13 +52,6 @@ class SlashCommandRegistry:
         """Register default built-in commands."""
         default_commands = [
             SlashCommand(
-                name="init",
-                description="initialize context",
-                usage="/init",
-                examples=["/init"],
-                category="Session",
-            ),
-            SlashCommand(
                 name="help",
                 description="Show available commands and help information",
                 usage="/help",
