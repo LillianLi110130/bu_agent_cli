@@ -178,7 +178,10 @@ def create_agent(
 
 def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
     """Factory function to create subagent instances."""
-    llm = create_llm(config.model)
+    from config.model_config import get_model_config
+    model, base_url, api_key = get_model_config(config.model)
+
+    llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url, temperature=config.temperature)
 
     agent = Agent(
         llm=llm,
