@@ -218,3 +218,60 @@ class AtCommandCompleter(Completer):
                 display=display,
                 display_meta=display_meta,
             )
+
+
+# =============================================================================
+# Utility functions for @ command handling
+# =============================================================================
+
+
+def extract_at_command(message: str):
+    """Extract the @ command name from a user message.
+
+    Finds the first @ command in the message and returns its name.
+    The @ command is identified as '@' followed by a word (alphanumeric + underscore).
+
+    Args:
+        message: The user message text
+
+    Returns:
+        The command name (without @ prefix), or None if no @ command found
+    """
+    # Match @ followed by word characters (alphanumeric + underscore)
+    match = re.search(r'@(\w+)', message)
+    return match.group(1) if match else None
+
+
+def load_skill_content(registry: AtCommandRegistry, skill_name: str):
+    """Load the content of a skill by name.
+
+    Args:
+        registry: The AtCommandRegistry containing all discovered skills
+        skill_name: The name of the skill to load (without @ prefix)
+
+    Returns:
+        The skill content as a string, or None if the skill is not found
+    """
+    cmd = registry.get_command(skill_name)
+    if cmd is None:
+        return None
+    return cmd.load_content()
+
+
+def prepend_skill_to_message(skill_content: str, user_message: str) -> str:
+    """Prepend skill content to a user message.
+
+    This is used to provide context from skills before the user's actual message.
+
+    Args:
+        skill_content: The markdown content from the skill.md file
+        user_message: The original user message
+
+    Returns:
+        A string with skill content prepended to the user message
+    """
+    if not skill_content:
+        return user_message
+
+    # Add separator between skill and message for clarity
+    return skill_content + "\n\n" + user_message
