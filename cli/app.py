@@ -21,6 +21,7 @@ from bu_agent_sdk.agent import (
     ToolResultEvent,
 )
 from bu_agent_sdk.llm import ChatOpenAI
+from bu_agent_sdk.llm.messages import SystemMessage, UserMessage
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -542,6 +543,25 @@ class ClaudeCodeCLI:
         if command_name == "reset":
             self._agent.clear_history()
             self._console.print("[yellow]Conversation context reset.[/yellow]")
+            return True
+
+        # Handle init command
+        if command_name == "init":
+            self._agent.clear_history()
+            ctx = self._agent._context
+
+            # Inject system prompt if available
+            if self._agent.system_prompt:
+                ctx.add_message(SystemMessage(content=self._agent.system_prompt))
+
+            # Inject user config from agent_coding.md if present
+            config_path = self._ctx.working_dir / "AGENTS.md"
+            if config_path.exists():
+                content = config_path.read_text(encoding="utf-8").strip()
+                if content:
+                    ctx.inject_message(UserMessage(content=content), pinned=True)
+            breakpoint()
+            self._console.print("[yellow]Context initialized.[/yellow]")
             return True
 
         if command_name == "tasks":
