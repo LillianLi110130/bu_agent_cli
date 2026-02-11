@@ -530,7 +530,7 @@ Keep the summary brief but informative."""
         """Apply sliding window and then compaction using the best token signal."""
         did_slide = False
         if self._context.sliding_window_messages is not None:
-            did_slide = await self._context.apply_sliding_window_with_summary(
+            did_slide = await self._context.apply_sliding_window_by_messages(
                 keep_count=self._context.sliding_window_messages,
             )
             # Alternative strategy (round-based):

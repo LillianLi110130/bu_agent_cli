@@ -285,7 +285,7 @@ class ContextManager:
         )
         return await self.check_and_compact(llm, usage)
 
-    async def apply_sliding_window_with_summary(
+    async def apply_sliding_window_by_messages(
         self,
         keep_count: int,
         pin_roles: Iterable[str] = ("system", "developer"),
@@ -356,6 +356,57 @@ class ContextManager:
 
         if not summary_inserted:
             return False
+
+        self.replace_messages(new_messages)
+        return True
+
+    async def apply_sliding_window_by_rounds(
+        self,
+        keep_rounds: int,
+        pin_roles: Iterable[str] = ("system", "developer"),
+        buffer: int = 10,
+    ) -> bool:
+        """Summarize older rounds and keep only the most recent N rounds."""
+        if keep_rounds <= 0:
+            return False
+        if self._compaction_service is None:
+            return False
+
+        messages = self._messages
+        if not messages:
+            return False
+
+        pinned_roles = set(pin_roles)
+        pinned: list[BaseMessage] = [m for m in messages if m.role in pinned_roles]
+        rest: list[BaseMessage] = [m for m in messages if m.role not in pinned_roles]
+
+        # Build rounds: each round starts with a user message
+        rounds: list[list[BaseMessage]] = []
+        current: list[BaseMessage] = []
+        for msg in rest:
+            if msg.role == "user" and current:
+                rounds.append(current)
+                current = []
+            current.append(msg)
+        if current:
+            rounds.append(current)
+
+        if len(rounds) <= keep_rounds + max(0, buffer):
+            return False
+
+        head_rounds = rounds[:-keep_rounds]
+        tail_rounds = rounds[-keep_rounds:]
+        head = [msg for r in head_rounds for msg in r]
+
+        result = await self._compaction_service.compact(head)
+        summary_text = (result.summary or "").strip()
+        if not summary_text:
+            return False
+
+        new_messages: list[BaseMessage] = []
+        new_messages.extend(pinned)
+        new_messages.append(UserMessage(content=summary_text))
+        new_messages.extend([msg for r in tail_rounds for msg in r])
 
         self.replace_messages(new_messages)
         return True
