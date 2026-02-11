@@ -7,6 +7,7 @@ from bu_agent_sdk.agent.compaction import (
     CompactionResult,
     CompactionService,
 )
+from bu_agent_sdk.agent.context import ContextManager
 from bu_agent_sdk.agent.events import (
     AgentEvent,
     FinalResponseEvent,
@@ -38,4 +39,5 @@ __all__ = [
     "parse_agent_config",
     "AgentRegistry",
     "get_agent_registry",
+    "ContextManager",
 ]
