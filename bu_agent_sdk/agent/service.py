@@ -643,7 +643,7 @@ Keep the summary brief but informative."""
             return False
         if not self._context._compaction_service.config.enabled:
             return False
-        if not self._context_get_messages():
+        if not self._context.get_messages():
             return False
 
         prefix_messages, compactable_messages = (
@@ -662,7 +662,7 @@ Keep the summary brief but informative."""
 
         self._context.replace_messages([
             *prefix_messages,
-            *self._compaction_service.create_compacted_messages(result.summary or ""),
+            *self._context._compaction_service.create_compacted_messages(result.summary or ""),
         ])
         return True
 
