@@ -106,6 +106,13 @@ class SlashCommandRegistry:
                 category="General",
             ),
             SlashCommand(
+                name="skills",
+                description="List all available @ skills",
+                usage="/skills",
+                examples=["/skills"],
+                category="Skills",
+            ),
+            SlashCommand(
                 name="reset",
                 description="Reset the conversation context",
                 usage="/reset",
