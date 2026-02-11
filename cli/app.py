@@ -37,6 +37,13 @@ from cli.slash_commands import (
     is_slash_command,
     parse_slash_command,
 )
+from cli.at_commands import (
+    AtCommandCompleter,
+    AtCommandRegistry,
+    expand_at_command,
+    is_at_command,
+    parse_at_command,
+)
 from tools import SandboxContext
 
 
@@ -122,6 +129,9 @@ class ClaudeCodeCLI:
         self._step_number = 0
         self._loading: _LoadingIndicator | None = None
         self._slash_registry = SlashCommandRegistry()
+        self._at_registry = AtCommandRegistry(
+            Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
+        )
         self._model_presets_path = (
             Path(__file__).resolve().parent.parent
             / "config"
@@ -398,6 +408,7 @@ class ClaudeCodeCLI:
                 f"[bold cyan]Claude Code CLI[/bold cyan]\n\n"
                 f"Type your message and press Enter to send.\n"
                 f"Press [cyan]/[/cyan] to see available commands.\n"
+                f"Press [cyan]@[/cyan] to see available skills.\n"
                 f"Press Ctrl+D or type [cyan]/exit[/cyan] to quit.\n",
                 title="[bold blue]Welcome[/bold blue]",
                 border_style="bright_blue",
@@ -410,6 +421,7 @@ class ClaudeCodeCLI:
         self._console.print(f"[dim]Model:[/] {self._agent.llm.model}")
         self._console.print(f"[dim]Tools:[/] bash, read, write, edit, glob, grep, todos")
         self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
+        self._console.print(f"[dim]Skill Commands:[/] Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see all")
         if self._model_presets:
             self._console.print(
                 f"[dim]Model presets:[/] {', '.join(self._model_presets.keys())}"
@@ -448,6 +460,8 @@ class ClaudeCodeCLI:
         self._console.print()
         self._console.print("[bold cyan]Slash Commands:[/bold cyan]")
         self._console.print("[dim]Press / to see available commands, Tab to autocomplete[/dim]")
+        self._console.print("[bold cyan]Skill Commands (@):[/bold cyan]")
+        self._console.print("[dim]Use @<skill-name> to invoke skills, Tab to autocomplete[/dim]")
         self._console.print()
 
         categories = self._slash_registry.get_by_category()
@@ -586,6 +600,11 @@ class ClaudeCodeCLI:
             self._console.print("[dim]Command history not implemented yet.[/dim]")
             return True
 
+        # Handle skills command - list available @ skills
+        if command_name == "skills":
+            self._print_available_skills()
+            return True
+
         # Handle allow command - add directory to sandbox
         if command_name == "allow":
             if not args:
@@ -614,6 +633,51 @@ class ClaudeCodeCLI:
         # Unknown command
         self._console.print(f"[red]Unknown command: /{command_name}[/red]")
         self._console.print(f"[dim]Type /help for available commands.[/dim]")
+        return True
+
+    def _print_available_skills(self):
+        """Print all available @ skills grouped by category."""
+        self._console.print()
+        self._console.print("[bold cyan]Available Skills (@):[/bold cyan]")
+        self._console.print(
+            "[dim]Use @<skill-name> to load a skill before your message[/dim]"
+        )
+        self._console.print()
+
+        categories = self._at_registry.get_by_category()
+        if not categories:
+            self._console.print("[yellow]No skills found.[/yellow]")
+            self._console.print()
+            return
+
+        for category, commands in sorted(categories.items()):
+            self._console.print(f"[bold blue]{category}:[/bold blue]")
+            for cmd in commands:
+                self._console.print(f"  [cyan]@{cmd.name}[/cyan] - {cmd.description}")
+        self._console.print()
+
+    async def _handle_at_command(self, text: str) -> bool:
+        """Handle an @ command for skill invocation."""
+        skill_name, message = parse_at_command(text)
+        if not skill_name:
+            self._console.print("[yellow]Invalid @ command.[/yellow]")
+            self._console.print("[dim]Type @ and press Tab to see available skills.[/dim]")
+            return True
+
+        skill = self._at_registry.get(skill_name)
+        if not skill:
+            self._console.print(f"[yellow]Skill not found: @{skill_name}[/yellow]")
+            self._console.print("[dim]Use /skills to list available skills.[/dim]")
+            return True
+
+        self._console.print(f"[cyan]Using @{skill.name}...[/cyan]")
+        try:
+            expanded_message = expand_at_command(skill, message)
+        except (IOError, ValueError) as e:
+            self._console.print(f"[red]Failed to load skill: {e}[/red]")
+            return True
+
+        await self._run_agent(expanded_message)
         return True
 
     async def _run_agent(self, user_input: str):
@@ -758,12 +822,40 @@ class ClaudeCodeCLI:
         def _exit(event):  # noqa: D401
             event.app.exit(exception=EOFError)
 
+        @kb.add("enter")
+        def _enter(event):  # noqa: D401
+            """Accept @ completion with Enter instead of submitting immediately."""
+            buffer = event.current_buffer
+            complete_state = buffer.complete_state
+
+            # When selecting @skill completion, Enter should apply completion
+            # and keep input in the prompt for the user to continue typing.
+            if complete_state and buffer.text.lstrip().startswith("@"):
+                completion = complete_state.current_completion
+                if completion is None and complete_state.completions:
+                    completion = complete_state.completions[0]
+
+                if completion is not None:
+                    buffer.apply_completion(completion)
+                    skill_name, message = parse_at_command(buffer.text)
+                    if skill_name and not message and not buffer.text.endswith(" "):
+                        buffer.insert_text(" ")
+                    return
+
+            buffer.validate_and_handle()
+
         # Mark as intentionally used
         _ = _exit
+        _ = _enter
 
         # Create slash command completer
         slash_completer = SlashCommandCompleter(self._slash_registry)
-        threaded_completer = ThreadedCompleter(slash_completer)
+        # Create at command completer
+        at_completer = AtCommandCompleter(self._at_registry)
+        # Use merged completer to handle both / and @
+        from prompt_toolkit.completion import merge_completers
+        merged_completer = merge_completers([slash_completer, at_completer])
+        threaded_completer = ThreadedCompleter(merged_completer)
 
         # Define style for better visual feedback
         style = Style.from_dict({
@@ -802,6 +894,15 @@ class ClaudeCodeCLI:
             if self._model_pick_active:
                 if await self._handle_model_pick_input(user_input):
                     continue
+
+            # Handle @ commands (skill invocation)
+            if is_at_command(user_input):
+                try:
+                    if await self._handle_at_command(user_input):
+                        continue
+                except EOFError:
+                    break
+                continue
 
             # Handle slash commands
             if is_slash_command(user_input):
