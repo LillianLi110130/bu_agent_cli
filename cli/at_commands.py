@@ -1,13 +1,16 @@
 """@ command system for skill invocation.
 
-Provides auto-discovery of skills, autocomplete for @ commands, and skill content loading.
+Provides auto-discovery of skills, autocomplete for @ commands, and skill
+content expansion.
 """
 
+from __future__ import annotations
+
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from prompt_toolkit.completion import Completer, CompleteEvent, Completion
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
 
@@ -29,7 +32,7 @@ class AtCommand:
     category: str = "General"
 
     @classmethod
-    def from_file(cls, path: Path):
+    def from_file(cls, path: Path) -> "AtCommand":
         """Create AtCommand by parsing a skill.md file.
 
         Extracts metadata from YAML frontmatter at the top of the file.
@@ -47,7 +50,9 @@ class AtCommand:
         content = path.read_text(encoding="utf-8")
 
         # Parse YAML frontmatter (between --- markers)
-        frontmatter_match = re.match(r"^---\n(.*?)\n---\n", content, re.DOTALL)
+        frontmatter_match = re.match(
+            r"\A---\s*\r?\n(.*?)\r?\n---\s*(?:\r?\n|$)", content, re.DOTALL
+        )
         if not frontmatter_match:
             raise ValueError(f"No valid frontmatter found in {path}")
 
@@ -55,20 +60,21 @@ class AtCommand:
 
         try:
             import yaml
+
             metadata = yaml.safe_load(frontmatter_text) or {}
         except ImportError:
             # Fallback: simple parsing if yaml not available
             metadata = {}
-            for line in frontmatter_text.split('\n'):
-                if ':' in line:
-                    key, value = line.split(':', 1)
+            for line in frontmatter_text.split("\n"):
+                if ":" in line:
+                    key, value = line.split(":", 1)
                     metadata[key.strip()] = value.strip()
 
         return cls(
-            name=metadata.get('name', path.parent.name),
-            description=metadata.get('description', ''),
+            name=metadata.get("name", path.parent.name),
+            description=metadata.get("description", ""),
             path=path,
-            category=metadata.get('category', 'General')
+            category=metadata.get("category", "General"),
         )
 
     def load_content(self) -> str:
@@ -95,10 +101,14 @@ class AtCommandRegistry:
     Scans skills directory for skill.md files and caches them for quick lookup.
     """
 
-    def __init__(self):
-        self.commands = {}  # type: dict[str, AtCommand]
+    def __init__(self, skills_dir: Path | None = None):
+        self.commands: dict[str, AtCommand] = {}
+        self._skills_dir = skills_dir or (
+            Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
+        )
+        self.discover_skills(self._skills_dir)
 
-    def discover_skills(self, skills_dir: Path) -> None:
+    def discover_skills(self, skills_dir: Path | None = None) -> None:
         """Auto-discover skills from a directory.
 
         Looks for subdirectories containing skill.md files.
@@ -106,10 +116,14 @@ class AtCommandRegistry:
         Args:
             skills_dir: Path to the skills directory (e.g., bu_agent_sdk/skills)
         """
-        if not skills_dir.exists():
+        if skills_dir is not None:
+            self._skills_dir = skills_dir
+
+        self.commands = {}
+        if not self._skills_dir.exists():
             return
 
-        for skill_path in skills_dir.glob("*/skill.md"):
+        for skill_path in sorted(self._skills_dir.glob("*/skill.md")):
             try:
                 cmd = AtCommand.from_file(skill_path)
                 self.commands[cmd.name] = cmd
@@ -117,7 +131,11 @@ class AtCommandRegistry:
                 # Skip invalid skill files silently
                 continue
 
-    def get_command(self, name: str):
+    def get(self, name: str) -> AtCommand | None:
+        """Get an AtCommand by name."""
+        return self.commands.get(name)
+
+    def get_command(self, name: str) -> AtCommand | None:
         """Get an AtCommand by name.
 
         Args:
@@ -126,18 +144,37 @@ class AtCommandRegistry:
         Returns:
             AtCommand instance, or None if not found
         """
-        return self.commands.get(name)
+        return self.get(name)
 
-    def list_commands(self):
+    def get_all(self) -> list[AtCommand]:
+        """Get all discovered commands."""
+        return list(self.commands.values())
+
+    def get_by_category(self) -> dict[str, list[AtCommand]]:
+        """Get all commands grouped by category."""
+        return self.list_commands()
+
+    def list_commands(self) -> dict[str, list[AtCommand]]:
         """List all commands grouped by category.
 
         Returns:
             Dictionary mapping category names to lists of AtCommand instances
         """
-        categories = {}  # type: dict[str, list[AtCommand]]
+        categories: dict[str, list[AtCommand]] = {}
         for cmd in self.commands.values():
             categories.setdefault(cmd.category, []).append(cmd)
+        for cmds in categories.values():
+            cmds.sort(key=lambda cmd: cmd.name)
         return categories
+
+    def match_prefix(self, prefix: str) -> list[AtCommand]:
+        """Get commands matching a name prefix (case-insensitive)."""
+        prefix_lower = prefix.lower()
+        return [
+            cmd
+            for cmd in self.commands.values()
+            if cmd.name.lower().startswith(prefix_lower)
+        ]
 
 
 # =============================================================================
@@ -157,7 +194,7 @@ class AtCommandCompleter(Completer):
 
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
-    ):
+    ) -> iter[Completion]:
         """Get completions for the current document.
 
         Args:
@@ -170,18 +207,18 @@ class AtCommandCompleter(Completer):
         text = document.text_before_cursor
 
         # Only trigger on '@' or when text starts with '@'
-        if not text or not text[0] == "@":
+        if not text or text[0] != "@":
             return
 
         # Extract the command part (without arguments)
         # Remove the leading '@' and get the first word
         command_part = text[1:].split()[0] if len(text) > 1 else ""
+        command_end = 1 + len(command_part)
+        if document.cursor_position > command_end:
+            return
 
         # Find matching commands
-        matching_commands = [
-            cmd for cmd in self._registry.commands.values()
-            if cmd.name.startswith(command_part)
-        ]
+        matching_commands = self._registry.match_prefix(command_part)
 
         # Create completions with rich display
         for cmd in matching_commands:
@@ -197,20 +234,7 @@ class AtCommandCompleter(Completer):
             display = f"@{cmd.name}"
             display_meta = cmd.description
 
-            # Find the position of '@' in the current text
-            at_pos = text.find("@")
-
-            # Find where the command word starts (after '@')
-            cmd_word_start = at_pos + 1
-
-            # Find the end of the command word (end of first word)
-            cmd_word_end = cmd_word_start
-            while cmd_word_end < len(text) and text[cmd_word_end] != " ":
-                cmd_word_end += 1
-
-            # The completion replaces from @ position to current cursor
-            # But we only want to replace the command name part
-            completion_start_position = cmd_word_start
+            completion_start_position = 1
 
             yield Completion(
                 text=insert_text,
@@ -237,25 +261,45 @@ def extract_at_command(message: str):
     Returns:
         The command name (without @ prefix), or None if no @ command found
     """
-    # Match @ followed by word characters (alphanumeric + underscore)
-    match = re.search(r'@(\w+)', message)
+    # Match @ followed by common skill-name characters.
+    match = re.search(r"@([A-Za-z0-9][A-Za-z0-9_-]*)", message)
     return match.group(1) if match else None
 
 
-def load_skill_content(registry: AtCommandRegistry, skill_name: str):
-    """Load the content of a skill by name.
+def is_at_command(text: str) -> bool:
+    """Return True when input is a valid top-level @ command."""
+    skill_name, _ = parse_at_command(text)
+    return bool(skill_name)
+
+
+def parse_at_command(text: str) -> tuple[str, str]:
+    """Parse text into (<skill_name>, <message_without_skill_prefix>)."""
+    stripped = text.strip()
+    match = re.match(r"^@([A-Za-z0-9][A-Za-z0-9_-]*)\s*(.*)$", stripped, re.DOTALL)
+    if not match:
+        return "", ""
+    return match.group(1), match.group(2)
+
+
+def load_skill_content(path: Path) -> str:
+    """Load the content of a skill from its file path.
 
     Args:
-        registry: The AtCommandRegistry containing all discovered skills
-        skill_name: The name of the skill to load (without @ prefix)
+        path: Path to the skill.md file
 
     Returns:
-        The skill content as a string, or None if the skill is not found
+        The skill content as a string
+
+    Raises:
+        FileNotFoundError: If the skill.md file doesn't exist
+        OSError: If the file cannot be read
     """
-    cmd = registry.get_command(skill_name)
-    if cmd is None:
-        return None
-    return cmd.load_content()
+    return path.read_text(encoding="utf-8")
+
+
+def expand_at_command(skill: AtCommand, user_message: str) -> str:
+    """Expand @ command by prepending skill content to user input."""
+    return prepend_skill_to_message(skill.load_content(), user_message)
 
 
 def prepend_skill_to_message(skill_content: str, user_message: str) -> str:
@@ -274,4 +318,7 @@ def prepend_skill_to_message(skill_content: str, user_message: str) -> str:
         return user_message
 
     # Add separator between skill and message for clarity
-    return skill_content + "\n\n" + user_message
+    skill_body = skill_content.rstrip()
+    if not user_message:
+        return skill_body
+    return f"{skill_body}\n\n---\n\n{user_message}"
