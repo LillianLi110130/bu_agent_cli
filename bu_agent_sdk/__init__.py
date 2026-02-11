@@ -18,11 +18,13 @@ Example:
     result = await agent.query("What is 2 + 3?")
 """
 
-from bu_agent_sdk.agent import Agent
+from bu_agent_sdk.agent import Agent, AgentConfig, get_agent_registry
 from bu_agent_sdk.observability import Laminar, observe, observe_debug
 
 __all__ = [
     "Agent",
+    "AgentConfig",
+    "get_agent_registry",
     "Laminar",
     "observe",
     "observe_debug",
