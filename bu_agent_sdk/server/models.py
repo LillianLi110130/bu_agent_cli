@@ -16,12 +16,12 @@ class QueryRequest(BaseModel):
     message: str = Field(
         ...,
         description="The user message to send to the agent",
-        examples=["What is the weather today?"]
+        examples=["What is the weather today?"],
     )
     session_id: str | None = Field(
         default=None,
         description="Optional session ID for maintaining conversation state. "
-                    "If not provided, a new session will be created.",
+        "If not provided, a new session will be created.",
     )
     stream: bool = Field(
         default=False,
@@ -63,10 +63,8 @@ class UsageInfo(BaseModel):
     total_tokens: int = Field(..., description="Total tokens used")
     total_prompt_tokens: int = Field(..., description="Total prompt tokens")
     total_completion_tokens: int = Field(..., description="Total completion tokens")
-    total_cost: float = Field(..., description="Total cost in USD")
     by_model: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Usage statistics broken down by model"
+        default_factory=dict, description="Usage statistics broken down by model"
     )
 
     @classmethod
@@ -76,14 +74,12 @@ class UsageInfo(BaseModel):
             total_tokens=summary.total_tokens,
             total_prompt_tokens=summary.total_prompt_tokens,
             total_completion_tokens=summary.total_completion_tokens,
-            total_cost=summary.total_cost,
             by_model={
                 model: ModelUsageStats(
                     model=stats.model,
                     prompt_tokens=stats.prompt_tokens,
                     completion_tokens=stats.completion_tokens,
                     total_tokens=stats.total_tokens,
-                    cost=stats.cost,
                     invocations=stats.invocations,
                     average_tokens_per_invocation=stats.average_tokens_per_invocation,
                 ).model_dump()
@@ -149,7 +145,9 @@ class ToolResultEvent(StreamEventType):
     result: str = Field(..., description="Result returned by the tool")
     tool_call_id: str = Field(..., description="ID of the corresponding tool call")
     is_error: bool = Field(default=False, description="Whether the execution resulted in an error")
-    screenshot_base64: str | None = Field(default=None, description="Base64-encoded screenshot if available")
+    screenshot_base64: str | None = Field(
+        default=None, description="Base64-encoded screenshot if available"
+    )
 
 
 class StepStartEvent(StreamEventType):
@@ -186,15 +184,15 @@ class HiddenMessageEvent(StreamEventType):
 
 # Union type for all stream events (for type checking)
 StreamEvent = (
-    TextEvent |
-    TextDeltaEvent |
-    ThinkingEvent |
-    ToolCallEvent |
-    ToolResultEvent |
-    StepStartEvent |
-    StepCompleteEvent |
-    FinalResponseEvent |
-    HiddenMessageEvent
+    TextEvent
+    | TextDeltaEvent
+    | ThinkingEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | StepStartEvent
+    | StepCompleteEvent
+    | FinalResponseEvent
+    | HiddenMessageEvent
 )
 
 
@@ -210,8 +208,7 @@ class SessionCreateRequest(BaseModel):
     """Request model for creating a new session."""
 
     system_prompt: str | None = Field(
-        default=None,
-        description="Optional system prompt for this session"
+        default=None, description="Optional system prompt for this session"
     )
 
 

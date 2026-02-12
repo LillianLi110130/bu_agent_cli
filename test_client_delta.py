@@ -41,9 +41,6 @@ async def test_token_streaming():
         ) as response:
             buffer = ""  # 文本缓冲区
             async for line in response.aiter_lines():
-                # 调试：打印原始行
-                print(f"[DEBUG] 收到行: {repr(line)}")
-
                 if not line:
                     continue
 
@@ -85,8 +82,6 @@ async def test_token_streaming():
 
                     except json.JSONDecodeError:
                         pass
-
-        print(f"\n最终回答: {buffer}")
 
 
 if __name__ == "__main__":

@@ -16,6 +16,19 @@ Usage:
     async def search_complex(params: SearchParams) -> str:
         return "results"
 
+    # With args_schema (langchain_core style) - schema defined at decorator level
+    from pydantic import BaseModel, Field
+
+    class CustodyFeeItem(BaseModel):
+        datDte: str = Field(..., description="数据日期，格式 YYYY/MM/DD")
+        bnkNam: str = Field(..., description="银行名称")
+        typNam: str = Field(..., description="类型名称")
+        sscYer: float = Field(..., description="年累计托管费收入")
+
+    @tool("Calculate custody fee", args_schema=CustodyFeeItem)
+    async def calculate_fee(item: CustodyFeeItem) -> str:
+        return f"Fee calculated for {item.bnkNam}: {item.sscYer}"
+
     # With dependency injection (type-safe)
     from typing import Annotated
 
@@ -161,6 +174,7 @@ class Tool:
     - Dependency injection resolution
     - Type-safe execution with result serialization
     - Ephemeral output management (keep last N outputs in context)
+    - args_schema support for Pydantic model-based parameter definitions
     """
 
     func: Callable[..., Awaitable[Any]]
@@ -168,6 +182,8 @@ class Tool:
     name: str = field(default="")
     ephemeral: int | bool = False
     """How many outputs to keep in context. False=not ephemeral, True=keep 1, int=keep N."""
+    args_schema: type[BaseModel] | None = field(default=None, repr=False)
+    """Optional Pydantic BaseModel class for tool parameters (similar to langchain_core)."""
     _definition: ToolDefinition | None = field(default=None, repr=False)
     _dependencies: dict[str, Depends] = field(default_factory=dict, repr=False)
     _param_types: dict[str, type] = field(default_factory=dict, repr=False)
@@ -233,6 +249,17 @@ class Tool:
         if self._definition is not None:
             return self._definition
 
+        # If args_schema is provided, use it for the schema (langchain_core style)
+        if self.args_schema is not None:
+            schema = SchemaOptimizer.create_optimized_json_schema(self.args_schema)
+            self._definition = ToolDefinition(
+                name=self.name,
+                description=self.description,
+                parameters=schema,
+                strict=True,
+            )
+            return self._definition
+
         # Build JSON schema from parameters
         properties: dict[str, Any] = {}
         required: list[str] = []
@@ -291,7 +318,7 @@ class Tool:
 
         Handles:
         - Dependency injection resolution (with optional overrides)
-        - Pydantic model instantiation
+        - Pydantic model instantiation (including args_schema)
         - Result serialization (strings, dicts, or content part lists for images)
 
         Args:
@@ -307,28 +334,43 @@ class Tool:
         for dep_name, depends in self._dependencies.items():
             resolved_deps[dep_name] = await depends.resolve(_overrides)
 
-        # Merge dependencies with provided kwargs
-        call_kwargs = {**kwargs, **resolved_deps}
+        # If args_schema is provided, instantiate the model from kwargs
+        if self.args_schema is not None:
+            model_instance = self.args_schema(**kwargs)
+            # Check if function expects the model as a single parameter
+            sig = inspect.signature(self.func)
+            params = list(sig.parameters.keys())
+            non_dep_params = [p for p in params if p not in self._dependencies]
 
-        # Handle Pydantic model parameters
-        sig = inspect.signature(self.func)
-        hints = get_type_hints(self.func)
+            if len(non_dep_params) == 1:
+                # Function has a single non-dependency parameter, pass the model
+                call_kwargs = {non_dep_params[0]: model_instance, **resolved_deps}
+            else:
+                # Function expects individual fields, pass model fields as kwargs
+                call_kwargs = {**model_instance.model_dump(), **resolved_deps}
+        else:
+            # Merge dependencies with provided kwargs
+            call_kwargs = {**kwargs, **resolved_deps}
 
-        for param_name, param_type in self._param_types.items():
-            if inspect.isclass(param_type) and issubclass(param_type, BaseModel):
-                # If we have a single Pydantic model param, instantiate it from kwargs
-                if param_name in call_kwargs:
-                    if isinstance(call_kwargs[param_name], dict):
-                        call_kwargs[param_name] = param_type(**call_kwargs[param_name])
-                else:
-                    # Kwargs are the model fields directly
-                    model_kwargs = {
-                        k: v for k, v in kwargs.items() if k in param_type.model_fields
-                    }
-                    call_kwargs = {
-                        param_name: param_type(**model_kwargs),
-                        **resolved_deps,
-                    }
+            # Handle Pydantic model parameters (when not using args_schema)
+            sig = inspect.signature(self.func)
+            hints = get_type_hints(self.func)
+
+            for param_name, param_type in self._param_types.items():
+                if inspect.isclass(param_type) and issubclass(param_type, BaseModel):
+                    # If we have a single Pydantic model param, instantiate it from kwargs
+                    if param_name in call_kwargs:
+                        if isinstance(call_kwargs[param_name], dict):
+                            call_kwargs[param_name] = param_type(**call_kwargs[param_name])
+                    else:
+                        # Kwargs are the model fields directly
+                        model_kwargs = {
+                            k: v for k, v in kwargs.items() if k in param_type.model_fields
+                        }
+                        call_kwargs = {
+                            param_name: param_type(**model_kwargs),
+                            **resolved_deps,
+                        }
                     break
 
         # Execute the function
@@ -366,6 +408,7 @@ def tool(
     *,
     name: str | None = None,
     ephemeral: int | bool = False,
+    args_schema: type[BaseModel] | None = None,
 ) -> Callable[[Callable[P, Awaitable[T]]], Tool]:
     """
     Decorator to create a tool from an async function.
@@ -375,6 +418,9 @@ def tool(
         name: Optional custom name for the tool. Defaults to function name.
         ephemeral: How many outputs to keep in context before older ones are removed.
                    False = not ephemeral (keep all), True = keep last 1, int = keep last N.
+        args_schema: Optional Pydantic BaseModel class for tool parameters.
+                     When provided, the tool's input schema will be generated from this model
+                     instead of the function signature. Similar to langchain_core.tools' args_schema.
 
     Returns:
         A Tool instance wrapping the decorated function.
@@ -388,6 +434,19 @@ def tool(
         @tool("Get browser state", ephemeral=2)
         async def get_state() -> str:
             return "..."
+
+        # With args_schema (Pydantic model)
+        from pydantic import BaseModel, Field
+
+        class CustodyFeeItem(BaseModel):
+            datDte: str = Field(..., description="数据日期，格式 YYYY/MM/DD")
+            bnkNam: str = Field(..., description="银行名称")
+            typNam: str = Field(..., description="类型名称")
+            sscYer: float = Field(..., description="年累计托管费收入")
+
+        @tool("Calculate custody fee", args_schema=CustodyFeeItem)
+        async def calculate_fee(item: CustodyFeeItem) -> str:
+            return f"Fee calculated for {item.bnkNam}"
     """
 
     def decorator(func: Callable[P, Awaitable[T]]) -> Tool:
@@ -401,6 +460,7 @@ def tool(
             description=description,
             name=name or func.__name__,
             ephemeral=ephemeral,
+            args_schema=args_schema,
         )
 
     return decorator

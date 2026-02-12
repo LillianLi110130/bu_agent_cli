@@ -154,9 +154,7 @@ class Agent:
     """Base delay in seconds for exponential backoff on LLM retries."""
     llm_retry_max_delay: float = 60.0
     """Maximum delay in seconds between LLM retry attempts."""
-    llm_retryable_status_codes: set[int] = field(
-        default_factory=lambda: {429, 500, 502, 503, 504}
-    )
+    llm_retryable_status_codes: set[int] = field(default_factory=lambda: {429, 500, 502, 503, 504})
     """HTTP status codes that trigger retries (matches browser-use)."""
     mode: str = "primary"
     """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
@@ -187,9 +185,7 @@ class Agent:
 
         # Initialize compaction service in context (enabled by default)
         # Use provided config or create default (which has enabled=True)
-        compaction_config = (
-            self.compaction if self.compaction is not None else CompactionConfig()
-        )
+        compaction_config = self.compaction if self.compaction is not None else CompactionConfig()
         self._context.configure_compaction(
             config=compaction_config,
             llm=self.llm,
@@ -233,8 +229,9 @@ class Agent:
         filtered_tools = []
 
         # 如果mode是subagent，应该禁用todo工具以及禁用任务工具（防止递归）
-        forced_disabled = {"subagent", "todo_read", "todo_write"} \
-            if self.mode == "subagent" else set()
+        forced_disabled = (
+            {"subagent", "todo_read", "todo_write"} if self.mode == "subagent" else set()
+        )
 
         for tool in self.tools:
             if tool.name in forced_disabled:
@@ -325,9 +322,7 @@ class Agent:
                 args = json.loads(tool_call.function.arguments)
 
                 # Execute the tool (with dependency overrides if configured)
-                result = await tool.execute(
-                    _overrides=self.dependency_overrides, **args
-                )
+                result = await tool.execute(_overrides=self.dependency_overrides, **args)
 
                 # Check if the tool is marked as ephemeral (can be bool or int for keep count)
                 is_ephemeral = bool(tool.ephemeral)  # Convert int to bool (2 -> True)
@@ -343,13 +338,7 @@ class Agent:
                 # Set span output
                 if Laminar is not None:
                     Laminar.set_span_output(
-                        {
-                            "result": (
-                                result[:500]
-                                if isinstance(result, str)
-                                else str(result)[:500]
-                            )
-                        }
+                        {"result": (result[:500] if isinstance(result, str) else str(result)[:500])}
                     )
 
                 return tool_message
@@ -457,9 +446,7 @@ class Agent:
                         self.llm_retry_base_delay * (2**attempt),
                         self.llm_retry_max_delay,
                     )
-                    jitter = random.uniform(
-                        0, delay * 0.1
-                    )  # 10% jitter (matches browser-use)
+                    jitter = random.uniform(0, delay * 0.1)  # 10% jitter (matches browser-use)
                     total_delay = delay + jitter
                     logger.warning(
                         f"⚠️ Got rate limit error, retrying in {total_delay:.1f}s... "
@@ -473,17 +460,14 @@ class Agent:
                 last_error = e
                 # Check if status code is retryable
                 is_retryable = (
-                    hasattr(e, "status_code")
-                    and e.status_code in self.llm_retryable_status_codes
+                    hasattr(e, "status_code") and e.status_code in self.llm_retryable_status_codes
                 )
                 if is_retryable and attempt < self.llm_max_retries - 1:
                     delay = min(
                         self.llm_retry_base_delay * (2**attempt),
                         self.llm_retry_max_delay,
                     )
-                    jitter = random.uniform(
-                        0, delay * 0.1
-                    )  # 10% jitter (matches browser-use)
+                    jitter = random.uniform(0, delay * 0.1)  # 10% jitter (matches browser-use)
                     total_delay = delay + jitter
                     logger.warning(
                         f"⚠️ Got {e.status_code} error, retrying in {total_delay:.1f}s... "
@@ -499,13 +483,9 @@ class Agent:
                 last_error = e
                 error_message = str(e).lower()
                 is_timeout = "timeout" in error_message or "cancelled" in error_message
-                is_connection_error = (
-                    "connection" in error_message or "connect" in error_message
-                )
+                is_connection_error = "connection" in error_message or "connect" in error_message
 
-                if (
-                    is_timeout or is_connection_error
-                ) and attempt < self.llm_max_retries - 1:
+                if (is_timeout or is_connection_error) and attempt < self.llm_max_retries - 1:
                     delay = min(
                         self.llm_retry_base_delay * (2**attempt),
                         self.llm_retry_max_delay,
@@ -646,24 +626,22 @@ Keep the summary brief but informative."""
         if not self._context.get_messages():
             return False
 
-        prefix_messages, compactable_messages = (
-            self._split_persistent_instruction_prefix()
-        )
+        prefix_messages, compactable_messages = self._split_persistent_instruction_prefix()
         if not compactable_messages:
             return False
 
         try:
-            result = await self._context._compaction_service.compact(
-                compactable_messages, self.llm
-            )
+            result = await self._context._compaction_service.compact(compactable_messages, self.llm)
         except Exception as e:
             logger.warning(f"Failed to compact messages for recovery: {e}")
             return False
 
-        self._context.replace_messages([
-            *prefix_messages,
-            *self._context._compaction_service.create_compacted_messages(result.summary or ""),
-        ])
+        self._context.replace_messages(
+            [
+                *prefix_messages,
+                *self._context._compaction_service.create_compacted_messages(result.summary or ""),
+            ]
+        )
         return True
 
     async def preflight_model_switch(
@@ -799,9 +777,7 @@ Keep the summary brief but informative."""
         iterations = 0
         tool_calls_made = 0
         overflow_recovery_attempted = False
-        incomplete_todos_prompted = (
-            False  # Track if we've already prompted about incomplete todos
-        )
+        incomplete_todos_prompted = False  # Track if we've already prompted about incomplete todos
 
         while iterations < self.max_iterations:
             iterations += 1
@@ -814,10 +790,7 @@ Keep the summary brief but informative."""
             try:
                 response = await self._invoke_llm()
             except Exception as e:
-                if (
-                    not overflow_recovery_attempted
-                    and self._is_context_overflow_error(e)
-                ):
+                if not overflow_recovery_attempted and self._is_context_overflow_error(e):
                     overflow_recovery_attempted = True
                     compacted = await self._compact_messages_now()
                     if compacted:
@@ -847,9 +820,7 @@ Keep the summary brief but informative."""
                             # 如果有没做完的，修改标识符，更新messages，继续循环
                             # 是一个最低程度的自我纠正，只会重复一次
                             incomplete_todos_prompted = True
-                            self._context.add_message(
-                                UserMessage(content=incomplete_prompt)
-                            )
+                            self._context.add_message(UserMessage(content=incomplete_prompt))
                             continue  # Give the LLM a chance to handle incomplete todos
 
                     # All done - return the response
@@ -929,9 +900,7 @@ Keep the summary brief but informative."""
 
         iterations = 0
         overflow_recovery_attempted = False
-        incomplete_todos_prompted = (
-            False  # Track if already prompted about incomplete todos
-        )
+        incomplete_todos_prompted = False  # Track if already prompted about incomplete todos
 
         while iterations < self.max_iterations:
             iterations += 1
@@ -944,10 +913,7 @@ Keep the summary brief but informative."""
             try:
                 response = await self._invoke_llm()
             except Exception as e:
-                if (
-                    not overflow_recovery_attempted
-                    and self._is_context_overflow_error(e)
-                ):
+                if not overflow_recovery_attempted and self._is_context_overflow_error(e):
                     overflow_recovery_attempted = True
                     compacted = await self._compact_messages_now()
                     if compacted:
@@ -979,9 +945,7 @@ Keep the summary brief but informative."""
                         incomplete_prompt = await self._get_incomplete_todos_prompt()
                         if incomplete_prompt:
                             incomplete_todos_prompted = True
-                            self._context.add_message(
-                                UserMessage(content=incomplete_prompt)
-                            )
+                            self._context.add_message(UserMessage(content=incomplete_prompt))
                             yield HiddenUserMessageEvent(content=incomplete_prompt)
                             continue  # Give the LLM a chance to handle incomplete todos
 
@@ -1085,14 +1049,6 @@ Keep the summary brief but informative."""
         """
         流式查询 - Token级别的实时输出
 
-        智能流式策略：
-        - 先尝试流式输出，逐 token 实时显示
-        - 一旦检测到工具调用，立即取消流式，改用非流式获取完整响应
-
-        这样可以避免：
-        1. 重复调用 LLM
-        2. 流式 API 下工具调用参数不完整的问题
-
         Args:
             message: 用户消息
 
@@ -1107,11 +1063,11 @@ Keep the summary brief but informative."""
         from bu_agent_sdk.agent.events import TextDeltaEvent
 
         # Add system prompt on first message
-        if not self._messages and self.system_prompt:
-            self._messages.append(SystemMessage(content=self.system_prompt, cache=True))
+        if not self._context and self.system_prompt:
+            self._context.add_message(SystemMessage(content=self.system_prompt, cache=True))
 
         # Add the user message
-        self._messages.append(UserMessage(content=message))
+        self._context.add_message(UserMessage(content=message))
 
         iterations = 0
         incomplete_todos_prompted = False
@@ -1122,15 +1078,15 @@ Keep the summary brief but informative."""
             # Destroy ephemeral messages
             self._destroy_ephemeral_messages()
 
-            # ========== 尝试流式调用 ==========
+            # ========== 流式调用（工具调用参数已完整累积） ==========
             accumulated_content = ""
-            detected_tool_call = False
+            accumulated_tool_calls: list[ToolCall] = []
             response_usage = None
 
             try:
-                # 先尝试流式输出
+                # 流式输出，工具调用参数会在 astream 中完整累积
                 stream_iter = self.llm.astream(
-                    messages=self._messages,
+                    messages=self._context.get_messages(),
                     tools=self.tool_definitions if self.tools else None,
                     tool_choice=self.tool_choice if self.tools else None,
                 )
@@ -1141,34 +1097,23 @@ Keep the summary brief but informative."""
                         accumulated_content += chunk.delta
                         yield TextDeltaEvent(delta=chunk.delta)
 
-                    # 检测到工具调用，立即中断流式
-                    if chunk.has_tool_calls:
-                        detected_tool_call = True
-                        # 取消流式，准备用非流式重新获取
-                        break
+                    # 累积工具调用（只在流结束时返回完整信息）
+                    if chunk.tool_calls:
+                        print(chunk)
+                        accumulated_tool_calls = chunk.tool_calls
 
                     # 保存 usage
                     if chunk.usage:
                         response_usage = chunk.usage
 
-                # 如果检测到工具调用，用非流式获取完整响应
-                if detected_tool_call:
-                    # 使用非流式 API 获取完整的工具调用信息
-                    response = await self.llm.ainvoke(
-                        messages=self._messages,
-                        tools=self.tool_definitions if self.tools else None,
-                        tool_choice=self.tool_choice if self.tools else None,
-                    )
-                    final_content = response.content or ""
-                    has_tools = response.has_tool_calls
-                    tool_calls = response.tool_calls
-                    if response.usage:
-                        response_usage = response.usage
-                else:
-                    # 纯文本输出，使用流式累积的内容
+                # 流结束后，判断是否有工具调用
+                has_tools = len(accumulated_tool_calls) > 0
+                if has_tools:
+                    tool_calls = accumulated_tool_calls
                     final_content = accumulated_content
-                    has_tools = False
+                else:
                     tool_calls = None
+                    final_content = accumulated_content
 
             except Exception as e:
                 logger.error(f"Error in stream_delta: {e}", exc_info=True)
@@ -1183,7 +1128,7 @@ Keep the summary brief but informative."""
                 content=final_content,
                 tool_calls=tool_calls if has_tools else None,
             )
-            self._messages.append(assistant_msg)
+            self._context.add_message(assistant_msg)
 
             # If no tool calls, check if should finish
             if not has_tools:
@@ -1192,7 +1137,7 @@ Keep the summary brief but informative."""
                         incomplete_prompt = await self._get_incomplete_todos_prompt()
                         if incomplete_prompt:
                             incomplete_todos_prompted = True
-                            self._messages.append(UserMessage(content=incomplete_prompt))
+                            self._context.add_message(UserMessage(content=incomplete_prompt))
                             yield HiddenUserMessageEvent(content=incomplete_prompt)
                             continue
 
@@ -1228,9 +1173,10 @@ Keep the summary brief but informative."""
                 )
 
                 step_start_time = time.time()
+
                 try:
                     tool_result = await self._execute_tool_call(tool_call)
-                    self._messages.append(tool_result)
+                    self._context.add_message(tool_result)
 
                     screenshot_base64 = self._extract_screenshot(tool_result)
 
@@ -1249,7 +1195,7 @@ Keep the summary brief but informative."""
                         duration_ms=step_duration_ms,
                     )
                 except TaskComplete as e:
-                    self._messages.append(
+                    self._context.add_message(
                         ToolMessage(
                             tool_call_id=tool_call.id,
                             tool_name=tool_call.function.name,
@@ -1275,16 +1221,4 @@ Keep the summary brief but informative."""
 
     async def _check_and_compact_with_usage(self, usage):
         """Check and compact using provided usage info"""
-        if self._compaction_service is None:
-            return
-
-        if usage:
-            self._compaction_service.update_usage(usage)
-
-        new_messages, result = await self._compaction_service.check_and_compact(
-            self._messages,
-            self.llm,
-        )
-
-        if result.compacted:
-            self._messages = list(new_messages)
+        await self._context.check_and_compact(self.llm, usage)

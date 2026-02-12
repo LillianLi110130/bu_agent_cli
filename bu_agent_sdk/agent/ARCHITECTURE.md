@@ -281,7 +281,6 @@ agent = Agent(
 ```python
 summary = await agent.get_usage()
 print(f"Total tokens: {summary.total_tokens}")
-print(f"Total cost: ${summary.total_cost:.4f}")
 ```
 
 ---

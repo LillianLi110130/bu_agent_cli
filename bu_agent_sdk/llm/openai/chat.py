@@ -414,19 +414,21 @@ class ChatOpenAI(BaseChatModel):
     ) -> AsyncIterator[ChatInvokeCompletionChunk]:
         """流式调用模型，逐token返回内容
 
-        注意：此方法主要用于纯文本输出的流式显示。
-        如果需要工具调用，建议使用 ainvoke 方法以获得完整的参数。
+        工具调用参数累积：
+        - 在流式过程中累积完整的工具调用参数
+        - 只在流结束时返回完整的工具调用信息
+        - 这样可以避免 Agent 层退化到非流式模式
 
         Args:
             messages: 消息列表
-            tools: 可选的工具列表（仅用于检测，不累积参数）
+            tools: 可选的工具列表
             tool_choice: 工具选择策略
             **kwargs: 额外参数
 
         Yields:
             ChatInvokeCompletionChunk: 包含增量内容的chunk
             - delta: 增量文本
-            - tool_calls: 工具调用（仅在检测到时返回，参数可能不完整）
+            - tool_calls: 工具调用（只在最后一个chunk返回完整信息）
             - usage: Token统计（只在最后一个chunk）
             - stop_reason: 停止原因（只在最后一个chunk）
         """
@@ -468,7 +470,7 @@ class ChatOpenAI(BaseChatModel):
                 model_params.pop("temperature", None)
                 model_params.pop("frequency_penalty", None)
 
-            # 添加工具（用于检测工具调用）
+            # 添加工具
             if tools:
                 model_params["tools"] = self._serialize_tools(tools)
                 model_params["parallel_tool_calls"] = self.parallel_tool_calls
@@ -484,6 +486,10 @@ class ChatOpenAI(BaseChatModel):
                 **model_params,
             )
 
+            # 工具调用累积缓冲区：index -> {id, name, arguments}
+            # OpenAI 流式 API 使用 index 来标识同一个工具调用的不同 chunk
+            tool_calls_buffer: dict[int, dict[str, str]] = {}
+
             # 遍历流式响应
             async for chunk in stream:
                 if not chunk.choices:
@@ -495,26 +501,23 @@ class ChatOpenAI(BaseChatModel):
                 # 处理增量文本
                 content_delta = delta.content or ""
 
-                # 处理工具调用（简化版：仅用于检测）
-                tool_calls_chunk: list[ToolCall] = []
-
+                # 累积工具调用参数
                 if delta.tool_calls:
-                    # 检测到工具调用，简单标记即可
-                    # Agent 层会检测到 has_tool_calls 并切换到非流式模式
                     for tc in delta.tool_calls:
-                        if tc.id and tc.function and tc.function.name:
-                            # 有完整的 id 和 name 时才创建 ToolCall
-                            args = tc.function.arguments if tc.function.arguments else "{}"
-                            tool_calls_chunk.append(
-                                ToolCall(
-                                    id=tc.id,
-                                    function=Function(
-                                        name=tc.function.name,
-                                        arguments=args,
-                                    ),
-                                    type="function",
-                                )
-                            )
+                        # OpenAI 使用 index 识别同一个工具调用
+                        idx = tc.index
+
+                        if idx not in tool_calls_buffer:
+                            # 第一次遇到这个工具调用，初始化
+                            tool_calls_buffer[idx] = {
+                                "id": tc.id or f"call_{idx}",
+                                "name": tc.function.name if tc.function else "",
+                                "arguments": ""
+                            }
+
+                        # 累积参数增量（arguments 是分段返回的）
+                        if tc.function and tc.function.arguments:
+                            tool_calls_buffer[idx]["arguments"] += tc.function.arguments
 
                 # 处理 usage（只在最后）
                 usage = None
@@ -541,12 +544,42 @@ class ChatOpenAI(BaseChatModel):
                         total_tokens=chunk.usage.total_tokens,
                     )
 
+                # 在中间 chunk 中，只返回 delta 和空的 tool_calls
+                # 完整的 tool_calls 只在最后一个 chunk 返回
                 yield ChatInvokeCompletionChunk(
                     delta=content_delta,
-                    tool_calls=tool_calls_chunk,
+                    tool_calls=[],  # 中间 chunk 不返回工具调用
                     thinking=None,
                     usage=usage,
                     stop_reason=choice.finish_reason,
+                )
+
+            # 流结束后，构建完整的工具调用列表
+            complete_tool_calls: list[ToolCall] = []
+            for tc_data in tool_calls_buffer.values():
+                tc_name = tc_data.get("name", "")
+                # 只返回有名称的完整工具调用
+                if tc_name:
+                    complete_tool_calls.append(
+                        ToolCall(
+                            id=tc_data["id"],
+                            function=Function(
+                                name=tc_name,
+                                arguments=tc_data.get("arguments", "{}") or "{}",
+                            ),
+                            type="function",
+                        )
+                    )
+
+            # 最后再 yield 一次，这次包含完整的工具调用信息
+            # 如果流结束时没有工具调用，这个 chunk 会被 agent 层忽略
+            if complete_tool_calls:
+                yield ChatInvokeCompletionChunk(
+                    delta="",
+                    tool_calls=complete_tool_calls,
+                    thinking=None,
+                    usage=None,
+                    stop_reason=None,
                 )
 
         except RateLimitError as e:

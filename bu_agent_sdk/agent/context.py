@@ -228,9 +228,7 @@ class ContextManager:
             summary_text = (result.summary or "").strip()
             if not summary_text:
                 return False
-            pinned = [
-                m for m in self._messages if m.role in ("system", "developer")
-            ]
+            pinned = [m for m in self._messages if m.role in ("system", "developer")]
             summary_message = UserMessage(content=summary_text)
             self.replace_messages([*pinned, summary_message])
             return True
@@ -263,7 +261,6 @@ class ContextManager:
         non_cjk = max(0, total_chars - cjk_chars)
         estimated = cjk_chars + (non_cjk // 4)
         return max(1, int(estimated))
-
 
     async def check_and_compact_estimated(self, llm: "BaseChatModel") -> bool:
         """Estimate token usage and compact if threshold exceeded."""
@@ -311,9 +308,7 @@ class ContextManager:
         for i, msg in enumerate(messages):
             if msg.role in pinned_roles:
                 continue
-            is_destroyed_tool = (
-                msg.role == "tool" and bool(getattr(msg, "destroyed", False))
-            )
+            is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
             if is_destroyed_tool:
                 continue
             countable_indices.append(i)
@@ -341,9 +336,7 @@ class ContextManager:
                 new_messages.append(msg)
                 continue
 
-            is_destroyed_tool = (
-                msg.role == "tool" and bool(getattr(msg, "destroyed", False))
-            )
+            is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
             if is_destroyed_tool and i >= cutoff_index:
                 new_messages.append(msg)
                 continue
