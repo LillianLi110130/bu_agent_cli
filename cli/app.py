@@ -44,7 +44,7 @@ from cli.at_commands import (
     is_at_command,
     parse_at_command,
 )
-from tools import SandboxContext
+from tools import SandboxContext, SecurityError
 
 
 # =============================================================================
