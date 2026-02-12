@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -142,6 +143,7 @@ class ClaudeCodeCLI:
         self._model_presets = self._load_model_presets()
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
+        self._agents_md_hash: str | None = None
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -198,6 +200,25 @@ class ClaudeCodeCLI:
             presets[name.strip()] = cleaned
 
         return presets
+
+    def _maybe_inject_agents_md(self) -> None:
+        """Inject AGENTS.md into context once per content hash."""
+        config_path = self._ctx.working_dir / "AGENTS.md"
+        if not config_path.exists():
+            return
+        # Ensure system prompt is present before injecting AGENTS.md
+        if not self._agent._context and self._agent.system_prompt:
+            self._agent._context.add_message(
+                SystemMessage(content=self._agent.system_prompt)
+            )
+        content = config_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if self._agents_md_hash == content_hash:
+            return
+        self._agents_md_hash = content_hash
+        self._agent._context.inject_message(UserMessage(content=content), pinned=True)
 
     def _build_project_snapshot(self) -> str:
         """Build a lightweight snapshot of the project for summarization."""
@@ -801,6 +822,9 @@ class ClaudeCodeCLI:
         """Run the agent with user input and display events."""
         self._step_number = 0
         self._console.print()
+
+        # Inject AGENTS.md (if present) before each user query
+        self._maybe_inject_agents_md()
 
         # Start loading animation
         self._loading = self._start_loading("Thinking")
