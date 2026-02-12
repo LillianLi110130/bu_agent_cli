@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from bu_agent_sdk.agent import (
     ToolResultEvent,
 )
 from bu_agent_sdk.llm import ChatOpenAI
+from bu_agent_sdk.llm.messages import SystemMessage, UserMessage
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -141,6 +143,7 @@ class ClaudeCodeCLI:
         self._model_presets = self._load_model_presets()
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
+        self._agents_md_hash: str | None = None
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -197,6 +200,104 @@ class ClaudeCodeCLI:
             presets[name.strip()] = cleaned
 
         return presets
+
+    def _maybe_inject_agents_md(self) -> None:
+        """Inject AGENTS.md into context once per content hash."""
+        config_path = self._ctx.working_dir / "AGENTS.md"
+        if not config_path.exists():
+            return
+        # Ensure system prompt is present before injecting AGENTS.md
+        if not self._agent._context and self._agent.system_prompt:
+            self._agent._context.add_message(
+                SystemMessage(content=self._agent.system_prompt)
+            )
+        content = config_path.read_text(encoding="utf-8").strip()
+        if not content:
+            return
+        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        if self._agents_md_hash == content_hash:
+            return
+        self._agents_md_hash = content_hash
+        self._agent._context.inject_message(UserMessage(content=content), pinned=True)
+
+    def _build_project_snapshot(self) -> str:
+        """Build a lightweight snapshot of the project for summarization."""
+        root = self._ctx.working_dir
+
+        def is_ignored_dir(name: str) -> bool:
+            return name in {
+                ".git",
+                ".venv",
+                "venv",
+                "node_modules",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                "dist",
+                "build",
+                ".idea",
+            }
+
+        # Tree (depth 4)
+        tree_lines: list[str] = []
+        for current, dirs, files in os.walk(root):
+            rel = os.path.relpath(current, root)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > 4:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if not is_ignored_dir(d)]
+            indent = "  " * depth
+            tree_lines.append(f"{indent}{os.path.basename(current)}/")
+            for f in sorted(files):
+                tree_lines.append(f"{indent}  {f}")
+
+        # Important files (top-level)
+        important = [
+            "README.md",
+            "pyproject.toml",
+            "package.json",
+            "requirements.txt",
+        ]
+        file_snippets: list[str] = []
+        for name in important:
+            path = root / name
+            if path.exists():
+                content = path.read_text(encoding="utf-8")[:4000]
+                file_snippets.append(f"## {name}\n{content}")
+
+        # Files (depth-limited, read all with truncation)
+        file_snippets_all: list[str] = []
+        for current, dirs, files in os.walk(root):
+            rel = os.path.relpath(current, root)
+            depth = 0 if rel == "." else rel.count(os.sep) + 1
+            if depth > 4:
+                dirs[:] = []
+                continue
+            dirs[:] = [d for d in dirs if not is_ignored_dir(d)]
+            for f in sorted(files):
+                path = Path(current) / f
+                try:
+                    content = path.read_text(encoding="utf-8", errors="ignore")[:2000]
+                except Exception:
+                    continue
+                file_snippets_all.append(f"## {path.relative_to(root)}\n{content}")
+
+        snapshot = "\n".join(
+            [
+                f"Project root: {root}",
+                "",
+                "Tree (depth 4):",
+                "\n".join(tree_lines),
+                "",
+                "Key files:",
+                "\n\n".join(file_snippets) if file_snippets else "(none found)",
+                "",
+                "Files (samples):",
+                "\n\n".join(file_snippets_all) if file_snippets_all else "(none found)",
+            ]
+        )
+        return snapshot
 
     def _print_current_model(self):
         """Print the current model configuration."""
@@ -558,6 +659,43 @@ class ClaudeCodeCLI:
             self._console.print("[yellow]Conversation context reset.[/yellow]")
             return True
 
+        if command_name == "init":
+            # Generate docs/PROJECT.md with an AI summary of the project
+            out_path = self._ctx.working_dir / "AGENTS.md"
+
+            snapshot = self._build_project_snapshot()
+            system = SystemMessage(
+                content=(
+                    "The user just ran `/init`.\n"
+                    "Generate AGENTS.md based on the project snapshot.\n"
+                    "Keep it concise and useful for onboarding.\n"
+                    "内容要求中文"
+                )
+            )
+            user = UserMessage(
+                content=(
+                    "Based on the project snapshot below, write AGENTS.md with:\n"
+                    "1) Overview\n2) Project Structure\n3) How It Works\n"
+                    "4) Constraints/Assumptions\n\n"
+                    f"{snapshot}"
+                )
+            )
+
+            response = await self._agent.llm.ainvoke(
+                messages=[system, user],
+                tools=None,
+                tool_choice=None,
+            )
+            content = response.content or ""
+            # Strip any hidden thinking blocks from the output
+            if content:
+                import re
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
+                content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE)
+            out_path.write_text(content, encoding="utf-8")
+            self._console.print("[yellow]Generated AGENTS.md[/yellow]")
+            return True
+
         if command_name == "tasks":
             if not self._ctx.subagent_manager:
                 self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
@@ -684,6 +822,9 @@ class ClaudeCodeCLI:
         """Run the agent with user input and display events."""
         self._step_number = 0
         self._console.print()
+
+        # Inject AGENTS.md (if present) before each user query
+        self._maybe_inject_agents_md()
 
         # Start loading animation
         self._loading = self._start_loading("Thinking")

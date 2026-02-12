@@ -66,6 +66,57 @@ def _load_prompt_template(template_name: str = "system.md") -> str:
     return template_path.read_text(encoding="utf-8")
 
 
+def _get_system_info() -> str:
+    """收集并格式化系统信息（仅操作系统名称和版本）"""
+    import platform
+
+    system = platform.system()
+    release = platform.release()
+
+    # 根据不同平台格式化系统信息
+    if system == "Windows":
+        # Windows: Windows 10, Windows 11
+        # 从 release 中提取版本号 (如 10, 11)
+        version = release.split(".")[0] if "." in release else release
+        return f"Windows {version}"
+
+    elif system == "Linux":
+        # Linux: 尝试获取发行版信息 (Ubuntu 20.04, CentOS 7, etc.)
+        try:
+            import distro
+            # 使用 distro 模块获取更友好的发行版名称
+            distro_name = distro.name()
+            distro_version = distro.version()
+            if distro_version:
+                return f"{distro_name} {distro_version}"
+            return distro_name
+        except ImportError:
+            # 如果 distro 不可用，回退到基本方法
+            # Linux 通常在 /etc/os-release 中有发行版信息
+            try:
+                with open("/etc/os-release") as f:
+                    content = f.read()
+                    for line in content.split("\n"):
+                        if line.startswith("PRETTY_NAME="):
+                            pretty_name = line.split("=", 1)[1].strip('"')
+                            return pretty_name
+            except (IOError, OSError):
+                pass
+            # 最终回退：Linux 内核版本
+            return f"Linux {release}"
+
+    elif system == "Darwin":
+        # macOS: macOS 14.0
+        version = platform.mac_ver()[0]
+        if version:
+            return f"macOS {version}"
+        return "macOS"
+
+    else:
+        # 其他未知系统
+        return f"{system} {release}"
+
+
 def _build_system_prompt(working_dir: Path) -> str:
     """Build the system prompt by loading template and injecting skills."""
     from string import Template
@@ -91,6 +142,9 @@ def _build_system_prompt(working_dir: Path) -> str:
     else:
         agents_text = "No subagents available."
 
+    # Get system information
+    system_info_text = _get_system_info()
+
     template_str = _load_prompt_template("system.md")
 
     template = Template(template_str)
@@ -98,6 +152,7 @@ def _build_system_prompt(working_dir: Path) -> str:
         SKILLS=skills_text,
         WORKING_DIR=str(working_dir),
         SUBAGENTS=agents_text,
+        SYSTEM_INFO=system_info_text,
     )
 
     return prompt
@@ -183,10 +238,14 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
 
     llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url, temperature=config.temperature)
 
+    # 为子代理添加系统信息到系统提示词
+    system_info_text = _get_system_info()
+    system_prompt = f"{config.system_prompt}\n\n## System Information\n\nThe current environment: {system_info_text}"
+
     agent = Agent(
         llm=llm,
         tools=all_tools,
-        system_prompt=config.system_prompt,
+        system_prompt=system_prompt,
         mode="subagent",
         agent_config=config,
         dependency_overrides={get_sandbox_context: lambda: parent_ctx},

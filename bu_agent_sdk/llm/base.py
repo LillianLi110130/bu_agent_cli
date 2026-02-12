@@ -5,12 +5,13 @@ This module provides a unified interface for chat models across different provid
 (OpenAI, Anthropic, Google) with first-class support for tool calling.
 """
 
+from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 from bu_agent_sdk.llm.messages import BaseMessage
-from bu_agent_sdk.llm.views import ChatInvokeCompletion
+from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 
 
 class ToolDefinition(BaseModel):
@@ -131,6 +132,36 @@ class BaseChatModel(Protocol):
                     # Continue conversation
                     response = await llm.ainvoke(messages=messages, tools=[weather_tool])
                 ```
+        """
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        """流式调用模型，逐token返回内容
+
+        Args:
+            messages: 消息列表
+            tools: 可选的工具列表
+            tool_choice: 工具选择策略
+            **kwargs: 额外参数
+
+        Yields:
+            ChatInvokeCompletionChunk: 包含增量内容的chunk
+            - delta: 增量文本
+            - tool_calls: 工具调用（只在第一个chunk）
+            - usage: Token统计（只在最后一个chunk）
+            - stop_reason: 停止原因（只在最后一个chunk）
+
+        Example:
+            ```python
+            async for chunk in llm.astream(messages=[UserMessage(content="你好")]):
+                if chunk.delta:
+                    print(chunk.delta, end="", flush=True)  # 实时打印
+            ```
         """
         ...
 

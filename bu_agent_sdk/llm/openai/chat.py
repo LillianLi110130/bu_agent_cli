@@ -2,7 +2,7 @@ import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 import httpx
 
@@ -18,7 +18,7 @@ from bu_agent_sdk.llm.base import BaseChatModel, ToolChoice, ToolDefinition
 from bu_agent_sdk.llm.exceptions import ModelProviderError, ModelRateLimitError
 from bu_agent_sdk.llm.messages import BaseMessage, Function, ToolCall
 from bu_agent_sdk.llm.openai.serializer import OpenAIMessageSerializer
-from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeUsage
+from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
 
 
 @dataclass
@@ -159,9 +159,11 @@ class ChatOpenAI(BaseChatModel):
 
             usage = ChatInvokeUsage(
                 prompt_tokens=response.usage.prompt_tokens,
-                prompt_cached_tokens=response.usage.prompt_tokens_details.cached_tokens
-                if response.usage.prompt_tokens_details is not None
-                else None,
+                prompt_cached_tokens=(
+                    response.usage.prompt_tokens_details.cached_tokens
+                    if response.usage.prompt_tokens_details is not None
+                    else None
+                ),
                 prompt_cache_creation_tokens=None,
                 prompt_image_tokens=None,
                 # Completion
@@ -173,9 +175,7 @@ class ChatOpenAI(BaseChatModel):
 
         return usage
 
-    def _serialize_tools(
-        self, tools: list[ToolDefinition]
-    ) -> list[ChatCompletionToolParam]:
+    def _serialize_tools(self, tools: list[ToolDefinition]) -> list[ChatCompletionToolParam]:
         """Convert ToolDefinitions to OpenAI's tool format."""
         result = []
         for tool in tools:
@@ -214,9 +214,7 @@ class ChatOpenAI(BaseChatModel):
         schema["additionalProperties"] = False
         return schema
 
-    def _make_strict_property(
-        self, prop: dict[str, Any], is_required: bool
-    ) -> dict[str, Any]:
+    def _make_strict_property(self, prop: dict[str, Any], is_required: bool) -> dict[str, Any]:
         """Transform a single property for strict mode, recursively handling nested objects."""
         prop = prop.copy()
 
@@ -227,11 +225,7 @@ class ChatOpenAI(BaseChatModel):
         # Handle arrays with object items
         if prop.get("type") == "array" and "items" in prop:
             items = prop["items"]
-            if (
-                isinstance(items, dict)
-                and items.get("type") == "object"
-                and "properties" in items
-            ):
+            if isinstance(items, dict) and items.get("type") == "object" and "properties" in items:
                 prop["items"] = self._make_strict_schema(items)
 
         # Make optional params nullable
@@ -275,14 +269,23 @@ class ChatOpenAI(BaseChatModel):
         tool_calls: list[ToolCall] = []
         message = response.choices[0].message
 
+        # 调试：打印原始 tool_calls
+        debug_enabled = os.getenv("BU_AGENT_SDK_LLM_DEBUG")
+        if debug_enabled and message.tool_calls:
+            logger.info(f"[DEBUG] 原始 message.tool_calls:")
+            for tc in message.tool_calls:
+                logger.info(f"[DEBUG]   id={tc.id}, function={tc.function}")
+
         if message.tool_calls:
             for tc in message.tool_calls:
+                # 检查 arguments 是否为 None
+                args = tc.function.arguments if tc.function.arguments else "{}"
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
                         function=Function(
                             name=tc.function.name,
-                            arguments=tc.function.arguments,
+                            arguments=args,
                         ),
                         type="function",
                     )
@@ -385,9 +388,7 @@ class ChatOpenAI(BaseChatModel):
                 content=content,
                 tool_calls=tool_calls,
                 usage=usage,
-                stop_reason=response.choices[0].finish_reason
-                if response.choices
-                else None,
+                stop_reason=response.choices[0].finish_reason if response.choices else None,
             )
 
         except RateLimitError as e:
@@ -401,5 +402,160 @@ class ChatOpenAI(BaseChatModel):
                 message=e.message, status_code=e.status_code, model=self.name
             ) from e
 
+        except Exception as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        """流式调用模型，逐token返回内容
+
+        注意：此方法主要用于纯文本输出的流式显示。
+        如果需要工具调用，建议使用 ainvoke 方法以获得完整的参数。
+
+        Args:
+            messages: 消息列表
+            tools: 可选的工具列表（仅用于检测，不累积参数）
+            tool_choice: 工具选择策略
+            **kwargs: 额外参数
+
+        Yields:
+            ChatInvokeCompletionChunk: 包含增量内容的chunk
+            - delta: 增量文本
+            - tool_calls: 工具调用（仅在检测到时返回，参数可能不完整）
+            - usage: Token统计（只在最后一个chunk）
+            - stop_reason: 停止原因（只在最后一个chunk）
+        """
+        from bu_agent_sdk.llm.views import ChatInvokeCompletionChunk
+
+        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+
+        try:
+            # 准备模型参数（与 ainvoke 相同）
+            model_params: dict[str, Any] = {}
+
+            if self.temperature is not None:
+                model_params["temperature"] = self.temperature
+            if self.frequency_penalty is not None:
+                model_params["frequency_penalty"] = self.frequency_penalty
+            if self.max_completion_tokens is not None:
+                model_params["max_completion_tokens"] = self.max_completion_tokens
+            if self.top_p is not None:
+                model_params["top_p"] = self.top_p
+            if self.seed is not None:
+                model_params["seed"] = self.seed
+            if self.service_tier is not None:
+                model_params["service_tier"] = self.service_tier
+
+            extra_body: dict[str, Any] = {}
+            if self.prompt_cache_key is not None:
+                extra_body["prompt_cache_key"] = self.prompt_cache_key
+            cache_retention = self._resolve_prompt_cache_retention()
+            if cache_retention is not None:
+                extra_body["prompt_cache_retention"] = cache_retention
+            if extra_body:
+                model_params["extra_body"] = extra_body
+
+            # 处理推理模型
+            if self.reasoning_models and any(
+                str(m).lower() in str(self.model).lower() for m in self.reasoning_models
+            ):
+                model_params["reasoning_effort"] = self.reasoning_effort
+                model_params.pop("temperature", None)
+                model_params.pop("frequency_penalty", None)
+
+            # 添加工具（用于检测工具调用）
+            if tools:
+                model_params["tools"] = self._serialize_tools(tools)
+                model_params["parallel_tool_calls"] = self.parallel_tool_calls
+                openai_tool_choice = self._get_tool_choice(tool_choice, tools)
+                if openai_tool_choice is not None:
+                    model_params["tool_choice"] = openai_tool_choice
+
+            # 流式调用
+            stream = await self.get_client().chat.completions.create(
+                model=self.model,
+                messages=openai_messages,
+                stream=True,
+                **model_params,
+            )
+
+            # 遍历流式响应
+            async for chunk in stream:
+                if not chunk.choices:
+                    continue
+
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                # 处理增量文本
+                content_delta = delta.content or ""
+
+                # 处理工具调用（简化版：仅用于检测）
+                tool_calls_chunk: list[ToolCall] = []
+
+                if delta.tool_calls:
+                    # 检测到工具调用，简单标记即可
+                    # Agent 层会检测到 has_tool_calls 并切换到非流式模式
+                    for tc in delta.tool_calls:
+                        if tc.id and tc.function and tc.function.name:
+                            # 有完整的 id 和 name 时才创建 ToolCall
+                            args = tc.function.arguments if tc.function.arguments else "{}"
+                            tool_calls_chunk.append(
+                                ToolCall(
+                                    id=tc.id,
+                                    function=Function(
+                                        name=tc.function.name,
+                                        arguments=args,
+                                    ),
+                                    type="function",
+                                )
+                            )
+
+                # 处理 usage（只在最后）
+                usage = None
+                if chunk.usage:
+                    completion_tokens = chunk.usage.completion_tokens
+                    completion_token_details = chunk.usage.completion_tokens_details
+                    if completion_token_details:
+                        reasoning_tokens = completion_token_details.reasoning_tokens
+                        if reasoning_tokens:
+                            completion_tokens += reasoning_tokens
+
+                    from bu_agent_sdk.llm.views import ChatInvokeUsage
+
+                    usage = ChatInvokeUsage(
+                        prompt_tokens=chunk.usage.prompt_tokens,
+                        prompt_cached_tokens=(
+                            chunk.usage.prompt_tokens_details.cached_tokens
+                            if chunk.usage.prompt_tokens_details
+                            else None
+                        ),
+                        prompt_cache_creation_tokens=None,
+                        prompt_image_tokens=None,
+                        completion_tokens=completion_tokens,
+                        total_tokens=chunk.usage.total_tokens,
+                    )
+
+                yield ChatInvokeCompletionChunk(
+                    delta=content_delta,
+                    tool_calls=tool_calls_chunk,
+                    thinking=None,
+                    usage=usage,
+                    stop_reason=choice.finish_reason,
+                )
+
+        except RateLimitError as e:
+            raise ModelRateLimitError(message=e.message, model=self.name) from e
+        except APIConnectionError as e:
+            raise ModelProviderError(message=str(e), model=self.name) from e
+        except APIStatusError as e:
+            raise ModelProviderError(
+                message=e.message, status_code=e.status_code, model=self.name
+            ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e

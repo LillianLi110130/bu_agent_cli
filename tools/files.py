@@ -1,7 +1,7 @@
 """File operation tools: read, write, edit."""
 
 from bu_agent_sdk.tools import Depends, tool
-from typing import Annotated
+from typing import Annotated, Optional
 
 from tools.sandbox import SandboxContext, get_sandbox_context
 
@@ -10,8 +10,16 @@ from tools.sandbox import SandboxContext, get_sandbox_context
 async def read(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
+    offset_line: Optional[int] = None,
+    n_lines: Optional[int] = None,
 ) -> str:
-    """Read a file and return its contents with line numbers."""
+    """Read a file and return its contents with line numbers.
+
+    Args:
+        file_path: Path to the file to read.
+        offset_line: 1-based line number to start reading from. Defaults to 1.
+        n_lines: Number of lines to read. Defaults to reading all remaining lines.
+    """
     try:
         path = ctx.resolve_path(file_path)
     except Exception as e:
@@ -23,8 +31,24 @@ async def read(
         return f"Path is a directory: {file_path}"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-        numbered = [f"{i + 1:4d}  {line}" for i, line in enumerate(lines)]
-        return "\n".join(numbered)
+        total = len(lines)
+
+        # Determine the slice range
+        start = 0
+        if offset_line is not None:
+            start = max(0, offset_line - 1)  # convert 1-based to 0-based
+
+        end = total
+        if n_lines is not None:
+            end = min(total, start + n_lines)
+
+        selected = lines[start:end]
+        numbered = [
+            f"{start + i + 1:4d}  {line}" for i, line in enumerate(selected)
+        ]
+
+        header = f"[Lines {start + 1}-{end} of {total}]"
+        return header + "\n" + "\n".join(numbered)
     except Exception as e:
         return f"Error reading file: {e}"
 

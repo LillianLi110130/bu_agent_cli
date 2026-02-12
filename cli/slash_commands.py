@@ -120,6 +120,13 @@ class SlashCommandRegistry:
                 category="Session",
             ),
             SlashCommand(
+                name="init",
+                description="Generate AGENTS.md",
+                usage="/init",
+                examples=["/init"],
+                category="Session",
+            ),
+            SlashCommand(
                 name="tasks",
                 description="List all background tasks",
                 usage="/tasks",
