@@ -1077,3 +1077,214 @@ Keep the summary brief but informative."""
         # Max iterations reached - generate summary of what was accomplished
         summary = await self._generate_max_iterations_summary()
         yield FinalResponseEvent(content=summary)
+
+    @observe(name="agent_query_stream_delta")
+    async def query_stream_delta(
+        self, message: str | list[ContentPartTextParam | ContentPartImageParam]
+    ) -> AsyncIterator[AgentEvent]:
+        """
+        流式查询 - Token级别的实时输出
+
+        智能流式策略：
+        - 先尝试流式输出，逐 token 实时显示
+        - 一旦检测到工具调用，立即取消流式，改用非流式获取完整响应
+
+        这样可以避免：
+        1. 重复调用 LLM
+        2. 流式 API 下工具调用参数不完整的问题
+
+        Args:
+            message: 用户消息
+
+        Yields:
+            AgentEvent，包含：
+            - TextDeltaEvent: 增量文本（打字机效果）
+            - TextEvent: 完整文本（检测到工具调用时）
+            - ToolCallEvent: 工具调用
+            - ToolResultEvent: 工具结果
+            - FinalResponseEvent: 最终响应
+        """
+        from bu_agent_sdk.agent.events import TextDeltaEvent
+
+        # Add system prompt on first message
+        if not self._messages and self.system_prompt:
+            self._messages.append(SystemMessage(content=self.system_prompt, cache=True))
+
+        # Add the user message
+        self._messages.append(UserMessage(content=message))
+
+        iterations = 0
+        incomplete_todos_prompted = False
+
+        while iterations < self.max_iterations:
+            iterations += 1
+
+            # Destroy ephemeral messages
+            self._destroy_ephemeral_messages()
+
+            # ========== 尝试流式调用 ==========
+            accumulated_content = ""
+            detected_tool_call = False
+            response_usage = None
+
+            try:
+                # 先尝试流式输出
+                stream_iter = self.llm.astream(
+                    messages=self._messages,
+                    tools=self.tool_definitions if self.tools else None,
+                    tool_choice=self.tool_choice if self.tools else None,
+                )
+
+                async for chunk in stream_iter:
+                    # 累积增量内容
+                    if chunk.delta:
+                        accumulated_content += chunk.delta
+                        yield TextDeltaEvent(delta=chunk.delta)
+
+                    # 检测到工具调用，立即中断流式
+                    if chunk.has_tool_calls:
+                        detected_tool_call = True
+                        # 取消流式，准备用非流式重新获取
+                        break
+
+                    # 保存 usage
+                    if chunk.usage:
+                        response_usage = chunk.usage
+
+                # 如果检测到工具调用，用非流式获取完整响应
+                if detected_tool_call:
+                    # 使用非流式 API 获取完整的工具调用信息
+                    response = await self.llm.ainvoke(
+                        messages=self._messages,
+                        tools=self.tool_definitions if self.tools else None,
+                        tool_choice=self.tool_choice if self.tools else None,
+                    )
+                    final_content = response.content or ""
+                    has_tools = response.has_tool_calls
+                    tool_calls = response.tool_calls
+                    if response.usage:
+                        response_usage = response.usage
+                else:
+                    # 纯文本输出，使用流式累积的内容
+                    final_content = accumulated_content
+                    has_tools = False
+                    tool_calls = None
+
+            except Exception as e:
+                logger.error(f"Error in stream_delta: {e}", exc_info=True)
+                raise
+
+            # Track token usage
+            if response_usage:
+                self._token_cost.add_usage(self.llm.model, response_usage)
+
+            # Add assistant message to history
+            assistant_msg = AssistantMessage(
+                content=final_content,
+                tool_calls=tool_calls if has_tools else None,
+            )
+            self._messages.append(assistant_msg)
+
+            # If no tool calls, check if should finish
+            if not has_tools:
+                if not self.require_done_tool:
+                    if not incomplete_todos_prompted:
+                        incomplete_prompt = await self._get_incomplete_todos_prompt()
+                        if incomplete_prompt:
+                            incomplete_todos_prompted = True
+                            self._messages.append(UserMessage(content=incomplete_prompt))
+                            yield HiddenUserMessageEvent(content=incomplete_prompt)
+                            continue
+
+                    await self._check_and_compact_with_usage(response_usage)
+                    yield FinalResponseEvent(content=final_content or "")
+                    return
+
+                # Autonomous mode: continue loop
+                continue
+
+            # Execute all tool calls
+            step_number = 0
+            for tool_call in tool_calls:
+                step_number += 1
+                tool_name = tool_call.function.name
+
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError:
+                    args = {"_raw": tool_call.function.arguments}
+
+                yield StepStartEvent(
+                    step_id=tool_call.id,
+                    title=tool_name,
+                    step_number=step_number,
+                )
+
+                yield ToolCallEvent(
+                    tool=tool_name,
+                    args=args,
+                    tool_call_id=tool_call.id,
+                    display_name=tool_name,
+                )
+
+                step_start_time = time.time()
+                try:
+                    tool_result = await self._execute_tool_call(tool_call)
+                    self._messages.append(tool_result)
+
+                    screenshot_base64 = self._extract_screenshot(tool_result)
+
+                    yield ToolResultEvent(
+                        tool=tool_name,
+                        result=tool_result.text,
+                        tool_call_id=tool_call.id,
+                        is_error=tool_result.is_error,
+                        screenshot_base64=screenshot_base64,
+                    )
+
+                    step_duration_ms = (time.time() - step_start_time) * 1000
+                    yield StepCompleteEvent(
+                        step_id=tool_call.id,
+                        status="error" if tool_result.is_error else "completed",
+                        duration_ms=step_duration_ms,
+                    )
+                except TaskComplete as e:
+                    self._messages.append(
+                        ToolMessage(
+                            tool_call_id=tool_call.id,
+                            tool_name=tool_call.function.name,
+                            content=f"Task completed: {e.message}",
+                            is_error=False,
+                        )
+                    )
+                    yield ToolResultEvent(
+                        tool=tool_call.function.name,
+                        result=f"Task completed: {e.message}",
+                        tool_call_id=tool_call.id,
+                        is_error=False,
+                    )
+                    yield FinalResponseEvent(content=e.message)
+                    return
+
+            # Check for compaction after tool execution
+            await self._check_and_compact_with_usage(response_usage)
+
+        # Max iterations reached
+        summary = await self._generate_max_iterations_summary()
+        yield FinalResponseEvent(content=summary)
+
+    async def _check_and_compact_with_usage(self, usage):
+        """Check and compact using provided usage info"""
+        if self._compaction_service is None:
+            return
+
+        if usage:
+            self._compaction_service.update_usage(usage)
+
+        new_messages, result = await self._compaction_service.check_and_compact(
+            self._messages,
+            self.llm,
+        )
+
+        if result.compacted:
+            self._messages = list(new_messages)
