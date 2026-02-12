@@ -144,6 +144,7 @@ class ClaudeCodeCLI:
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
         self._agents_md_hash: str | None = None
+        self._agents_md_content: str | None = None
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -215,9 +216,20 @@ class ClaudeCodeCLI:
         if not content:
             return
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if self._agents_md_hash == content_hash:
-            return
+        if self._agents_md_hash == content_hash and self._agents_md_content:
+            # If context was cleared, re-inject even if content unchanged
+            for msg in self._agent._context.get_messages():
+                if msg.role == "developer" and getattr(msg, "content", "") == self._agents_md_content:
+                    return
+        # Remove previously injected AGENTS.md content (if any)
+        if self._agents_md_content:
+            messages = self._agent._context.get_messages()
+            for i in range(len(messages) - 1, -1, -1):
+                msg = messages[i]
+                if msg.role == "developer" and getattr(msg, "content", "") == self._agents_md_content:
+                    self._agent._context.remove_message_at(i)
         self._agents_md_hash = content_hash
+        self._agents_md_content = content
         self._agent._context.inject_message(UserMessage(content=content), pinned=True)
 
     def _build_project_snapshot(self) -> str:
