@@ -99,8 +99,22 @@ bu-agent --root-dir ./your-project
 - `/pwd`
 - `/clear` `/cls`
 - `/model [show|list|<preset>]`
+- `/skills`
 - `/reset`
 - `/history`（占位，暂未实现完整历史展示）
+
+## Skill 命令（@）
+
+- `@<skill-name> <message>`：显式加载技能并执行任务
+- `@` + `Tab`：补全可用技能
+- `/skills`：按分类查看全部技能
+
+示例：
+
+```text
+@brainstorming 设计一个新功能
+@test-driven-development 为这个模块补测试
+```
 
 ## 内置工具
 
