@@ -13,6 +13,8 @@ Usage:
                 print(f"{name} returned: {result}")
             case TextEvent(content=text):
                 print(f"Assistant: {text}")
+            case TextDeltaEvent(delta=text):
+                print(text, end="", flush=True)  # 实时流式输出
             case StepStartEvent(step_id=id, title=title):
                 print(f"Step started: {title}")
             case StepCompleteEvent(step_id=id, status=status):
@@ -26,88 +28,114 @@ from typing import Any, Literal
 
 @dataclass
 class TextEvent:
-	"""Emitted when the assistant produces text content."""
+    """Emitted when the assistant produces text content."""
 
-	content: str
-	"""The text content from the assistant."""
+    content: str
+    """The text content from the assistant."""
 
-	def __str__(self) -> str:
-		preview = self.content[:100] + '...' if len(self.content) > 100 else self.content
-		return f'💬 {preview}'
+    def __str__(self) -> str:
+        preview = self.content[:100] + "..." if len(self.content) > 100 else self.content
+        return f"💬 {preview}"
 
 
 @dataclass
 class ThinkingEvent:
-	"""Emitted when the model produces thinking/reasoning content."""
+    """Emitted when the model produces thinking/reasoning content."""
 
-	content: str
-	"""The thinking content."""
+    content: str
+    """The thinking content."""
 
-	def __str__(self) -> str:
-		preview = self.content[:80] + '...' if len(self.content) > 80 else self.content
-		return f'🧠 {preview}'
+    def __str__(self) -> str:
+        preview = self.content[:80] + "..." if len(self.content) > 80 else self.content
+        return f"🧠 {preview}"
+
+
+@dataclass
+class TextDeltaEvent:
+    """流式文本增量事件 - 实时输出LLM生成的每个token
+
+    与 TextEvent 不同，TextDeltaEvent 包含的是增量文本，
+    客户端应该将其追加到当前文本缓冲区中。
+
+    Example:
+        buffer = ""
+        async for event in agent.query_stream("hello"):
+            if isinstance(event, TextDeltaEvent):
+                buffer += event.delta
+                print(event.delta, end="", flush=True)
+    """
+
+    delta: str
+    """增量文本内容（可能为空字符串）"""
+
+    def __str__(self) -> str:
+        return f' +"{self.delta[:20]}..." if len(self.delta) > 20 else f' + "{self.delta}"
 
 
 @dataclass
 class ToolCallEvent:
-	"""Emitted when the assistant calls a tool."""
+    """Emitted when the assistant calls a tool."""
 
-	tool: str
-	"""The name of the tool being called."""
+    tool: str
+    """The name of the tool being called."""
 
-	args: dict[str, Any]
-	"""The arguments passed to the tool."""
+    args: dict[str, Any]
+    """The arguments passed to the tool."""
 
-	tool_call_id: str
-	"""The unique ID of this tool call."""
+    tool_call_id: str
+    """The unique ID of this tool call."""
 
-	display_name: str = ''
-	"""Human-readable description of the tool call (e.g., 'Browsing https://...')."""
+    display_name: str = ""
+    """Human-readable description of the tool call (e.g., 'Browsing https://...')."""
 
-	def __str__(self) -> str:
-		if self.display_name:
-			return f'🔧 {self.display_name}'
-		args_str = json.dumps(self.args, default=str)
-		if len(args_str) > 80:
-			args_str = args_str[:77] + '...'
-		return f'🔧 {self.tool}({args_str})'
+    def __str__(self) -> str:
+        if self.display_name:
+            return f"🔧 {self.display_name}"
+        args_str = json.dumps(self.args, default=str)
+        if len(args_str) > 80:
+            args_str = args_str[:77] + "..."
+        return f"🔧 {self.tool}({args_str})"
 
 
 @dataclass
 class ToolResultEvent:
-	"""Emitted when a tool returns a result."""
+    """Emitted when a tool returns a result."""
 
-	tool: str
-	"""The name of the tool that was called."""
+    tool: str
+    """The name of the tool that was called."""
 
-	result: str
-	"""The result returned by the tool."""
+    result: str
+    """The result returned by the tool."""
 
-	tool_call_id: str
-	"""The unique ID of the tool call this result corresponds to."""
+    tool_call_id: str
+    """The unique ID of the tool call this result corresponds to."""
 
-	is_error: bool = False
-	"""Whether the tool execution resulted in an error."""
+    is_error: bool = False
+    """Whether the tool execution resulted in an error."""
 
-	screenshot_base64: str | None = None
-	"""Base64-encoded screenshot if this was a browser tool."""
+    screenshot_base64: str | None = None
+    """Base64-encoded screenshot if this was a browser tool."""
 
-	def __str__(self) -> str:
-		prefix = '❌' if self.is_error else '✓'
-		preview = self.result[:80] + '...' if len(self.result) > 80 else self.result
-		screenshot_indicator = ' 📸' if self.screenshot_base64 else ''
-		return f'   {prefix} {self.tool}: {preview}{screenshot_indicator}'
+    def __str__(self) -> str:
+        prefix = "❌" if self.is_error else "✓"
+        preview = self.result[:80] + "..." if len(self.result) > 80 else self.result
+        screenshot_indicator = " 📸" if self.screenshot_base64 else ""
+        return f"   {prefix} {self.tool}: {preview}{screenshot_indicator}"
 
 
 @dataclass
 class FinalResponseEvent:
-	"""Emitted when the agent produces its final response."""
+    """Emitted when the agent produces its final response."""
 
-	content: str
-	"""The final response content."""
+    content: str
+    """The final response content."""
 
-	def __str__(self) -> str:
-		return f'✅ Final: {self.content[:100]}...' if len(self.content) > 100 else f'✅ Final: {self.content}'
+    def __str__(self) -> str:
+        return (
+            f"✅ Final: {self.content[:100]}..."
+            if len(self.content) > 100
+            else f"✅ Final: {self.content}"
+        )
 
 
 # === New events for BU-like UI ===
@@ -115,92 +143,93 @@ class FinalResponseEvent:
 
 @dataclass
 class MessageStartEvent:
-	"""Emitted when a new message starts (user or assistant)."""
+    """Emitted when a new message starts (user or assistant)."""
 
-	message_id: str
-	"""Unique ID for this message."""
+    message_id: str
+    """Unique ID for this message."""
 
-	role: Literal['user', 'assistant']
-	"""The role of the message sender."""
+    role: Literal["user", "assistant"]
+    """The role of the message sender."""
 
-	def __str__(self) -> str:
-		return f'📨 Message started ({self.role})'
+    def __str__(self) -> str:
+        return f"📨 Message started ({self.role})"
 
 
 @dataclass
 class MessageCompleteEvent:
-	"""Emitted when a message is complete."""
+    """Emitted when a message is complete."""
 
-	message_id: str
-	"""The ID of the completed message."""
+    message_id: str
+    """The ID of the completed message."""
 
-	content: str
-	"""The full message content."""
+    content: str
+    """The full message content."""
 
-	def __str__(self) -> str:
-		preview = self.content[:80] + '...' if len(self.content) > 80 else self.content
-		return f'📩 Message complete: {preview}'
+    def __str__(self) -> str:
+        preview = self.content[:80] + "..." if len(self.content) > 80 else self.content
+        return f"📩 Message complete: {preview}"
 
 
 @dataclass
 class StepStartEvent:
-	"""Emitted when the agent starts a logical step (tool execution group)."""
+    """Emitted when the agent starts a logical step (tool execution group)."""
 
-	step_id: str
-	"""Unique ID for this step (typically same as tool_call_id)."""
+    step_id: str
+    """Unique ID for this step (typically same as tool_call_id)."""
 
-	title: str
-	"""Human-readable title for this step (e.g., 'Navigate to website')."""
+    title: str
+    """Human-readable title for this step (e.g., 'Navigate to website')."""
 
-	step_number: int = 0
-	"""Sequential step number within the current query."""
+    step_number: int = 0
+    """Sequential step number within the current query."""
 
-	def __str__(self) -> str:
-		return f'▶️  Step {self.step_number}: {self.title}'
+    def __str__(self) -> str:
+        return f"▶️  Step {self.step_number}: {self.title}"
 
 
 @dataclass
 class StepCompleteEvent:
-	"""Emitted when a step completes."""
+    """Emitted when a step completes."""
 
-	step_id: str
-	"""The ID of the completed step."""
+    step_id: str
+    """The ID of the completed step."""
 
-	status: Literal['completed', 'error']
-	"""The final status of the step."""
+    status: Literal["completed", "error"]
+    """The final status of the step."""
 
-	duration_ms: float = 0.0
-	"""Duration of the step in milliseconds."""
+    duration_ms: float = 0.0
+    """Duration of the step in milliseconds."""
 
-	def __str__(self) -> str:
-		icon = '✅' if self.status == 'completed' else '❌'
-		return f'{icon} Step complete ({self.duration_ms:.0f}ms)'
+    def __str__(self) -> str:
+        icon = "✅" if self.status == "completed" else "❌"
+        return f"{icon} Step complete ({self.duration_ms:.0f}ms)"
 
 
 @dataclass
 class HiddenUserMessageEvent:
-	"""Emitted when the agent injects a hidden user message (ex: incomplete todos prompt).
-	Hidden messages are saved to history and sent to the LLM but not displayed in the UI.
-	"""
+    """Emitted when the agent injects a hidden user message (ex: incomplete todos prompt).
+    Hidden messages are saved to history and sent to the LLM but not displayed in the UI.
+    """
 
-	content: str
-	"""The content of the hidden user message."""
+    content: str
+    """The content of the hidden user message."""
 
-	def __str__(self) -> str:
-		preview = self.content[:80] + '...' if len(self.content) > 80 else self.content
-		return f'👻 Hidden: {preview}'
+    def __str__(self) -> str:
+        preview = self.content[:80] + "..." if len(self.content) > 80 else self.content
+        return f"👻 Hidden: {preview}"
 
 
 # Union type for all events
 AgentEvent = (
-	TextEvent
-	| ThinkingEvent
-	| ToolCallEvent
-	| ToolResultEvent
-	| FinalResponseEvent
-	| MessageStartEvent
-	| MessageCompleteEvent
-	| StepStartEvent
-	| StepCompleteEvent
-	| HiddenUserMessageEvent
+    TextEvent
+    | ThinkingEvent
+    | TextDeltaEvent
+    | ToolCallEvent
+    | ToolResultEvent
+    | FinalResponseEvent
+    | MessageStartEvent
+    | MessageCompleteEvent
+    | StepStartEvent
+    | StepCompleteEvent
+    | HiddenUserMessageEvent
 )

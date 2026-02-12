@@ -3,6 +3,34 @@ from pydantic import BaseModel
 from bu_agent_sdk.llm.messages import ToolCall
 
 
+class ChatInvokeCompletionChunk(BaseModel):
+    """
+    流式响应的单个数据块
+
+    每个chunk包含增量内容，用于实时显示LLM输出
+    """
+
+    delta: str = ""
+    """增量文本内容"""
+
+    tool_calls: list[ToolCall] = []
+    """工具调用（流式时只在第一个chunk返回）"""
+
+    thinking: str | None = None
+    """思考内容（推理模型）"""
+
+    usage: ChatInvokeUsage | None = None
+    """Token使用统计（只在最后一个chunk返回）"""
+
+    stop_reason: str | None = None
+    """停止原因（只在最后一个chunk返回）"""
+
+    @property
+    def has_tool_calls(self) -> bool:
+        """检查是否包含工具调用"""
+        return len(self.tool_calls) > 0
+
+
 class ChatInvokeUsage(BaseModel):
     """
     Usage information for a chat model invocation.
