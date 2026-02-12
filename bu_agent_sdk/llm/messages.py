@@ -431,10 +431,10 @@ class DeveloperMessage(_MessageBase):
 			return ''
 
 	def __str__(self) -> str:
-		return f'DeveloperMessage(content={_truncate(self.text)})'
+		return f'DeveloperMessage(content={self.text})'
 
 	def __repr__(self) -> str:
-		return f'DeveloperMessage(content={repr(_truncate(self.text, 50))})'
+		return f'DeveloperMessage(content={repr(self.text)})'
 
 
 BaseMessage = Union[UserMessage, SystemMessage, AssistantMessage, ToolMessage, DeveloperMessage]
