@@ -74,7 +74,10 @@ from bu_agent_sdk.agent.events import (
     StepCompleteEvent,
     StepStartEvent,
     TextEvent,
+    ThinkingDeltaEvent,
+    ThinkingEndEvent,
     ThinkingEvent,
+    ThinkingStartEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -95,6 +98,84 @@ from bu_agent_sdk.llm.views import ChatInvokeCompletion
 from bu_agent_sdk.observability import Laminar, observe
 from bu_agent_sdk.tokens import TokenCost, UsageSummary
 from bu_agent_sdk.tools.decorator import Tool
+
+# think 标签常量
+_THINK_OPEN_TAG = "<think>"
+_THINK_CLOSE_TAG = "</think>"
+
+
+class ThinkTagParser:
+    """解析流式文本中的 think 标签，支持流式输出思考内容."""
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self.tag_buffer = ""
+        self.filtered_content = ""
+        self.think_id = "think_0"
+        self._open_len = len(_THINK_OPEN_TAG)
+        self._close_len = len(_THINK_CLOSE_TAG)
+
+    def feed(self, delta: str) -> tuple[str | None, str | None, str | None, bool]:
+        """返回 (正常文本或None, think内容或None, 事件类型或None, 是否刚结束).
+
+        事件类型: "start", "end", 或 None
+        一个 delta 要么是 normal，要么是 think，不会同时存在
+        """
+        self.tag_buffer += delta
+
+        if not self.in_think:
+            # 查找开标签
+            idx = self.tag_buffer.find(_THINK_OPEN_TAG)
+            if idx != -1:
+                # 找到了开标签
+                normal_text = self.tag_buffer[:idx]
+                self.tag_buffer = self.tag_buffer[idx + self._open_len:]
+                self.in_think = True
+                if normal_text:
+                    self.filtered_content += normal_text
+                return normal_text or None, None, "start", False
+            # 没找到开标签，输出安全部分（保留末尾可能构成标签的部分）
+            if len(self.tag_buffer) > self._open_len:
+                safe = self.tag_buffer[:-self._open_len]
+                self.tag_buffer = self.tag_buffer[-self._open_len:]
+                if safe:
+                    self.filtered_content += safe
+                return safe or None, None, None, False
+        else:
+            # 查找闭标签
+            idx = self.tag_buffer.find(_THINK_CLOSE_TAG)
+            if idx != -1:
+                # 找到了闭标签
+                think_content = self.tag_buffer[:idx]
+                self.tag_buffer = self.tag_buffer[idx + self._close_len:]
+                self.in_think = False
+                return None, think_content or None, "end", True
+            # 没找到闭标签，输出安全部分
+            if len(self.tag_buffer) > self._close_len:
+                safe = self.tag_buffer[:-self._close_len]
+                self.tag_buffer = self.tag_buffer[-self._close_len:]
+                if safe:
+                    return None, safe, None, False
+
+        return None, None, None, False
+
+    def flush(self) -> tuple[str, bool]:
+        """返回 (剩余内容, 是否在 think 中)."""
+        if self.in_think:
+            result = _THINK_OPEN_TAG + self.tag_buffer
+            self.filtered_content += result
+            self.in_think = False
+            self.tag_buffer = ""
+            return result, True
+        elif not self.in_think and self.tag_buffer:
+            self.filtered_content += self.tag_buffer
+            result = self.tag_buffer
+            self.tag_buffer = ""
+            return result, False
+        return "", False
+
+    def get_filtered_content(self) -> str:
+        return self.filtered_content
 
 
 @dataclass
@@ -1079,12 +1160,11 @@ Keep the summary brief but informative."""
             self._destroy_ephemeral_messages()
 
             # ========== 流式调用（工具调用参数已完整累积） ==========
-            accumulated_content = ""
             accumulated_tool_calls: list[ToolCall] = []
             response_usage = None
+            think_parser = ThinkTagParser()
 
             try:
-                # 流式输出，工具调用参数会在 astream 中完整累积
                 stream_iter = self.llm.astream(
                     messages=self._context.get_messages(),
                     tools=self.tool_definitions if self.tools else None,
@@ -1092,28 +1172,33 @@ Keep the summary brief but informative."""
                 )
 
                 async for chunk in stream_iter:
-                    # 累积增量内容
                     if chunk.delta:
-                        accumulated_content += chunk.delta
-                        yield TextDeltaEvent(delta=chunk.delta)
+                        normal_text, think_content, event_type, _ = think_parser.feed(chunk.delta)
+                        if normal_text is not None:
+                            yield TextDeltaEvent(delta=normal_text)
+                        if event_type == "start":
+                            yield ThinkingStartEvent(think_id=think_parser.think_id)
+                        elif think_content is not None:
+                            yield ThinkingDeltaEvent(delta=think_content, think_id=think_parser.think_id)
+                        if event_type == "end":
+                            yield ThinkingEndEvent(think_id=think_parser.think_id)
 
-                    # 累积工具调用（只在流结束时返回完整信息）
                     if chunk.tool_calls:
                         print(chunk)
                         accumulated_tool_calls = chunk.tool_calls
 
-                    # 保存 usage
                     if chunk.usage:
                         response_usage = chunk.usage
 
-                # 流结束后，判断是否有工具调用
+                # 流结束后，刷新解析器缓冲区
+                remaining, _ = think_parser.flush()
+                if remaining:
+                    yield TextDeltaEvent(delta=remaining)
+
+                # 获取过滤后的内容（不含 think 标签）
+                final_content = think_parser.get_filtered_content()
                 has_tools = len(accumulated_tool_calls) > 0
-                if has_tools:
-                    tool_calls = accumulated_tool_calls
-                    final_content = accumulated_content
-                else:
-                    tool_calls = None
-                    final_content = accumulated_content
+                tool_calls = accumulated_tool_calls if has_tools else None
 
             except Exception as e:
                 logger.error(f"Error in stream_delta: {e}", exc_info=True)

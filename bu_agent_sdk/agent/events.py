@@ -51,6 +51,53 @@ class ThinkingEvent:
 
 
 @dataclass
+class ThinkingStartEvent:
+    """Emitted when a thinking block starts (optimistic detection of <think> tag)."""
+
+    think_id: str
+    """Unique ID for this thinking block."""
+
+    def __str__(self) -> str:
+        return f"🧠 Thinking started..."
+
+
+@dataclass
+class ThinkingDeltaEvent:
+    """流式思考增量事件 - 实时输出思考内容的每个字符.
+
+    在 ThinkingStartEvent 和 ThinkingEndEvent 之间流式输出。
+    客户端应该将其追加到当前思考缓冲区中。
+
+    Example:
+        thinking_buffer = ""
+        async for event in agent.query_stream("hello"):
+            if isinstance(event, ThinkingDeltaEvent):
+                thinking_buffer += event.delta
+                print(event.delta, end="", flush=True)
+    """
+
+    delta: str
+    """增量思考内容（可能为空字符串）"""
+
+    think_id: str
+    """The ID of the thinking block this delta belongs to."""
+
+    def __str__(self) -> str:
+        return f"🧠 +{self.delta[:20]}..." if len(self.delta) > 20 else f"🧠 +{self.delta}"
+
+
+@dataclass
+class ThinkingEndEvent:
+    """Emitted when a thinking block ends (</think> tag detected)."""
+
+    think_id: str
+    """The ID of the completed thinking block."""
+
+    def __str__(self) -> str:
+        return f"🧠 Thinking complete"
+
+
+@dataclass
 class TextDeltaEvent:
     """流式文本增量事件 - 实时输出LLM生成的每个token
 
@@ -223,6 +270,9 @@ class HiddenUserMessageEvent:
 AgentEvent = (
     TextEvent
     | ThinkingEvent
+    | ThinkingStartEvent
+    | ThinkingDeltaEvent
+    | ThinkingEndEvent
     | TextDeltaEvent
     | ToolCallEvent
     | ToolResultEvent

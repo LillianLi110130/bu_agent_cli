@@ -24,6 +24,9 @@ from bu_agent_sdk.agent.events import (
     TextEvent as AgentTextEvent,
     TextDeltaEvent as AgentTextDeltaEvent,
     ThinkingEvent as AgentThinkingEvent,
+    ThinkingStartEvent as AgentThinkingStartEvent,
+    ThinkingDeltaEvent as AgentThinkingDeltaEvent,
+    ThinkingEndEvent as AgentThinkingEndEvent,
     ToolCallEvent as AgentToolCallEvent,
     ToolResultEvent as AgentToolResultEvent,
     FinalResponseEvent as AgentFinalResponseEvent,
@@ -94,6 +97,21 @@ def _agent_event_to_stream_event(event) -> StreamEvent:
     if isinstance(event, AgentThinkingEvent):
         from bu_agent_sdk.server.models import ThinkingEvent
         return ThinkingEvent(content=event.content)
+
+    # 思考开始事件
+    if isinstance(event, AgentThinkingStartEvent):
+        from bu_agent_sdk.server.models import ThinkingStartEvent
+        return ThinkingStartEvent(think_id=event.think_id)
+
+    # 思考增量事件
+    if isinstance(event, AgentThinkingDeltaEvent):
+        from bu_agent_sdk.server.models import ThinkingDeltaEvent
+        return ThinkingDeltaEvent(delta=event.delta, think_id=event.think_id)
+
+    # 思考结束事件
+    if isinstance(event, AgentThinkingEndEvent):
+        from bu_agent_sdk.server.models import ThinkingEndEvent
+        return ThinkingEndEvent(think_id=event.think_id)
 
     # 工具调用事件：Assistant 决定调用某个工具
     if isinstance(event, AgentToolCallEvent):

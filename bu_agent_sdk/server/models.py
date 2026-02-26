@@ -127,6 +127,28 @@ class ThinkingEvent(StreamEventType):
     content: str = Field(..., description="The thinking content")
 
 
+class ThinkingStartEvent(StreamEventType):
+    """Emitted when a thinking block starts (optimistic detection of think tag)."""
+
+    type: Literal["thinking_start"] = "thinking_start"
+    think_id: str = Field(..., description="Unique ID for this thinking block")
+
+
+class ThinkingDeltaEvent(StreamEventType):
+    """流式思考增量事件 - 实时输出思考内容的每个字符."""
+
+    type: Literal["thinking_delta"] = "thinking_delta"
+    delta: str = Field(..., description="增量思考内容（可能为空字符串）")
+    think_id: str = Field(..., description="The ID of the thinking block this delta belongs to")
+
+
+class ThinkingEndEvent(StreamEventType):
+    """Emitted when a thinking block ends (think tag detected)."""
+
+    type: Literal["thinking_end"] = "thinking_end"
+    think_id: str = Field(..., description="The ID of the completed thinking block")
+
+
 class ToolCallEvent(StreamEventType):
     """Emitted when the assistant calls a tool."""
 
@@ -187,6 +209,9 @@ StreamEvent = (
     TextEvent
     | TextDeltaEvent
     | ThinkingEvent
+    | ThinkingStartEvent
+    | ThinkingDeltaEvent
+    | ThinkingEndEvent
     | ToolCallEvent
     | ToolResultEvent
     | StepStartEvent
