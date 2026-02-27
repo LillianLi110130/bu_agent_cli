@@ -1,5 +1,6 @@
 """Sandbox context for secure filesystem access."""
 
+import asyncio
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,13 @@ class SandboxContext:
     allowed_dirs: list[Path] = field(default_factory=list)  # 额外允许的目录列表
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     subagent_executor: Any | None = None  # 使用 SubagentExecutor（单进程模式）
+    subagent_manager: Any | None = None  # SubagentManager instance
+    subagent_events: asyncio.Queue | None = field(default=None)  # Queue for subagent events
+
+    def __post_init__(self):
+        """Initialize the subagent events queue if not set."""
+        if self.subagent_events is None:
+            self.subagent_events = asyncio.Queue()
 
     @classmethod
     def create(cls, root_dir: Path | str | None = None) -> "SandboxContext":

@@ -27,6 +27,11 @@ class QueryRequest(BaseModel):
         default=False,
         description="Whether to stream the response as Server-Sent Events",
     )
+    skill: str | None = Field(
+        default=None,
+        description="Optional skill name to invoke. "
+        "If provided, the skill content will be prepended to the message.",
+    )
 
 
 class ToolCallInfo(BaseModel):
@@ -94,6 +99,7 @@ class QueryResponse(BaseModel):
     session_id: str = Field(..., description="Session ID for this conversation")
     response: str = Field(..., description="The agent's final response")
     usage: UsageInfo = Field(..., description="Token usage information")
+    skill_used: str | None = Field(default=None, description="The skill that was applied, if any")
 
 
 class StreamEventType(BaseModel):
@@ -272,3 +278,83 @@ class HealthResponse(BaseModel):
     status: Literal["healthy", "unhealthy"] = Field(..., description="Server health status")
     version: str = Field(default="1.0.0", description="API version")
     active_sessions: int = Field(default=0, description="Number of active sessions")
+
+
+# ================================
+# Skills API Models
+# ================================
+
+
+class SkillInfo(BaseModel):
+    """Information about a skill."""
+
+    name: str = Field(..., description="Unique skill identifier")
+    display_name: str = Field(..., description="Human-readable display name")
+    description: str = Field(..., description="Skill description")
+    content: str = Field(..., description="Skill content in markdown format")
+    category: str = Field(default="General", description="Skill category")
+    source: Literal["config", "database", "api"] = Field(..., description="Where the skill was loaded from")
+    enabled: bool = Field(default=True, description="Whether the skill is enabled")
+    version: str = Field(default="1.0", description="Skill version")
+    tags: list[str] = Field(default_factory=list, description="Optional tags for filtering")
+
+
+class SkillListResponse(BaseModel):
+    """Response model for listing skills."""
+
+    skills: list[SkillInfo] = Field(..., description="List of all skills")
+    total: int = Field(..., description="Total number of skills")
+
+
+class SkillByCategoryResponse(BaseModel):
+    """Response model for listing skills by category."""
+
+    categories: dict[str, list[SkillInfo]] = Field(
+        ..., description="Skills grouped by category"
+    )
+
+
+class SkillInvokeRequest(BaseModel):
+    """Request model for invoking a skill."""
+
+    skill_name: str = Field(..., description="Name of the skill to invoke")
+    user_input: str = Field(..., description="User input to process with the skill")
+
+
+class SkillInvokeResponse(BaseModel):
+    """Response model for skill invocation result."""
+
+    skill_name: str = Field(..., description="Name of the invoked skill")
+    enhanced_prompt: str = Field(..., description="The enhanced prompt with skill content")
+
+
+class SkillCreateRequest(BaseModel):
+    """Request model for creating a new skill (database mode)."""
+
+    name: str = Field(..., description="Unique skill identifier")
+    display_name: str = Field(..., description="Human-readable display name")
+    description: str = Field(..., description="Skill description")
+    content: str = Field(..., description="Skill content in markdown format")
+    category: str = Field(default="General", description="Skill category")
+    enabled: bool = Field(default=True, description="Whether the skill is enabled")
+    version: str = Field(default="1.0", description="Skill version")
+    tags: list[str] = Field(default_factory=list, description="Optional tags")
+
+
+class SkillUpdateRequest(BaseModel):
+    """Request model for updating a skill."""
+
+    display_name: str | None = Field(None, description="Human-readable display name")
+    description: str | None = Field(None, description="Skill description")
+    content: str | None = Field(None, description="Skill content in markdown format")
+    category: str | None = Field(None, description="Skill category")
+    enabled: bool | None = Field(None, description="Whether the skill is enabled")
+    version: str | None = Field(None, description="Skill version")
+    tags: list[str] | None = Field(None, description="Optional tags")
+
+
+class SkillDeleteResponse(BaseModel):
+    """Response model for skill deletion."""
+
+    deleted: bool = Field(..., description="Whether the skill was deleted")
+    skill_name: str = Field(..., description="Name of the deleted skill")

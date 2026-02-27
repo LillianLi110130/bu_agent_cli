@@ -48,6 +48,14 @@ from bu_agent_sdk.server.models import (
     ClearHistoryRequest,
     ClearHistoryResponse,
     HealthResponse,
+    SkillInfo,
+    SkillListResponse,
+    SkillByCategoryResponse,
+    SkillInvokeRequest,
+    SkillInvokeResponse,
+    SkillCreateRequest,
+    SkillUpdateRequest,
+    SkillDeleteResponse,
 )
 from bu_agent_sdk.server.session import SessionManager, AgentFactory
 
@@ -86,36 +94,43 @@ def _agent_event_to_stream_event(event) -> StreamEvent:
     # 文本事件：Assistant 产生的文本内容
     if isinstance(event, AgentTextEvent):
         from bu_agent_sdk.server.models import TextEvent
+
         return TextEvent(content=event.content)
 
     # 文本增量事件：流式输出的增量文本
     if isinstance(event, AgentTextDeltaEvent):
         from bu_agent_sdk.server.models import TextDeltaEvent
+
         return TextDeltaEvent(delta=event.delta)
 
     # 思考事件：模型的推理过程（如果模型支持 thinking）
     if isinstance(event, AgentThinkingEvent):
         from bu_agent_sdk.server.models import ThinkingEvent
+
         return ThinkingEvent(content=event.content)
 
     # 思考开始事件
     if isinstance(event, AgentThinkingStartEvent):
         from bu_agent_sdk.server.models import ThinkingStartEvent
+
         return ThinkingStartEvent(think_id=event.think_id)
 
     # 思考增量事件
     if isinstance(event, AgentThinkingDeltaEvent):
         from bu_agent_sdk.server.models import ThinkingDeltaEvent
+
         return ThinkingDeltaEvent(delta=event.delta, think_id=event.think_id)
 
     # 思考结束事件
     if isinstance(event, AgentThinkingEndEvent):
         from bu_agent_sdk.server.models import ThinkingEndEvent
+
         return ThinkingEndEvent(think_id=event.think_id)
 
     # 工具调用事件：Assistant 决定调用某个工具
     if isinstance(event, AgentToolCallEvent):
         from bu_agent_sdk.server.models import ToolCallEvent
+
         return ToolCallEvent(
             tool=event.tool,
             args=event.args,
@@ -126,6 +141,7 @@ def _agent_event_to_stream_event(event) -> StreamEvent:
     # 工具结果事件：工具执行完成后的结果
     if isinstance(event, AgentToolResultEvent):
         from bu_agent_sdk.server.models import ToolResultEvent
+
         return ToolResultEvent(
             tool=event.tool,
             result=event.result,
@@ -137,6 +153,7 @@ def _agent_event_to_stream_event(event) -> StreamEvent:
     # 步骤开始事件：一个逻辑步骤的开始（用于 UI 显示进度）
     if isinstance(event, AgentStepStartEvent):
         from bu_agent_sdk.server.models import StepStartEvent
+
         return StepStartEvent(
             step_id=event.step_id,
             title=event.title,
@@ -146,6 +163,7 @@ def _agent_event_to_stream_event(event) -> StreamEvent:
     # 步骤完成事件：一个逻辑步骤的完成
     if isinstance(event, AgentStepCompleteEvent):
         from bu_agent_sdk.server.models import StepCompleteEvent
+
         return StepCompleteEvent(
             step_id=event.step_id,
             status=event.status,
@@ -155,15 +173,18 @@ def _agent_event_to_stream_event(event) -> StreamEvent:
     # 最终响应事件：Agent 的最终回复（流式响应的最后一个事件）
     if isinstance(event, AgentFinalResponseEvent):
         from bu_agent_sdk.server.models import FinalResponseEvent
+
         return FinalResponseEvent(content=event.content)
 
     # 隐藏消息事件：Agent 内部注入的用户消息（用于纠正等）
     if isinstance(event, AgentHiddenUserMessageEvent):
         from bu_agent_sdk.server.models import HiddenMessageEvent
+
         return HiddenMessageEvent(content=event.content)
 
     # 未知事件类型的兜底处理
     from bu_agent_sdk.server.models import TextEvent
+
     return TextEvent(content=str(event))
 
 
@@ -193,7 +214,7 @@ def _serialize_event(event: StreamEvent) -> str:
 # ================================
 
 _session_manager: SessionManager | None = None  # 会话管理器
-_cleanup_task: asyncio.Task | None = None      # 后台清理任务
+_cleanup_task: asyncio.Task | None = None  # 后台清理任务
 
 
 @asynccontextmanager
@@ -204,8 +225,9 @@ async def lifespan(app: FastAPI):
     使用 asynccontextmanager 装饰器，可以与 FastAPI 的 lifespan 参数配合使用。
 
     启动时：
-        1. 创建 SessionManager
-        2. 启动后台清理任务
+        1. 初始化技能系统
+        2. 创建 SessionManager
+        3. 启动后台清理任务
 
     关闭时：
         1. 取消清理任务
@@ -216,12 +238,29 @@ async def lifespan(app: FastAPI):
     config: ServerConfig = app.state.config
     agent_factory: Callable = app.state.agent_factory
 
+    # 初始化技能系统（使用内置技能）
+    try:
+        from bu_agent_sdk.server.skills import (
+            SkillRegistry,
+            ConfigSkillLoader,
+            BUILTIN_SKILLS,
+            set_global_registry,
+        )
+
+        skill_registry = SkillRegistry()
+        skill_registry.register_loader(ConfigSkillLoader(BUILTIN_SKILLS))
+        await skill_registry.reload()
+        set_global_registry(skill_registry)
+        logger.info(f"Loaded {len(skill_registry)} built-in skills")
+    except Exception as e:
+        logger.warning(f"Failed to initialize skills: {e}")
+
     # 初始化会话管理器
     # SessionManager 负责创建、获取、删除 Agent 会话
     _session_manager = SessionManager(
-        agent_factory=agent_factory,                      # 用于创建新 Agent 的函数
+        agent_factory=agent_factory,  # 用于创建新 Agent 的函数
         session_timeout_minutes=config.session_timeout_minutes,  # 会话超时时间
-        max_sessions=config.max_sessions,                 # 最大会话数
+        max_sessions=config.max_sessions,  # 最大会话数
     )
 
     # 如果启用了自动清理，启动后台任务
@@ -366,7 +405,9 @@ def create_app(
             )
         return {"deleted": True, "session_id": session_id}
 
-    @app.post("/sessions/{session_id}/clear", response_model=ClearHistoryResponse, tags=["Sessions"])
+    @app.post(
+        "/sessions/{session_id}/clear", response_model=ClearHistoryResponse, tags=["Sessions"]
+    )
     async def clear_session_history(session_id: str):
         """清空会话历史
 
@@ -397,7 +438,8 @@ def create_app(
         请求体:
             {
                 "message": "用户消息",
-                "session_id": "会话ID（可选，不传则创建新会话）"
+                "session_id": "会话ID（可选，不传则创建新会话）",
+                "skill": "技能名称（可选，如 'calculator', 'brainstorming'）"
             }
 
         响应:
@@ -411,8 +453,15 @@ def create_app(
         session = await _session_manager.get_or_create_session(request.session_id)
 
         try:
+            # 应用技能注入（如果指定了 skill 参数）
+            from bu_agent_sdk.server.skills import prepare_message_with_skill
+
+            message, applied_skill = await prepare_message_with_skill(
+                request.message, request.skill
+            )
+
             # 执行查询（等待完整响应）
-            response_text = await session.query(request.message)
+            response_text = await session.query(message)
             # 获取使用统计
             usage_summary = await session.get_usage()
 
@@ -420,6 +469,7 @@ def create_app(
                 session_id=session.session_id,
                 response=response_text,
                 usage=UsageInfo.from_usage_summary(usage_summary),
+                skill_used=applied_skill,
             )
         except Exception as e:
             logger.error(f"Error in query: {e}", exc_info=True)
@@ -435,6 +485,13 @@ def create_app(
 
         发送消息给 Agent，通过 SSE 实时推送响应过程。
         适合需要实时显示 Agent 思考过程、工具调用等场景。
+
+        请求体:
+            {
+                "message": "用户消息",
+                "session_id": "会话ID（可选）",
+                "skill": "技能名称（可选）"
+            }
 
         事件类型:
             - text: Assistant 文本内容
@@ -453,13 +510,18 @@ def create_app(
             data: {"type": "final", "content": "..."}
             : done
         """
+        from bu_agent_sdk.server.skills import prepare_message_with_skill
+
+        # 应用技能注入
+        message, _ = await prepare_message_with_skill(request.message, request.skill)
+
         session = await _session_manager.get_or_create_session(request.session_id)
 
         async def event_generator():
             """内部生成器函数，产生 SSE 事件"""
             try:
                 # 遍历 Agent 产生的事件
-                async for event in session.query_stream(request.message):
+                async for event in session.query_stream(message):
                     # 转换为 API 事件格式
                     stream_event = _agent_event_to_stream_event(event)
                     # 序列化为 SSE 格式并 yield
@@ -496,9 +558,9 @@ def create_app(
             event_generator(),
             media_type="text/event-stream",
             headers={
-                "Cache-Control": "no-cache",           # 禁用缓存
-                "Connection": "close",                 # 完成后关闭连接
-                "X-Accel-Buffering": "no",             # 禁用 nginx 缓冲
+                "Cache-Control": "no-cache",  # 禁用缓存
+                "Connection": "close",  # 完成后关闭连接
+                "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
             },
         )
 
@@ -509,6 +571,13 @@ def create_app(
 
         与 /agent/query-stream 不同，这个端点会在 LLM 生成过程中逐 token 返回 text_delta 事件，
         实现类似 ChatGPT 的打字机效果，适合前端实时渲染文本。
+
+        请求体:
+            {
+                "message": "用户消息",
+                "session_id": "会话ID（可选）",
+                "skill": "技能名称（可选）"
+            }
 
         事件类型:
             - text_delta: 增量文本（每个 token/小块）
@@ -534,13 +603,20 @@ def create_app(
                 }
             }
         """
+        from bu_agent_sdk.server.skills import prepare_message_with_skill
+
+        # 应用技能注入
+        message, _ = await prepare_message_with_skill(request.message, request.skill)
+
+        print("message!!!!!", message)
+
         session = await _session_manager.get_or_create_session(request.session_id)
 
         async def event_generator():
             """内部生成器函数，产生 SSE 事件"""
             try:
                 # 使用 query_stream_delta 方法获取 Token 级别的流式输出
-                async for event in session.query_stream_delta(request.message):
+                async for event in session.query_stream_delta(message):
                     stream_event = _agent_event_to_stream_event(event)
                     yield _serialize_event(stream_event)
 
@@ -598,12 +674,165 @@ def create_app(
             "usage": UsageInfo.from_usage_summary(usage_summary).model_dump(),
         }
 
+    # ================================
+    # Skills 管理端点
+    # ================================
+
+    @app.get("/skills", response_model=SkillListResponse, tags=["Skills"])
+    async def list_skills():
+        """列出所有可用的技能
+
+        返回系统中所有已加载的技能列表。
+        """
+        from bu_agent_sdk.server.skills import get_global_registry
+
+        try:
+            registry = get_global_registry()
+            skills = registry.list_all()
+            return SkillListResponse(
+                skills=[SkillInfo(**s.to_dict()) for s in skills],
+                total=len(skills),
+            )
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+    @app.get("/skills/by-category", response_model=SkillByCategoryResponse, tags=["Skills"])
+    async def list_skills_by_category():
+        """按分类列出技能
+
+        返回按分类分组的技能列表。
+        """
+        from bu_agent_sdk.server.skills import get_global_registry
+
+        try:
+            registry = get_global_registry()
+            by_category = registry.list_by_category()
+
+            categories = {
+                category: [SkillInfo(**s.to_dict()) for s in skills]
+                for category, skills in by_category.items()
+            }
+            return SkillByCategoryResponse(categories=categories)
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+    @app.get("/skills/{skill_name}", response_model=SkillInfo, tags=["Skills"])
+    async def get_skill(skill_name: str):
+        """获取指定技能的详细信息
+
+        返回指定技能的完整信息。
+        """
+        from bu_agent_sdk.server.skills import get_global_registry
+
+        try:
+            registry = get_global_registry()
+            skill = await registry.get(skill_name)
+            if not skill:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Skill '{skill_name}' not found",
+                )
+            return SkillInfo(**skill.to_dict())
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+    @app.post("/skills/invoke", response_model=SkillInvokeResponse, tags=["Skills"])
+    async def invoke_skill(request: SkillInvokeRequest):
+        """调用指定技能
+
+        使用指定技能处理用户输入，返回增强后的提示内容。
+        """
+        from bu_agent_sdk.server.skills import get_global_registry
+
+        try:
+            registry = get_global_registry()
+            skill = await registry.get(request.skill_name)
+            if not skill:
+                available = ", ".join([s.name for s in registry.list_all()])
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Skill '{request.skill_name}' not found. Available skills: {available}",
+                )
+            if not skill.enabled:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Skill '{request.skill_name}' is disabled.",
+                )
+
+            enhanced_prompt = skill.format(request.user_input)
+            return SkillInvokeResponse(
+                skill_name=skill.name,
+                enhanced_prompt=enhanced_prompt,
+            )
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+    @app.post("/skills/{skill_name}/reload", tags=["Skills"])
+    async def reload_skill(skill_name: str):
+        """重新加载指定技能
+
+        从加载器中重新加载指定技能，清除缓存。
+        """
+        from bu_agent_sdk.server.skills import get_global_registry
+
+        try:
+            registry = get_global_registry()
+            if not await registry.get(skill_name):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Skill '{skill_name}' not found",
+                )
+            await registry.invalidate(skill_name)
+            return {"reloaded": True, "skill_name": skill_name}
+        except HTTPException:
+            raise
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
+    @app.post("/skills/reload", tags=["Skills"])
+    async def reload_all_skills():
+        """重新加载所有技能
+
+        从所有加载器中重新加载技能，刷新缓存。
+        """
+        from bu_agent_sdk.server.skills import get_global_registry
+
+        try:
+            registry = get_global_registry()
+            await registry.reload()
+            return {"reloaded": True, "total": len(registry)}
+        except RuntimeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(e),
+            )
+
     return app
 
 
 # ================================
 # 便捷函数
 # ================================
+
 
 def create_server(agent_factory: AgentFactory, **config_kwargs) -> FastAPI:
     """
