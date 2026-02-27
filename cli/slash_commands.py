@@ -154,6 +154,22 @@ class SlashCommandRegistry:
                 examples=["/allowed"],
                 category="File System",
             ),
+            SlashCommand(
+                name="agents",
+                description="Manage agent configurations",
+                usage="/agents [list|show|create|edit|delete|import|export|validate|reload|templates]",
+                examples=[
+                    "/agents",
+                    "/agents list",
+                    "/agents show code_reviewer",
+                    "/agents create my_agent",
+                    "/agents create my_agent --template subagent",
+                    "/agents edit code_reviewer",
+                    "/agents delete old_agent",
+                    "/agents templates",
+                ],
+                category="Agents",
+            ),
         ]
 
         for cmd in default_commands:

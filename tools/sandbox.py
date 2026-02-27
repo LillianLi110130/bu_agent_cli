@@ -20,7 +20,7 @@ class SandboxContext:
     working_dir: Path  # 当前工作目录（在允许的目录内）
     allowed_dirs: list[Path] = field(default_factory=list)  # 额外允许的目录列表
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
-    subagent_manager: Any | None = None
+    subagent_executor: Any | None = None  # 使用 SubagentExecutor（单进程模式）
 
     @classmethod
     def create(cls, root_dir: Path | str | None = None) -> "SandboxContext":

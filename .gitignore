@@ -13,3 +13,4 @@ __pycache__/
 .coverage
 .idea/
 .claude/
+.vscode/

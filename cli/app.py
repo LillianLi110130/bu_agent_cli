@@ -630,6 +630,15 @@ class ClaudeCodeCLI:
             self._console.print()
             return True
 
+        # Handle agents command - manage agent configurations
+        if command_name == "agents":
+            from cli.agents_handler import AgentSlashHandler
+
+            handler = AgentSlashHandler(
+                console=self._console,
+            )
+            return await handler.handle(args)
+
         # Unknown command
         self._console.print(f"[red]Unknown command: /{command_name}[/red]")
         self._console.print(f"[dim]Type /help for available commands.[/dim]")

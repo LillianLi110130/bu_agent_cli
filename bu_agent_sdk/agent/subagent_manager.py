@@ -116,6 +116,9 @@ class SubagentManager:
         self._task_results: dict[str, TaskResult] = {}
         self._task_statuses: dict[str, TaskStatus] = {}
 
+        # Completion events for blocking wait
+        self._completion_events: dict[str, asyncio.Event] = {}
+
         # Main agent instance (optional) for injecting results
         self._main_agent: Any | None = None
 
@@ -192,6 +195,9 @@ Result:
         # Generate task ID
         task_id = str(uuid.uuid4())[:8]
         display_label = label or subagent_name
+
+        # Create completion event for blocking wait
+        self._completion_events[task_id] = asyncio.Event()
 
         # Create status entry
         status = TaskStatus(
@@ -298,6 +304,11 @@ Result:
             # Store result
             self._task_results[task_id] = result
 
+            # Signal completion event (for blocking wait)
+            event = self._completion_events.get(task_id)
+            if event:
+                event.set()
+
             # Update status
             if task_status:
                 task_status.status = "completed"
@@ -340,6 +351,11 @@ Result:
         )
         self._task_results[task_id] = result
 
+        # Signal completion event even on error
+        event = self._completion_events.get(task_id)
+        if event:
+            event.set()
+
         # Update status
         if task_status:
             task_status.status = "cancelled"
@@ -370,6 +386,11 @@ Result:
             completed_at=datetime.now(),
         )
         self._task_results[task_id] = result
+
+        # Signal completion event even on cancellation
+        event = self._completion_events.get(task_id)
+        if event:
+            event.set()
 
         # Update status
         task_status = self._task_statuses.get(task_id)
@@ -494,3 +515,237 @@ Result:
     def get_total_count(self) -> int:
         """Return the total number of tasks created."""
         return len(self._task_statuses)
+
+    async def wait_for_completion(
+        self,
+        task_id: str,
+        timeout: float = 300.0,
+    ) -> TaskResult:
+        """
+        Wait for a task to complete and return its result.
+
+        This is a blocking call that waits for the task to finish.
+
+        Args:
+            task_id: The task ID to wait for
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            TaskResult with the final result
+
+        Raises:
+            asyncio.TimeoutError: If timeout is exceeded
+            ValueError: If task_id not found
+        """
+        # Check if task exists
+        event = self._completion_events.get(task_id)
+        if not event:
+            raise ValueError(f"Task {task_id} not found")
+
+        # Wait for event to be set
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(f"Task {task_id} timed out after {timeout}s")
+
+        # Return result
+        result = self._task_results.get(task_id)
+        if result is None:
+            raise ValueError(f"Task {task_id} completed but no result found")
+
+        return result
+
+    async def run_and_wait(
+        self,
+        subagent_name: str,
+        prompt: str,
+        label: str | None = None,
+        timeout: float = 300.0,
+    ) -> TaskResult:
+        """
+        Spawn a subagent and wait for it to complete.
+
+        This is a convenience method that combines spawn() and wait_for_completion().
+
+        Args:
+            subagent_name: Name of the subagent to spawn
+            prompt: Task description/prompt for the subagent
+            label: Optional human-readable label for the task
+            timeout: Maximum time to wait for completion in seconds
+
+        Returns:
+            TaskResult with the final result
+
+        Raises:
+            ValueError: If subagent not found or invalid
+            asyncio.TimeoutError: If timeout is exceeded
+        """
+        # Validate subagent exists
+        config = self._registry.get_config(subagent_name)
+        if not config:
+            raise ValueError(f"Subagent '{subagent_name}' not found")
+
+        # Validate subagent mode
+        if config.mode not in ("subagent", "all"):
+            raise ValueError(
+                f"Subagent '{subagent_name}' has mode '{config.mode}', "
+                "cannot be called as a background task"
+            )
+
+        # Generate task ID
+        task_id = str(uuid.uuid4())[:8]
+        display_label = label or subagent_name
+
+        # Create completion event for blocking wait
+        self._completion_events[task_id] = asyncio.Event()
+
+        # Create status entry
+        status = TaskStatus(
+            task_id=task_id,
+            subagent_name=subagent_name,
+            label=label,
+            status="running",
+            created_at=datetime.now(),
+            current_step="Starting...",
+        )
+        self._task_statuses[task_id] = status
+
+        # Create background task
+        bg_task = asyncio.create_task(
+            self._run_subagent(task_id, subagent_name, prompt, display_label)
+        )
+        self._running_tasks[task_id] = bg_task
+
+        # Cleanup when done
+        bg_task.add_done_callback(lambda _: self._on_task_complete(task_id))
+
+        logger.info(f"Spawned blocking subagent task [{task_id}]: {display_label}")
+
+        # Wait for completion
+        return await self.wait_for_completion(task_id, timeout=timeout)
+
+    async def run_parallel_subagents(
+        self,
+        tasks: list[dict[str, str]],
+        timeout: float = 300.0,
+    ) -> list[dict[str, Any]]:
+        """
+        Spawn multiple subagents in parallel and wait for all to complete.
+
+        Args:
+            tasks: List of task dicts, each containing:
+                - subagent_name: Name of the subagent to spawn
+                - prompt: Task description/prompt for the subagent
+                - label: Optional human-readable label for the task
+            timeout: Maximum time to wait for EACH task in seconds
+
+        Returns:
+            List of result dicts, each containing:
+                - subagent_name: The subagent name
+                - label: The task label
+                - task_id: The task ID
+                - status: 'completed', 'failed', or 'cancelled'
+                - result: The final response (if completed) or error message
+                - execution_time_ms: Execution time in milliseconds
+
+        Raises:
+            ValueError: If any subagent not found or invalid
+        """
+        import time
+
+        results = []
+        start_time = time.time()
+
+        # Spawn all tasks first
+        spawned_tasks = []
+        for task_spec in tasks:
+            subagent_name = task_spec["subagent_name"]
+            prompt = task_spec["prompt"]
+            label = task_spec.get("label")
+
+            # Validate subagent exists
+            config = self._registry.get_config(subagent_name)
+            if not config:
+                raise ValueError(f"Subagent '{subagent_name}' not found")
+
+            # Validate subagent mode
+            if config.mode not in ("subagent", "all"):
+                raise ValueError(
+                    f"Subagent '{subagent_name}' has mode '{config.mode}', "
+                    "cannot be called as a background task"
+                )
+
+            # Generate task ID
+            task_id = str(uuid.uuid4())[:8]
+            display_label = label or subagent_name
+
+            # Create completion event
+            self._completion_events[task_id] = asyncio.Event()
+
+            # Create status entry
+            status = TaskStatus(
+                task_id=task_id,
+                subagent_name=subagent_name,
+                label=label,
+                status="running",
+                created_at=datetime.now(),
+                current_step="Starting...",
+            )
+            self._task_statuses[task_id] = status
+
+            # Create background task
+            bg_task = asyncio.create_task(
+                self._run_subagent(task_id, subagent_name, prompt, display_label)
+            )
+            self._running_tasks[task_id] = bg_task
+
+            # Cleanup when done
+            bg_task.add_done_callback(lambda _: self._on_task_complete(task_id))
+
+            logger.info(f"Spawned parallel subagent task [{task_id}]: {display_label}")
+
+            spawned_tasks.append({
+                "subagent_name": subagent_name,
+                "label": label,
+                "task_id": task_id,
+                "bg_task": bg_task,
+            })
+
+        # Wait for all tasks to complete
+        for task_info in spawned_tasks:
+            task_id = task_info["task_id"]
+            subagent_name = task_info["subagent_name"]
+            label = task_info["label"]
+
+            try:
+                result = await self.wait_for_completion(task_id, timeout=timeout)
+                execution_time_ms = result.execution_time_ms or int((time.time() - start_time) * 1000)
+
+                results.append({
+                    "subagent_name": subagent_name,
+                    "label": label,
+                    "task_id": task_id,
+                    "status": result.status,
+                    "result": result.final_response if result.status == "completed" else result.error,
+                    "execution_time_ms": execution_time_ms,
+                })
+            except asyncio.TimeoutError:
+                results.append({
+                    "subagent_name": subagent_name,
+                    "label": label,
+                    "task_id": task_id,
+                    "status": "timeout",
+                    "result": f"Task timed out after {timeout} seconds",
+                    "execution_time_ms": int(timeout * 1000),
+                })
+            except Exception as e:
+                results.append({
+                    "subagent_name": subagent_name,
+                    "label": label,
+                    "task_id": task_id,
+                    "status": "error",
+                    "result": str(e),
+                    "execution_time_ms": int((time.time() - start_time) * 1000),
+                })
+
+        return results
