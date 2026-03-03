@@ -1,20 +1,25 @@
 {
-  "default": "glm",
+  "default": "GLM-4.7",
+  "auto_vision_preset": "GLM-4.6V",
+  "image_summary_preset": "GLM-4.6V",
   "presets": {
-    "glm": {
+    "GLM-4.7": {
       "model": "GLM-4.7",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "api_key_env": "OPENAI_API_KEY"
+      "api_key_env": "OPENAI_API_KEY",
+      "vision": false
     },
-    "glm4.6": {
+    "GLM-4.6": {
       "model": "GLM-4.6",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "api_key_env": "OPENAI_API_KEY"
+      "api_key_env": "OPENAI_API_KEY",
+      "vision": false
     },
-    "glm4vFlash": {
-      "model": "GLM-4V-Flash",
+    "GLM-4.6V": {
+      "model": "GLM-4.6V",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "api_key_env": "OPENAI_API_KEY"
+      "api_key_env": "OPENAI_API_KEY",
+      "vision": true
     }
   }
 }

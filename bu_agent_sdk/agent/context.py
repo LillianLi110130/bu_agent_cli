@@ -19,6 +19,7 @@ logger = logging.getLogger("bu_agent_sdk.agent")
 
 from bu_agent_sdk.llm.messages import (
     BaseMessage,
+    ContentPartTextParam,
     DeveloperMessage,
     ToolMessage,
     UserMessage,
@@ -82,6 +83,45 @@ class ContextManager:
     def clear_messages(self) -> None:
         self._messages.clear()
         self._by_role.clear()
+
+    def strip_user_image_inputs(
+            self,
+            placeholder_text: str = "[Image omitted after vision turn]",
+    ) -> int:
+        """Replace user image parts with a text placeholder.
+
+        This is useful before switching from a vision-capable model back to a
+        text-only model in the same session.
+
+        Returns:
+            Number of image parts replaced.
+        """
+        replaced_count = 0
+        for msg in self._messages:
+            if not isinstance(msg, UserMessage):
+                continue
+            if not isinstance(msg.content, list):
+                continue
+
+            new_parts = []
+            inserted_placeholder = False
+            changed = False
+            for part in msg.content:
+                if getattr(part, "type", None) == "image_url":
+                    replaced_count += 1
+                    changed = True
+                    if not inserted_placeholder:
+                        new_parts.append(ContentPartTextParam(text=placeholder_text))
+                        inserted_placeholder = True
+                    continue
+                new_parts.append(part)
+
+            if changed:
+                msg.content = new_parts
+
+        if replaced_count:
+            self.rebuild_role_index()
+        return replaced_count
 
     def replace_messages(self, messages: Iterable[BaseMessage]) -> None:
         self._messages = list(messages)
