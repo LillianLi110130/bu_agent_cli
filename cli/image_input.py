@@ -91,7 +91,10 @@ def parse_image_command(
             f"Unsupported image type for '{resolved.name}'. Supported: {supported}"
         )
 
-    raw_bytes = resolved.read_bytes()
+    try:
+        raw_bytes = resolved.read_bytes()
+    except OSError as e:
+        raise ImageInputError(f"Failed to read image: {resolved} ({e})") from e
     if len(raw_bytes) > MAX_IMAGE_BYTES:
         raise ImageInputError(
             f"Image is too large: {len(raw_bytes)} bytes (max {MAX_IMAGE_BYTES} bytes)"

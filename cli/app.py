@@ -808,8 +808,6 @@ class ClaudeCodeCLI:
         current_preset = self._resolve_exact_current_preset_name()
         current_is_vision = self._preset_supports_vision(current_preset)
         target_is_vision = bool(preset.get("vision", False))
-        if current_is_vision and not target_is_vision:
-            await self._prepare_text_model_image_memory(manual=manual)
 
         if current_preset == preset_name:
             if manual:
@@ -829,8 +827,31 @@ class ClaudeCodeCLI:
             )
             return False
 
-        preflight = await self._agent.preflight_model_switch(model)
+        context_snapshot: list[Any] | None = None
+        if current_is_vision and not target_is_vision:
+            context_snapshot = [
+                message.model_copy(deep=True)
+                for message in self._agent._context.get_messages()
+            ]
+            try:
+                await self._prepare_text_model_image_memory(manual=manual)
+            except Exception as e:
+                self._agent._context.replace_messages(context_snapshot)
+                self._console.print(
+                    f"[red]Failed to prepare image memory before switch: {e}[/red]"
+                )
+                return False
+
+        try:
+            preflight = await self._agent.preflight_model_switch(model)
+        except Exception as e:
+            if context_snapshot is not None:
+                self._agent._context.replace_messages(context_snapshot)
+            self._console.print(f"[red]Model switch preflight failed: {e}[/red]")
+            return False
         if not preflight.ok:
+            if context_snapshot is not None:
+                self._agent._context.replace_messages(context_snapshot)
             self._console.print(
                 f"[red]Model switch preflight failed: {preflight.reason or 'context is too large'}[/red]"
             )
@@ -857,6 +878,8 @@ class ClaudeCodeCLI:
             )
         except Exception as e:
             self._agent.llm = old_llm
+            if context_snapshot is not None:
+                self._agent._context.replace_messages(context_snapshot)
             self._console.print(f"[red]Failed to switch model: {e}[/red]")
             return False
 
