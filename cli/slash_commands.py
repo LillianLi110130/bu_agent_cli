@@ -177,6 +177,21 @@ class SlashCommandRegistry:
                 ],
                 category="Agents",
             ),
+            SlashCommand(
+                name="ralph",
+                description="Run Ralph workflow commands",
+                usage="/ralph <init-spec|init-agent|decompose|dry-run|run|status|cancel> ...",
+                examples=[
+                    "/ralph init-spec my_spec",
+                    "/ralph init-agent",
+                    "/ralph decompose my_spec",
+                    "/ralph dry-run my_spec",
+                    "/ralph run my_spec --silent",
+                    "/ralph status",
+                    "/ralph cancel abc123",
+                ],
+                category="Ralph",
+            ),
         ]
 
         for cmd in default_commands:

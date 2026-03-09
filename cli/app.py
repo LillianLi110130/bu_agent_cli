@@ -58,6 +58,7 @@ from cli.image_input import (
     is_image_command,
     parse_image_command,
 )
+from cli.ralph_commands import RalphSlashHandler
 from tools import SandboxContext, SecurityError
 
 ModelPreset = dict[str, str | bool]
@@ -167,6 +168,7 @@ class ClaudeCodeCLI:
         self._model_pick_order: list[str] = []
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
+        self._ralph_handler: RalphSlashHandler | None = None
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -1191,6 +1193,14 @@ class ClaudeCodeCLI:
                 console=self._console,
             )
             return await handler.handle(args)
+
+        if command_name == "ralph":
+            if self._ralph_handler is None:
+                self._ralph_handler = RalphSlashHandler(
+                    workspace_root=self._ctx.working_dir,
+                    console=self._console,
+                )
+            return await self._ralph_handler.handle(args)
 
         # Unknown command
         self._console.print(f"[red]Unknown command: /{command_name}[/red]")
