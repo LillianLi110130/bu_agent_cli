@@ -52,7 +52,6 @@ class RalphInitializer:
                         'type': 'file',
                         'path': item
                     }
-
             return structure
 
         return scan_directory(self.template_dir)

@@ -23,6 +23,7 @@ import argparse
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+
 class Config:
     """配置常量类"""
 
@@ -360,7 +361,6 @@ class TodoTaskHandler:
                 pass
             return False
 
-    @staticmethod
     def _update_implement_placeholders(implement_content: str, task: Dict[str, Any], task_file: str, log_file: str) -> str:
         """
         更新implement.md中的占位符信息
@@ -394,7 +394,6 @@ class TodoTaskHandler:
         except Exception as e:
             Logger.log_error(f"更新implement.md占位符失败: {e}")
             return implement_content  # 返回原始内容
-
 
 class FailedTaskHandler:
     """模块4: FAILED任务处理"""
@@ -1202,6 +1201,7 @@ def main():
     except Exception as e:
         Logger.log_error(f"主循环执行失败: {e}")
         return 1
+
 
 if __name__ == "__main__":
     import sys
