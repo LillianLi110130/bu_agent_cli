@@ -1,114 +1,137 @@
-<!--
- * @Author: 何东80296485 donnert@cmbchina.com
- * @Date: 2026-02-06 16:03:03
- * @LastEditors: 何东80296485 donnert@cmbchina.com
- * @LastEditTime: 2026-02-06 16:03:19
- * @FilePath: \ralph_for_agent\.devagent\commands\ralph\implement.md
- * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
--->
 ---
-描述：规划计划、完成功能实现
+描述：读取单个任务规划，完成实现、验证，并沉淀真实执行记录。
 ---
 
-## 定义
+## 工作方式
 
-### 路径定义
-- <implement_dir>:{#implement_dir}
-- <plan_dir>:{#plan_dir}
-- <task_file>:{#task_file}
+- 本任务以**一次性执行**方式运行，不依赖额外交互。
+- 以本文件中给出的路径定义为准。
+- 如果信息不足，请记录假设和未决问题，并在不阻塞主流程的前提下继续实现。
+- 优先完成真实实现和真实验证，不要把精力浪费在表演性文档上。
 
-### 名词定义
+## 路径定义
 
-- `task_name`:{#task_name}
+- `<spec_dir>`：{#plan_dir}
+  - 当前 spec 根目录
+  - 注意：这里是历史变量名替换结果，并非 `plan/` 子目录
+- `<implement_dir>`：{#implement_dir}
+  - 当前任务实现记录目录
+- `<task_file>`：{#task_file}
+  - 当前任务的计划文档路径，通常位于 `plan/*.md`
 
-## 实现
+## 名词定义
 
-读取<task_file>文件中的任务描述，按以下步骤开始工作
+- `task_name`：{#task_name}
 
-### 步骤一 **依赖检查**
+## 核心目标
 
-根据当前需要实现的任务内容，确认依赖任务是否已实现，并在<implement_dir>获取依赖任务的实现文档
+1. 读取 `<task_file>` 中的任务描述并理解目标。
+2. 在 `<implement_dir>` 中创建或更新 `<task_name>_implement.md`。
+3. 完成代码实现。
+4. 执行可行的验证，并记录真实结果。
+5. 在需要时使用指定 subagent 完成专项验证或审查。
 
-### 步骤二 **规划步骤**
+## 执行步骤
 
-创建<implement_dir>/<task_name>_implement.md文件
-将任务的实现步骤写入 <implement_dir>/<task_name>_implement.md 规划实现步骤部分
+### 步骤一：读取任务并确认依赖
 
-<task_name>_implement.md文档使用下述格式：
+- 阅读 `<task_file>` 的完整内容
+- 明确任务目标、影响范围、验证方式和完成标准
+- 如果任务依赖其他任务，请优先查看相关实现记录或依赖任务文档
+- 若存在信息不足，记录到实现文档的“假设与未决问题”部分
+
+### 步骤二：创建或更新实现记录文档
+
+在 `<implement_dir>` 下创建或更新 `<task_name>_implement.md`，初始写入任务概述、依赖、实施计划和预期验证方式。
+
+`<task_name>_implement.md` 使用以下格式：
 
 ```markdown
 # 功能实现：[TASK_NAME]
 
-## 概述
-[2-3句摘要描述]
+## 任务概述
+[2-3 句话说明本任务要完成什么]
+
+## 依赖与上下文
+- [依赖任务或相关背景]
+
+## 假设与未决问题
+- [假设 1]
+- [未决问题 1]
 
 ## 规划实现步骤
+- [ ] [步骤 1]
+- [ ] [步骤 2]
+- [ ] [步骤 3]
 
-- [ ] 步骤一
-- [ ] 步骤二
-- [ ] 步骤三
-  
-## 测试验证
+## 实际变更
+- [实际修改点 1]
+- [实际修改点 2]
 
-- **测试案例一**：✅通过
-  - **输入**
-  - **预期输出**
-  - **实际输出**
-- **测试案例一**：❌失败
-  - **输入**
-  - **预期输出**
-  - **实际输出**
+## 验证记录
+- 命令：`[command]`
+  - 结果：通过 / 失败 / 未执行
+  - 说明：[真实输出摘要]
 
-```
-╔══════════════════════════════════════════════════════════════╗
-║                     Test Results                             ║
-╠══════════════════════════════════════════════════════════════╣
-║ Status:     ✅ ALL TESTS PASSED                              ║
-║ Total:      [n] tests                                        ║
-║ Passed:     [n](100%)                                        ║
-║ Failed:     0                                                ║
-║ Flaky:      0                                                ║
-║ Duration:   9.1s                                             ║
-╚══════════════════════════════════════════════════════════════╝
+## 代码审查
+- 审查方式：[人工 / code-reviewer subagent / 未执行]
+- 结论：[通过 / 有问题 / 未执行]
+- 说明：[简要结论]
 
-Artifacts:
-📸 Screenshots: [n] files
-```
-
-## 代码审查清单
-
-### Summary
-- Total files reviewed: [number]
-- Critical issues: [number]
-- Major issues: [number]
-- Minor suggestions: [number]
-
-### File-by-File Analysis
-
-#### [Filename]
-**Changes:** [Brief description of what was modified]
-
-**Issues Found:**
-- **Critical**: [List critical issues or "None"]
-- **Major**: [List major issues or "None"]
-- **Minor**: [List minor suggestions or "None"]
-- **Positive Notes**: [Acknowledge well-done aspects]
-
-**Recommendations:**
-- [Specific action items for improvement]
-
-### Overall Assessment
-[Overall quality rating and key takeaways]
+## 风险与遗留问题
+- [风险或后续事项]
 
 ## 总结
-<!--实现结果总结-->
+[总结最终结果、限制和后续建议]
 ```
 
-### 步骤三 **实现功能**
+### 步骤三：实现代码
 
-根据规划步骤完成功能实现，并对<task_name>_implement.md进行更新，
-对于<task_file>中包含测试要求的，请使用**qa-validation-engineer** subagent完成测试工作并对<task_name>_implement.md进行更新。
+- 依据 `<task_file>` 中的任务规划完成代码改动
+- 优先遵循现有代码风格和模块边界
+- 尽量将改动限制在完成该任务所需的最小范围内
+- 不要在本阶段重新拆任务或重写 `plan.json`
 
-### 步骤四 **功能检查** 
+### 步骤四：执行验证
 
-如果<plan_dir>/PLAN_CHECKLIST.md存在且内容不为空，请使用**code-reviewer** subagent完成对于<plan_dir>/PLAN_CHECKLIST.md清单要求的代码检视工作，并将检查报告更新至<implement_dir>/<task_name>_implement.md文档中。
+- 优先运行任务文档中明确要求的测试或验证命令
+- 如果没有现成命令，执行最能证明改动正确性的本地验证
+- 验证记录必须写入 `<task_name>_implement.md`
+- **不得伪造测试通过结果**
+- 如果无法执行验证，必须写明原因，例如环境缺失、依赖未安装或前置任务未完成
+
+### 步骤五：按需使用 subagent
+
+- 如果 `<task_file>` 中包含明确的测试或验证要求，请使用 `qa-validation-engineer` subagent 辅助验证，并将结果写入 `<task_name>_implement.md`
+- 如果 `<spec_dir>/PLAN_CHECKLIST.md` 存在且内容非空，请使用 `code-reviewer` subagent 按清单执行审查，并将结论写入 `<task_name>_implement.md`
+- 如果 subagent 不可用或执行失败，请记录失败原因，但不要伪造结果
+
+### 步骤六：更新实现记录
+
+在 `<task_name>_implement.md` 中完成以下更新：
+
+- 将已完成的实施步骤勾选
+- 填写“实际变更”
+- 填写“验证记录”
+- 填写“代码审查”
+- 填写“风险与遗留问题”
+- 填写“总结”
+
+## 严格要求
+
+- 不要自行修改 `plan.json` 中的 `status`、`implment_times`、`last_output`、`log_file`
+  - 这些字段由 Ralph Loop 维护
+- 不要伪造测试、审查或截图结果
+- 不要在没有依据的情况下宣称“全部通过”
+- 不要忽略任务文档中的完成标准
+
+## 完成前自检
+
+在结束前，请逐项确认：
+
+1. 已完整读取 `<task_file>`
+2. `<implement_dir>/<task_name>_implement.md` 已创建或更新
+3. 代码改动已完成，并与任务目标一致
+4. 验证结果为真实结果，不能验证时已说明原因
+5. 若存在 `PLAN_CHECKLIST.md`，已尝试执行对应审查
+6. 总结中明确写出已完成内容、剩余风险和限制

@@ -180,10 +180,11 @@ class SlashCommandRegistry:
             SlashCommand(
                 name="ralph",
                 description="Run Ralph workflow commands",
-                usage="/ralph <init-spec|init-agent|decompose|dry-run|run|status|cancel> ...",
+                usage="/ralph <init-spec|init-agent|ta|decompose|dry-run|run|status|cancel> ...",
                 examples=[
                     "/ralph init-spec my_spec",
                     "/ralph init-agent",
+                    "/ralph ta my_spec",
                     "/ralph decompose my_spec",
                     "/ralph dry-run my_spec",
                     "/ralph run my_spec --silent",

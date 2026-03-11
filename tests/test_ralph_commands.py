@@ -69,6 +69,33 @@ def test_ralph_handler_status_without_runs():
         shutil.rmtree(workspace_root, ignore_errors=True)
 
 
+def test_ralph_decompose_prompt_includes_ta_outputs():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace_root = make_workspace(temp_root)
+    try:
+        prompt_dir = workspace_root / ".devagent" / "commands" / "ralph"
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        source_prompt = repo_root / ".devagent" / "commands" / "ralph" / "DECOMPOSE_TASK.md"
+        shutil.copy2(source_prompt, prompt_dir / "DECOMPOSE_TASK.md")
+
+        service = RalphService(workspace_root=workspace_root, script_root=repo_root)
+        paths = service._resolve_paths("demo")
+
+        prompt = service._build_decompose_prompt(paths, description="focus on payment flow")
+
+        assert "requirements_file:" in prompt
+        assert "design_file:" in prompt
+        assert "task_file:" in prompt
+        assert "demo-requirements.md" in prompt
+        assert "demo-design.md" in prompt
+        assert "demo-task.md" in prompt
+        assert "focus on payment flow" in prompt
+    finally:
+        shutil.rmtree(workspace_root, ignore_errors=True)
+
+
 def test_slash_registry_contains_ralph():
     registry = SlashCommandRegistry()
     command = registry.get("ralph")
@@ -76,3 +103,4 @@ def test_slash_registry_contains_ralph():
     assert command is not None
     assert command.name == "ralph"
     assert "init-spec" in command.usage
+    assert "ta" in command.usage

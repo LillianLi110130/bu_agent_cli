@@ -32,6 +32,7 @@ class RalphService:
         self._python_executable = python_executable or sys.executable
         self._ralph_init_script = self._script_root / "ralph_init.py"
         self._ralph_loop_script = self._script_root / "ralph_loop.py"
+        self._ta_prompt = self._workspace_root / ".devagent" / "commands" / "ralph" / "TA.md"
         self._decompose_prompt = (
             self._workspace_root / ".devagent" / "commands" / "ralph" / "DECOMPOSE_TASK.md"
         )
@@ -59,6 +60,61 @@ class RalphService:
             target_dir=target_dir,
         )
 
+    async def ta(
+        self,
+        *,
+        spec_name: str,
+        description: str = "",
+    ) -> RalphCommandResult:
+        paths = self._resolve_paths(spec_name)
+        check_error = self._check_ta_ready(paths)
+        if check_error:
+            return RalphCommandResult(False, check_error)
+
+        ta_outputs = self._build_ta_output_paths(paths)
+        prompt = self._build_ta_prompt(paths, ta_outputs, description=description)
+
+        paths.log_dir.mkdir(parents=True, exist_ok=True)
+        ta_log = paths.log_dir / "ta.log"
+        result = await self._run_devagent_prompt(prompt=prompt, log_file=ta_log)
+
+        if result.returncode != 0:
+            return RalphCommandResult(
+                False,
+                (
+                    "Ralph TA failed.\n"
+                    f"log: {ta_log}\n"
+                    f"stderr: {self._tail_text(result.stderr or result.stdout)}"
+                ),
+                {
+                    "log_file": str(ta_log),
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit_code": result.returncode,
+                },
+            )
+
+        return RalphCommandResult(
+            True,
+            (
+                "Ralph TA completed.\n"
+                f"log: {ta_log}\n"
+                f"requirements: {ta_outputs['requirements_file']}\n"
+                f"design: {ta_outputs['design_file']}\n"
+                f"task: {ta_outputs['task_file']}\n"
+                f"stdout: {self._tail_text(result.stdout)}"
+            ),
+            {
+                "log_file": str(ta_log),
+                "requirements_file": str(ta_outputs["requirements_file"]),
+                "design_file": str(ta_outputs["design_file"]),
+                "task_file": str(ta_outputs["task_file"]),
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.returncode,
+            },
+        )
+
     async def decompose(
         self,
         *,
@@ -70,39 +126,11 @@ class RalphService:
         if check_error:
             return RalphCommandResult(False, check_error)
 
-        prompt = self._decompose_prompt.read_text(encoding="utf-8")
-        prompt += (
-            "\n\n## Runtime Context\n"
-            f"- workspace: {self._workspace_root}\n"
-            f"- spec_name: {spec_name}\n"
-            f"- spec_dir: {paths.spec_dir}\n"
-            f"- requirement_dir: {paths.requirement_dir}\n"
-            f"- plan_dir: {paths.plan_dir}\n"
-            f"- plan_file: {paths.plan_file}\n"
-        )
-        if description:
-            prompt += f"\n## Additional Request\n{description.strip()}\n"
+        prompt = self._build_decompose_prompt(paths, description=description)
 
         paths.log_dir.mkdir(parents=True, exist_ok=True)
         decompose_log = paths.log_dir / "decompose.log"
-        result = await asyncio.to_thread(
-            subprocess.run,
-            "devagent --yolo",
-            cwd=str(self._workspace_root),
-            input=prompt,
-            text=True,
-            capture_output=True,
-            encoding="utf-8",
-            shell=True,
-        )
-
-        self._write_command_log(
-            decompose_log,
-            command="devagent --yolo",
-            stdout=result.stdout,
-            stderr=result.stderr,
-            return_code=result.returncode,
-        )
+        result = await self._run_devagent_prompt(prompt=prompt, log_file=decompose_log)
 
         if result.returncode != 0:
             return RalphCommandResult(
@@ -359,6 +387,55 @@ class RalphService:
             log_dir=spec_dir / "logs",
         )
 
+    def _build_ta_output_paths(self, paths: RalphPaths) -> dict[str, Path]:
+        prefix = paths.spec_name
+        return {
+            "requirements_file": paths.requirement_dir / f"{prefix}-requirements.md",
+            "design_file": paths.requirement_dir / f"{prefix}-design.md",
+            "task_file": paths.requirement_dir / f"{prefix}-task.md",
+        }
+
+    def _build_decompose_prompt(self, paths: RalphPaths, *, description: str) -> str:
+        ta_outputs = self._build_ta_output_paths(paths)
+        prompt = self._decompose_prompt.read_text(encoding="utf-8")
+        prompt += (
+            "\n\n## Runtime Context\n"
+            f"- workspace: {self._workspace_root}\n"
+            f"- spec_name: {paths.spec_name}\n"
+            f"- spec_dir: {paths.spec_dir}\n"
+            f"- requirement_dir: {paths.requirement_dir}\n"
+            f"- requirements_file: {ta_outputs['requirements_file']}\n"
+            f"- design_file: {ta_outputs['design_file']}\n"
+            f"- task_file: {ta_outputs['task_file']}\n"
+            f"- plan_dir: {paths.plan_dir}\n"
+            f"- plan_file: {paths.plan_file}\n"
+        )
+        if description:
+            prompt += f"\n## Additional Request\n{description.strip()}\n"
+        return prompt
+
+    def _build_ta_prompt(
+        self,
+        paths: RalphPaths,
+        ta_outputs: dict[str, Path],
+        *,
+        description: str,
+    ) -> str:
+        prompt = self._ta_prompt.read_text(encoding="utf-8")
+        prompt += (
+            "\n\n## Runtime Context\n"
+            f"- workspace: {self._workspace_root}\n"
+            f"- spec_name: {paths.spec_name}\n"
+            f"- spec_dir: {paths.spec_dir}\n"
+            f"- requirement_dir: {paths.requirement_dir}\n"
+            f"- requirements_file: {ta_outputs['requirements_file']}\n"
+            f"- design_file: {ta_outputs['design_file']}\n"
+            f"- task_file: {ta_outputs['task_file']}\n"
+        )
+        if description:
+            prompt += f"\n## Additional Request\n{description.strip()}\n"
+        return prompt
+
     def _resolve_paths_for_execution(
         self,
         *,
@@ -389,6 +466,17 @@ class RalphService:
             implement_dir=spec_dir / "implement",
             log_dir=resolved_log_dir,
         )
+
+    def _check_ta_ready(self, paths: RalphPaths) -> str | None:
+        if not paths.spec_dir.exists():
+            return f"Spec directory not found: {paths.spec_dir}"
+        if not paths.requirement_dir.exists():
+            return f"Requirement directory not found: {paths.requirement_dir}"
+        if not self._ta_prompt.exists():
+            return f"TA prompt not found: {self._ta_prompt}"
+        if shutil.which("devagent") is None:
+            return "devagent command not found in PATH."
+        return None
 
     def _check_decompose_ready(self, paths: RalphPaths) -> str | None:
         if not paths.spec_dir.exists():
@@ -451,6 +539,32 @@ class RalphService:
         if dry_run:
             command.append("--dry-run")
         return command
+
+    async def _run_devagent_prompt(
+        self,
+        *,
+        prompt: str,
+        log_file: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            "devagent --yolo",
+            cwd=str(self._workspace_root),
+            input=prompt,
+            text=True,
+            capture_output=True,
+            encoding="utf-8",
+            shell=True,
+        )
+
+        self._write_command_log(
+            log_file,
+            command="devagent --yolo",
+            stdout=result.stdout,
+            stderr=result.stderr,
+            return_code=result.returncode,
+        )
+        return result
 
     def _format_record(self, record: RalphRunRecord) -> str:
         summary = self._summarize_plan(Path(record.plan_file))

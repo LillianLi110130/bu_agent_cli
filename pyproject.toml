@@ -1,5 +1,5 @@
 [project]
-name = "bu-agent-cli"
+name = "tg-agent-cli"
 version = "0.1.0"
 description = "A simplified agent CLI framework for running LLM agents with tool calling"
 readme = "README.md"
@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "anyio>=3.0.0",
     "PyYAML>=6.0.1",
+    "pygments"
 ]
 
 [project.optional-dependencies]
@@ -24,7 +25,7 @@ dev = [
 ]
 
 [project.scripts]
-bu-agent = "claude_code:cli_main"
+tg-agent = "claude_code:cli_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -35,7 +36,11 @@ packages = ["bu_agent_sdk", "cli", "tools"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "claude_code.py" = "claude_code.py"
-"config/model_presets.json" = "config/model_presets.json"
+"config" = "config"
+"ralph_init.py" = "ralph_init.py"
+"ralph_loop.py" = "ralph_loop.py"
+"template" = "template"
+".devagent" = ".devagent"
 ".env.example" = ".env.example"
 "README.md" = "README.md"
 
@@ -46,6 +51,10 @@ include = [
     "tools/**",
     "claude_code.py",
     "config/**",
+    "ralph_init.py",
+    "ralph_loop.py",
+    "template/**",
+    ".devagent/**",
     ".env.example",
     "README.md",
     "pyproject.toml",
