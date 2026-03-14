@@ -13,6 +13,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "anyio>=3.0.0",
     "PyYAML>=6.0.1",
+    "python-telegram-bot>=22.6",
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,7 @@ dev = [
 
 [project.scripts]
 bu-agent = "claude_code:cli_main"
+bu-agent-gateway = "bu_agent_sdk.gateway.main:cli_main"
 
 [build-system]
 requires = ["hatchling"]
