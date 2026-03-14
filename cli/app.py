@@ -9,7 +9,6 @@ import os
 import sys
 import threading
 import time
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +21,10 @@ from bu_agent_sdk.agent import (
     ToolResultEvent,
 )
 from bu_agent_sdk.llm import ChatOpenAI
+from bu_agent_sdk.bootstrap.session_bootstrap import (
+    WorkspaceInstructionState,
+    sync_workspace_agents_md,
+)
 from bu_agent_sdk.llm.messages import SystemMessage, UserMessage
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
@@ -47,7 +50,6 @@ from cli.at_commands import (
     parse_at_command,
 )
 from tools import SandboxContext, SecurityError
-
 
 # =============================================================================
 # Loading Indicator
@@ -135,16 +137,13 @@ class ClaudeCodeCLI:
             Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
         )
         self._model_presets_path = (
-            Path(__file__).resolve().parent.parent
-            / "config"
-            / "model_presets.json"
+            Path(__file__).resolve().parent.parent / "config" / "model_presets.json"
         )
         self._default_model_preset: str | None = None
         self._model_presets = self._load_model_presets()
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
-        self._agents_md_hash: str | None = None
-        self._agents_md_content: str | None = None
+        self._workspace_instruction_state = WorkspaceInstructionState()
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -158,15 +157,11 @@ class ClaudeCodeCLI:
             raw = self._model_presets_path.read_text(encoding="utf-8")
             data = json.loads(raw)
         except Exception as e:
-            self._console.print(
-                f"[yellow]Failed to load model presets: {e}[/yellow]"
-            )
+            self._console.print(f"[yellow]Failed to load model presets: {e}[/yellow]")
             return {}
 
         if not isinstance(data, dict):
-            self._console.print(
-                "[yellow]model_presets.json must be a JSON object.[/yellow]"
-            )
+            self._console.print("[yellow]model_presets.json must be a JSON object.[/yellow]")
             return {}
 
         default_name = data.get("default")
@@ -203,34 +198,12 @@ class ClaudeCodeCLI:
         return presets
 
     def _maybe_inject_agents_md(self) -> None:
-        """Inject AGENTS.md into context once per content hash."""
-        config_path = self._ctx.working_dir / "AGENTS.md"
-        if not config_path.exists():
-            return
-        # Ensure system prompt is present before injecting AGENTS.md
-        if not self._agent._context and self._agent.system_prompt:
-            self._agent._context.add_message(
-                SystemMessage(content=self._agent.system_prompt)
-            )
-        content = config_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if self._agents_md_hash == content_hash and self._agents_md_content:
-            # If context was cleared, re-inject even if content unchanged
-            for msg in self._agent._context.get_messages():
-                if msg.role == "developer" and getattr(msg, "content", "") == self._agents_md_content:
-                    return
-        # Remove previously injected AGENTS.md content (if any)
-        if self._agents_md_content:
-            messages = self._agent._context.get_messages()
-            for i in range(len(messages) - 1, -1, -1):
-                msg = messages[i]
-                if msg.role == "developer" and getattr(msg, "content", "") == self._agents_md_content:
-                    self._agent._context.remove_message_at(i)
-        self._agents_md_hash = content_hash
-        self._agents_md_content = content
-        self._agent._context.inject_message(UserMessage(content=content), pinned=True)
+        """Inject workspace AGENTS.md into context if present."""
+        self._workspace_instruction_state = sync_workspace_agents_md(
+            agent=self._agent,
+            workspace_dir=self._ctx.working_dir,
+            state=self._workspace_instruction_state,
+        )
 
     def _build_project_snapshot(self) -> str:
         """Build a lightweight snapshot of the project for summarization."""
@@ -318,9 +291,7 @@ class ClaudeCodeCLI:
         base_url_display = str(base_url) if base_url else "(default)"
         self._console.print(f"Current model: [cyan]{model}[/cyan]")
         self._console.print(f"Base URL: [dim]{base_url_display}[/dim]")
-        self._console.print(
-            f"Context messages: [dim]{len(self._agent.messages)}[/dim]"
-        )
+        self._console.print(f"Context messages: [dim]{len(self._agent.messages)}[/dim]")
 
     def _print_model_presets(self):
         """Print configured model presets."""
@@ -335,11 +306,7 @@ class ClaudeCodeCLI:
             model = preset["model"]
             base_url = preset.get("base_url", "(inherit current)")
             api_key_env = preset.get("api_key_env", "OPENAI_API_KEY")
-            marker = (
-                " [green](default)[/green]"
-                if name == self._default_model_preset
-                else ""
-            )
+            marker = " [green](default)[/green]" if name == self._default_model_preset else ""
             self._console.print(
                 f"  [cyan]{name}[/cyan]{marker} -> {model} "
                 f"[dim](base_url: {base_url}, key: {api_key_env})[/dim]"
@@ -445,9 +412,7 @@ class ClaudeCodeCLI:
 
         current_preset = self._resolve_exact_current_preset_name()
         if current_preset == preset_name:
-            self._console.print(
-                f"[dim]Already using preset [cyan]{preset_name}[/cyan].[/dim]"
-            )
+            self._console.print(f"[dim]Already using preset [cyan]{preset_name}[/cyan].[/dim]")
             return True
 
         model = preset["model"]
@@ -497,9 +462,7 @@ class ClaudeCodeCLI:
         self._console.print(
             f"[green]Model switched:[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
         )
-        self._console.print(
-            f"[dim]Context preserved ({len(self._agent.messages)} messages).[/dim]"
-        )
+        self._console.print(f"[dim]Context preserved ({len(self._agent.messages)} messages).[/dim]")
         return True
 
     def _start_loading(self, message: str = "Thinking") -> _LoadingIndicator:
@@ -533,12 +496,14 @@ class ClaudeCodeCLI:
         self._console.print(f"[dim]Working directory:[/] {self._ctx.working_dir}")
         self._console.print(f"[dim]Model:[/] {self._agent.llm.model}")
         self._console.print(f"[dim]Tools:[/] bash, read, write, edit, glob, grep, todos")
-        self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
-        self._console.print(f"[dim]Skill Commands:[/] Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see all")
+        self._console.print(
+            f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all"
+        )
+        self._console.print(
+            f"[dim]Skill Commands:[/] Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see all"
+        )
         if self._model_presets:
-            self._console.print(
-                f"[dim]Model presets:[/] {', '.join(self._model_presets.keys())}"
-            )
+            self._console.print(f"[dim]Model presets:[/] {', '.join(self._model_presets.keys())}")
         self._console.print()
 
     def _print_help(self):
@@ -596,14 +561,20 @@ class ClaudeCodeCLI:
             return
 
         self._console.print()
-        self._console.print(Panel(
-            f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
-            f"[dim]{cmd.description}[/dim]\n\n"
-            f"[bold]Usage:[/bold] {cmd.usage}\n\n"
-            + (f"[bold]Examples:[/bold]\n" + "\n".join(f"  • {ex}" for ex in cmd.examples) if cmd.examples else ""),
-            title="[bold blue]Command Details[/bold blue]",
-            border_style="bright_blue",
-        ))
+        self._console.print(
+            Panel(
+                f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
+                f"[dim]{cmd.description}[/dim]\n\n"
+                f"[bold]Usage:[/bold] {cmd.usage}\n\n"
+                + (
+                    f"[bold]Examples:[/bold]\n" + "\n".join(f"  • {ex}" for ex in cmd.examples)
+                    if cmd.examples
+                    else ""
+                ),
+                title="[bold blue]Command Details[/bold blue]",
+                border_style="bright_blue",
+            )
+        )
         self._console.print()
 
     async def _handle_slash_command(self, text: str) -> bool:
@@ -702,8 +673,13 @@ class ClaudeCodeCLI:
             # Strip any hidden thinking blocks from the output
             if content:
                 import re
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
-                content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE)
+
+                content = re.sub(
+                    r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE
+                )
+                content = re.sub(
+                    r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE
+                )
             out_path.write_text(content, encoding="utf-8")
             self._console.print("[yellow]Generated AGENTS.md[/yellow]")
             return True
@@ -775,7 +751,11 @@ class ClaudeCodeCLI:
             self._console.print("[bold cyan]Allowed Directories:[/bold cyan]")
             for i, allowed_dir in enumerate(self._ctx.allowed_dirs, 1):
                 # 标记当前工作目录
-                marker = " [dim](current)[/]" if str(allowed_dir.resolve()) == str(self._ctx.working_dir.resolve()) else ""
+                marker = (
+                    " [dim](current)[/]"
+                    if str(allowed_dir.resolve()) == str(self._ctx.working_dir.resolve())
+                    else ""
+                )
                 self._console.print(f"  {i}. {allowed_dir}{marker}")
             self._console.print()
             return True
@@ -798,9 +778,7 @@ class ClaudeCodeCLI:
         """Print all available @ skills grouped by category."""
         self._console.print()
         self._console.print("[bold cyan]Available Skills (@):[/bold cyan]")
-        self._console.print(
-            "[dim]Use @<skill-name> to load a skill before your message[/dim]"
-        )
+        self._console.print("[dim]Use @<skill-name> to load a skill before your message[/dim]")
         self._console.print()
 
         categories = self._at_registry.get_by_category()
@@ -934,13 +912,16 @@ class ClaudeCodeCLI:
             self._console.print()
             self._console.print(
                 Panel(
-                    f"[{status_color}]{status_emoji} Task Completed:[/{status_color}]\n"
-                    f"[bold]Subagent:[/] {result.subagent_name}\n"
-                    f"[bold]Task ID:[/] {result.task_id}\n"
-                    f"[bold]Execution Time:[/] {result.execution_time_ms:.0f}ms\n"
-                    f"[bold]Tools Used:[/] {', '.join(result.tools_used) if result.tools_used else 'None'}\n"
-                    f"[bold]Result:[/] {result.final_response[:500]}..."
-                    if len(result.final_response) > 500 else "...",
+                    (
+                        f"[{status_color}]{status_emoji} Task Completed:[/{status_color}]\n"
+                        f"[bold]Subagent:[/] {result.subagent_name}\n"
+                        f"[bold]Task ID:[/] {result.task_id}\n"
+                        f"[bold]Execution Time:[/] {result.execution_time_ms:.0f}ms\n"
+                        f"[bold]Tools Used:[/] {', '.join(result.tools_used) if result.tools_used else 'None'}\n"
+                        f"[bold]Result:[/] {result.final_response[:500]}..."
+                        if len(result.final_response) > 500
+                        else "..."
+                    ),
                     title="[bold blue]Background Task Notification[/bold blue]",
                     border_style=status_color,
                 )
@@ -1016,17 +997,20 @@ class ClaudeCodeCLI:
         at_completer = AtCommandCompleter(self._at_registry)
         # Use merged completer to handle both / and @
         from prompt_toolkit.completion import merge_completers
+
         merged_completer = merge_completers([slash_completer, at_completer])
         threaded_completer = ThreadedCompleter(merged_completer)
 
         # Define style for better visual feedback
-        style = Style.from_dict({
-            "completion-menu.completion": "bg:#008888 #ffffff",
-            "completion-menu.completion.current": "bg:#ffffff #000000",
-            "completion-menu.meta.completion": "bg:#00aaaa #000000",
-            "completion-menu.meta.current": "bg:#00ffff #000000",
-            "completion-menu": "bg:#008888 #ffffff",
-        })
+        style = Style.from_dict(
+            {
+                "completion-menu.completion": "bg:#008888 #ffffff",
+                "completion-menu.completion.current": "bg:#ffffff #000000",
+                "completion-menu.meta.completion": "bg:#00aaaa #000000",
+                "completion-menu.meta.current": "bg:#00ffff #000000",
+                "completion-menu": "bg:#008888 #ffffff",
+            }
+        )
 
         # Create prompt session with completer
         session = PromptSession(
