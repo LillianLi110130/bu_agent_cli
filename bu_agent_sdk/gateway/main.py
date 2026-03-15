@@ -13,6 +13,7 @@ from bu_agent_sdk.bootstrap.agent_factory import create_agent, create_llm
 from bu_agent_sdk.bus.queue import MessageBus
 from bu_agent_sdk.channels.manager import ChannelManager
 from bu_agent_sdk.channels.telegram import TelegramChannel
+from bu_agent_sdk.channels.zhaohu import ZhaohuChannel
 from bu_agent_sdk.gateway.config import GatewaySettings
 from bu_agent_sdk.gateway.dispatcher import GatewayDispatcher
 from bu_agent_sdk.gateway.service import GatewayService
@@ -60,6 +61,16 @@ async def run_gateway(settings: GatewaySettings) -> None:
         channel_manager.register(TelegramChannel(config=telegram_config, bus=bus))
     else:
         logger.warning("TELEGRAM_BOT_TOKEN is empty; Telegram channel will not start")
+
+    if settings.zhaohu_enabled:
+        zhaohu_config = argparse.Namespace(
+            host=settings.zhaohu_host,
+            port=settings.zhaohu_port,
+            webhook_path=settings.zhaohu_webhook_path,
+        )
+        channel_manager.register(ZhaohuChannel(config=zhaohu_config, bus=bus))
+    else:
+        logger.info("ZHAOHU_ENABLED is false; Zhaohu channel will not start")
 
     heartbeat = HeartbeatService(
         workspace=settings.root_dir,
