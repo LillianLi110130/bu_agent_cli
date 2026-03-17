@@ -193,6 +193,18 @@ class SlashCommandRegistry:
                 ],
                 category="Ralph",
             ),
+            SlashCommand(
+                name="plugins",
+                description="List and reload built-in plugins",
+                usage="/plugins [list|show|reload]",
+                examples=[
+                    "/plugins",
+                    "/plugins list",
+                    "/plugins show review-kit",
+                    "/plugins reload",
+                ],
+                category="Plugins",
+            ),
         ]
 
         for cmd in default_commands:

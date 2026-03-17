@@ -11,7 +11,7 @@ import threading
 import time
 import hashlib
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from bu_agent_sdk import Agent
 from bu_agent_sdk.agent import (
@@ -21,6 +21,7 @@ from bu_agent_sdk.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from bu_agent_sdk.agent.registry import AgentRegistry
 from bu_agent_sdk.llm import ChatOpenAI
 from bu_agent_sdk.llm.messages import (
     ContentPartImageParam,
@@ -29,6 +30,7 @@ from bu_agent_sdk.llm.messages import (
     SystemMessage,
     UserMessage,
 )
+from bu_agent_sdk.plugin import PluginManager
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -58,6 +60,7 @@ from cli.image_input import (
     is_image_command,
     parse_image_command,
 )
+from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from tools import SandboxContext, SecurityError
 
@@ -136,7 +139,17 @@ class ClaudeCodeCLI:
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
 
-    def __init__(self, agent: Agent, context: SandboxContext):
+    def __init__(
+        self,
+        agent: Agent,
+        context: SandboxContext,
+        *,
+        slash_registry: SlashCommandRegistry | None = None,
+        at_registry: AtCommandRegistry | None = None,
+        agent_registry: AgentRegistry | None = None,
+        plugin_manager: PluginManager | None = None,
+        system_prompt_builder: Callable[[], str] | None = None,
+    ):
         """Initialize CLI with pre-configured agent and context.
 
         Args:
@@ -148,10 +161,13 @@ class ClaudeCodeCLI:
         self._ctx = context
         self._step_number = 0
         self._loading: _LoadingIndicator | None = None
-        self._slash_registry = SlashCommandRegistry()
-        self._at_registry = AtCommandRegistry(
+        self._slash_registry = slash_registry or SlashCommandRegistry()
+        self._at_registry = at_registry or AtCommandRegistry(
             Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
         )
+        self._agent_registry = agent_registry
+        self._plugin_manager = plugin_manager
+        self._system_prompt_builder = system_prompt_builder
         self._model_presets_path = (
             Path(__file__).resolve().parent.parent
             / "config"
@@ -1190,9 +1206,24 @@ class ClaudeCodeCLI:
             from cli.agents_handler import AgentSlashHandler
 
             handler = AgentSlashHandler(
+                registry=self._agent_registry,
                 console=self._console,
             )
             return await handler.handle(args)
+
+        if command_name == "plugins":
+            if self._plugin_manager is None:
+                self._console.print("[yellow]Plugin manager not configured.[/yellow]")
+                return True
+
+            handler = PluginSlashHandler(
+                manager=self._plugin_manager,
+                console=self._console,
+            )
+            result = await handler.handle(args)
+            if result.reloaded:
+                self._refresh_system_prompt()
+            return result.handled
 
         if command_name == "ralph":
             if self._ralph_handler is None:
@@ -1202,10 +1233,24 @@ class ClaudeCodeCLI:
                 )
             return await self._ralph_handler.handle(args)
 
+        if self._plugin_manager is not None:
+            plugin_command = self._plugin_manager.get_command(command_name)
+            if plugin_command is not None:
+                await self._run_agent(plugin_command.render_prompt(args), has_image=False)
+                return True
+
         # Unknown command
         self._console.print(f"[red]Unknown command: /{command_name}[/red]")
         self._console.print(f"[dim]Type /help for available commands.[/dim]")
         return True
+
+    def _refresh_system_prompt(self) -> None:
+        """Rebuild the agent system prompt after plugin registry changes."""
+        if self._system_prompt_builder is None:
+            return
+        self._agent.system_prompt = self._system_prompt_builder()
+        self._agent.clear_history()
+        self._console.print("[yellow]Conversation context reset after plugin reload.[/yellow]")
 
     def _print_available_skills(self):
         """Print all available @ skills grouped by category."""

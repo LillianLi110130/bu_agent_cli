@@ -17,7 +17,15 @@ class AgentRegistry:
         for md_file in agents_dir.glob("*.md"):
             config = parse_agent_config(md_file)
             if config:
-                self._configs[config.name] = config
+                self.register(config)
+
+    def register(self, config: AgentConfig) -> None:
+        """Register a single agent config."""
+        self._configs[config.name] = config
+
+    def unregister(self, name: str) -> None:
+        """Remove a registered agent config if present."""
+        self._configs.pop(name, None)
 
     def get_config(self, name: str) -> AgentConfig | None:
         return self._configs.get(name)

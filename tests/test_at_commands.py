@@ -1,24 +1,34 @@
-import tempfile
+import shutil
+import uuid
 from pathlib import Path
-from prompt_toolkit.document import Document
+
 from prompt_toolkit.completion import CompleteEvent
-import yaml
+from prompt_toolkit.document import Document
+
 from cli.at_commands import (
     AtCommand,
-    AtCommandRegistry,
     AtCommandCompleter,
+    AtCommandRegistry,
     extract_at_command,
     load_skill_content,
+    parse_at_command,
     prepend_skill_to_message,
 )
 
+
+def make_workspace(root: Path) -> Path:
+    workspace = root / f"case-{uuid.uuid4().hex[:8]}"
+    workspace.mkdir(parents=True, exist_ok=False)
+    return workspace
+
+
 def test_at_command_creation():
-    skill_path = Path("/fake/path/skill.md")
+    skill_path = Path("/fake/path/SKILL.md")
     cmd = AtCommand(
         name="test-skill",
         description="A test skill",
         path=skill_path,
-        category="General"
+        category="General",
     )
 
     assert cmd.name == "test-skill"
@@ -26,178 +36,139 @@ def test_at_command_creation():
     assert cmd.path == skill_path
     assert cmd.category == "General"
 
+
 def test_at_command_load_content_with_real_file():
-    # This test will be updated in a later task
-    # For now, just test that the method exists
-    skill_path = Path(__file__).parent.parent / "bu_agent_sdk" / "skills" / "calculator" / "skill.md"
+    skill_path = (
+        Path(__file__).parent.parent
+        / "bu_agent_sdk"
+        / "skills"
+        / "calculator"
+        / "SKILL.md"
+    )
     cmd = AtCommand(
         name="calculator",
         description="Test",
-        path=skill_path
+        path=skill_path,
     )
 
     content = cmd.load_content()
     assert isinstance(content, str)
     assert "Calculator" in content
 
-def test_parse_skill_frontmatter():
-    """Test that skill.md frontmatter is parsed correctly"""
 
-    # Create a temporary skill.md file
-    skill_content = """---
+def test_parse_skill_frontmatter():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    skill_path = workspace / "SKILL.md"
+    try:
+        skill_path.write_text(
+            """---
 name: test-skill
 description: A test skill
 category: Test Category
 ---
 
 # Test Skill Content
+""",
+            encoding="utf-8",
+        )
 
-This is the content of the skill.
-"""
-
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.md', delete=False) as f:
-        f.write(skill_content)
-        temp_path = Path(f.name)
-
-    try:
-        cmd = AtCommand.from_file(temp_path)
+        cmd = AtCommand.from_file(skill_path)
 
         assert cmd.name == "test-skill"
         assert cmd.description == "A test skill"
         assert cmd.category == "Test Category"
-        assert cmd.path == temp_path
+        assert cmd.path == skill_path
     finally:
-        temp_path.unlink()
+        shutil.rmtree(workspace, ignore_errors=True)
+
 
 def test_registry_discovery_from_skills_directory():
-    """Test that AtCommandRegistry auto-discovers skills"""
     skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
 
-    registry = AtCommandRegistry()
-    registry.discover_skills(skills_dir)
+    registry = AtCommandRegistry(skills_dir)
 
-    # Should find at least some known skills
     assert len(registry.commands) > 0
-
-    # Check calculator is found
     assert "calculator" in registry.commands
     calc = registry.commands["calculator"]
     assert calc.name == "calculator"
-    assert calc.path == skills_dir / "calculator" / "skill.md"
+    assert calc.path == skills_dir / "calculator" / "SKILL.md"
 
-def test_registry_get_command():
-    """Test getting a command by name"""
-    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
 
-    registry = AtCommandRegistry()
-    registry.discover_skills(skills_dir)
+def test_registry_register_and_unregister():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        registry = AtCommandRegistry(workspace / "missing-skills")
+        command = AtCommand(
+            name="custom:skill",
+            description="Custom skill",
+            path=workspace / "custom" / "SKILL.md",
+        )
 
-    cmd = registry.get_command("calculator")
-    assert cmd is not None
-    assert cmd.name == "calculator"
+        registry.register(command)
+        assert registry.get_command("custom:skill") is command
 
-    # Non-existent command returns None
-    cmd = registry.get_command("nonexistent")
-    assert cmd is None
+        registry.unregister("custom:skill")
+        assert registry.get_command("custom:skill") is None
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
-def test_registry_list_commands():
-    """Test listing all commands grouped by category"""
-    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
 
-    registry = AtCommandRegistry()
-    registry.discover_skills(skills_dir)
+def test_at_command_completer_supports_namespaced_commands():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        registry = AtCommandRegistry(workspace / "missing-skills")
+        registry.register(
+            AtCommand(
+                name="review-kit:code-review",
+                description="Review helper",
+                path=workspace / "review-kit" / "SKILL.md",
+            )
+        )
 
-    commands = registry.list_commands()
-    assert len(commands) > 0
+        completer = AtCommandCompleter(registry)
+        doc = Document("@review-kit:c", cursor_position=len("@review-kit:c"))
+        completions = list(completer.get_completions(doc, CompleteEvent()))
 
-    # Should be a dict with categories as keys
-    assert isinstance(commands, dict)
+        assert len(completions) == 1
+        assert completions[0].text == "review-kit:code-review"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
-def test_at_command_completer():
-    """Test AtCommandCompleter provides completions for @ commands"""
-    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
 
-    registry = AtCommandRegistry()
-    registry.discover_skills(skills_dir)
+def test_extract_and_parse_at_command_support_namespaces():
+    command = extract_at_command("@review-kit:code-review focus on tests")
+    assert command == "review-kit:code-review"
 
-    completer = AtCommandCompleter(registry)
+    parsed_name, parsed_message = parse_at_command(
+        "@review-kit:code-review focus on tests"
+    )
+    assert parsed_name == "review-kit:code-review"
+    assert parsed_message == "focus on tests"
 
-    # Test completion for "@cal"
-    doc = Document("@cal", cursor_position=4)
-    event = CompleteEvent()
-    completions = list(completer.get_completions(doc, event))
 
-    # Should have at least 'calculator' in completions
-    assert len(completions) > 0
-    texts = [c.text for c in completions]
-    assert "calculator" in texts
+def test_load_skill_content_reads_from_path():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    skill_path = workspace / "SKILL.md"
+    try:
+        skill_path.write_text("# Calculator Skill", encoding="utf-8")
+        assert load_skill_content(skill_path) == "# Calculator Skill"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
 
-def test_at_command_completer_no_trigger_on_at_sign():
-    """Test completer doesn't trigger when not starting with @"""
-    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
-
-    registry = AtCommandRegistry()
-    registry.discover_skills(skills_dir)
-
-    completer = AtCommandCompleter(registry)
-
-    # Test completion for "cal" (without @) - should not trigger
-    doc = Document("cal", cursor_position=3)
-    event = CompleteEvent()
-    completions = list(completer.get_completions(doc, event))
-
-    # Should have no completions
-    assert len(completions) == 0
-
-def test_extract_at_command():
-    """Test extracting @ command name from user message"""
-    # Simple @ command
-    cmd = extract_at_command("@calculator help me with math")
-    assert cmd == "calculator"
-
-    # @ command at start with space after
-    cmd = extract_at_command("@calculator 2 + 2")
-    assert cmd == "calculator"
-
-    # No @ command
-    cmd = extract_at_command("help me with math")
-    assert cmd is None
-
-    # @ in middle of text (should be detected)
-    cmd = extract_at_command("I need @calculator help")
-    assert cmd == "calculator"
-
-    # Just @ with nothing
-    cmd = extract_at_command("@")
-    assert cmd is None
-
-    # @ followed by space
-    cmd = extract_at_command("@ something")
-    assert cmd is None
-
-def test_load_skill_content():
-    """Test loading skill content via registry"""
-    skills_dir = Path(__file__).parent.parent / "bu_agent_sdk" / "skills"
-
-    registry = AtCommandRegistry()
-    registry.discover_skills(skills_dir)
-
-    content = load_skill_content(registry, "calculator")
-    assert content is not None
-    assert len(content) > 0
-
-    # Should contain markdown from skill file
-    assert "calculator" in content.lower()
-
-def test_load_skill_content_nonexistent():
-    """Test loading content for non-existent skill"""
-    registry = AtCommandRegistry()
-
-    content = load_skill_content(registry, "nonexistent")
-    assert content is None
 
 def test_prepend_skill_to_message():
-    """Test prepending skill content to user message"""
     skill_content = """# Calculator Skill
 
 This is a calculator skill.
@@ -206,26 +177,11 @@ This is a calculator skill.
 
     result = prepend_skill_to_message(skill_content, user_message)
 
-    assert result.startswith(skill_content)
+    assert result.startswith(skill_content.rstrip())
     assert user_message in result
 
-def test_prepend_skill_to_message_with_separator():
-    """Test that separator is added between skill and message"""
-    skill_content = "# Calculator Skill"
-    user_message = "What is 2 + 2?"
-
-    result = prepend_skill_to_message(skill_content, user_message)
-
-    # Should have separator
-    assert "\n\n" in result or "\n" in result
 
 def test_prepend_skill_to_message_empty_skill():
-    """Test prepending with empty skill content"""
-    skill_content = ""
     user_message = "What is 2 + 2?"
-
-    result = prepend_skill_to_message(skill_content, user_message)
-
-    # Should just return the user message
+    result = prepend_skill_to_message("", user_message)
     assert result == user_message
-

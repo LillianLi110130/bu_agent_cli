@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "name": "review-kit",
+  "version": "0.1.0",
+  "description": "Built-in review helpers for code review workflows.",
+  "capabilities": {
+    "skills": true,
+    "agents": true,
+    "commands": true
+  }
+}

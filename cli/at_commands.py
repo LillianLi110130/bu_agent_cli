@@ -123,13 +123,25 @@ class AtCommandRegistry:
         if not self._skills_dir.exists():
             return
 
-        for skill_path in sorted(self._skills_dir.glob("*/skill.md")):
+        discovered_paths: set[Path] = set()
+        for pattern in ("*/skill.md", "*/SKILL.md"):
+            discovered_paths.update(self._skills_dir.glob(pattern))
+
+        for skill_path in sorted(discovered_paths):
             try:
                 cmd = AtCommand.from_file(skill_path)
-                self.commands[cmd.name] = cmd
+                self.register(cmd)
             except (ValueError, FileNotFoundError, OSError):
                 # Skip invalid skill files silently
                 continue
+
+    def register(self, command: AtCommand) -> None:
+        """Register a skill command."""
+        self.commands[command.name] = command
+
+    def unregister(self, name: str) -> None:
+        """Unregister a skill command if present."""
+        self.commands.pop(name, None)
 
     def get(self, name: str) -> AtCommand | None:
         """Get an AtCommand by name."""
@@ -262,7 +274,7 @@ def extract_at_command(message: str):
         The command name (without @ prefix), or None if no @ command found
     """
     # Match @ followed by common skill-name characters.
-    match = re.search(r"@([A-Za-z0-9][A-Za-z0-9_-]*)", message)
+    match = re.search(r"@([A-Za-z0-9][A-Za-z0-9:_-]*)", message)
     return match.group(1) if match else None
 
 
@@ -275,7 +287,7 @@ def is_at_command(text: str) -> bool:
 def parse_at_command(text: str) -> tuple[str, str]:
     """Parse text into (<skill_name>, <message_without_skill_prefix>)."""
     stripped = text.strip()
-    match = re.match(r"^@([A-Za-z0-9][A-Za-z0-9_-]*)\s*(.*)$", stripped, re.DOTALL)
+    match = re.match(r"^@([A-Za-z0-9][A-Za-z0-9:_-]*)\s*(.*)$", stripped, re.DOTALL)
     if not match:
         return "", ""
     return match.group(1), match.group(2)

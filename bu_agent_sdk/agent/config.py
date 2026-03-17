@@ -10,6 +10,7 @@ class AgentConfig:
     name: str
     description: str
     mode: str
+    source_path: Path | None = None
     model: Optional[str] = None
     temperature: Optional[float] = None
     tools: dict[str, bool] | None = None
@@ -35,6 +36,7 @@ def parse_agent_config(md_file: Path) -> Optional[AgentConfig]:
         name=md_file.stem,
         description=metadata.get("description", ""),
         mode=mode,
+        source_path=md_file,
         model=metadata.get("model"),
         temperature=metadata.get("temperature", 0.2),
         tools=metadata.get("tools"),

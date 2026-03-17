@@ -19,16 +19,18 @@ Environment Variables:
 import argparse
 import asyncio
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from bu_agent_sdk import Agent
 from bu_agent_sdk.llm import ChatOpenAI
 from bu_agent_sdk.agent.config import AgentConfig
-
-from bu_agent_sdk.skill.loader import load_skills
-from bu_agent_sdk.skill.types import Skill
+from bu_agent_sdk.agent.registry import AgentRegistry
+from bu_agent_sdk.plugin import PluginManager
 from cli.app import ClaudeCodeCLI
+from cli.at_commands import AtCommand, AtCommandRegistry
+from cli.slash_commands import SlashCommandRegistry
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 
@@ -40,20 +42,30 @@ from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 _PROMPTS_DIR = _SCRIPT_DIR / "bu_agent_sdk" / "prompts"
 _SKILLS_DIR = _SCRIPT_DIR / "bu_agent_sdk" / "skills"
+_AGENTS_DIR = _PROMPTS_DIR / "agents"
+_PLUGINS_DIR = _SCRIPT_DIR / "plugins"
 
 
-def _format_skills(skills: list[Skill]) -> str:
+@dataclass(slots=True)
+class RuntimeRegistries:
+    slash_registry: SlashCommandRegistry
+    skill_registry: AtCommandRegistry
+    agent_registry: AgentRegistry
+    plugin_manager: PluginManager
+
+
+def _format_skills(skills: list[AtCommand]) -> str:
     """Format skills list into a readable string for the prompt."""
     if not skills:
         return "No skills available."
-    
+
     skills_formatted = "\n".join(
         (
             f"- {skill.name}\n"
             f"  - Path: {skill.path}\n"
             f"  - Desc: {skill.description}"
         )
-        for skill in skills
+        for skill in sorted(skills, key=lambda item: item.name)
     )
     return skills_formatted
 
@@ -117,25 +129,52 @@ def _get_system_info() -> str:
         return f"{system} {release}"
 
 
-def _build_system_prompt(working_dir: Path) -> str:
+def create_runtime_registries(
+    *,
+    plugin_dir: Path | None = None,
+    skills_dir: Path | None = None,
+    agents_dir: Path | None = None,
+) -> RuntimeRegistries:
+    """Create shared registries for built-ins and built-in plugins."""
+    slash_registry = SlashCommandRegistry()
+    skill_registry = AtCommandRegistry(skills_dir or _SKILLS_DIR)
+    agent_registry = AgentRegistry(agents_dir or _AGENTS_DIR)
+    plugin_manager = PluginManager(
+        plugin_dir=plugin_dir or _PLUGINS_DIR,
+        slash_registry=slash_registry,
+        skill_registry=skill_registry,
+        agent_registry=agent_registry,
+    )
+    plugin_manager.load_all()
+    return RuntimeRegistries(
+        slash_registry=slash_registry,
+        skill_registry=skill_registry,
+        agent_registry=agent_registry,
+        plugin_manager=plugin_manager,
+    )
+
+
+def _build_system_prompt(
+    working_dir: Path,
+    skill_registry: AtCommandRegistry,
+    agent_registry: AgentRegistry,
+) -> str:
     """Build the system prompt by loading template and injecting skills."""
     from string import Template
 
     # Load skills and Format skills
-    skills = load_skills(working_dir / "bu_agent_sdk" / "skills")
+    skills = skill_registry.get_all()
     skills_text = _format_skills(skills)
 
     # Load subagents
-    from bu_agent_sdk.agent.registry import get_agent_registry
-    registry = get_agent_registry()
-    callable_agents = registry.list_callable_agents()
+    callable_agents = agent_registry.list_callable_agents()
 
     # Format subagents
     agents_text = ""
     if callable_agents:
         agents_lines = []
         for agent_name in callable_agents:
-            config = registry.get_config(agent_name)
+            config = agent_registry.get_config(agent_name)
             if config:
                 agents_lines.append(f"- {agent_name}: {config.description}")
         agents_text = "\n".join(agents_lines)
@@ -190,26 +229,29 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
 
 def create_agent(
     model: str | None, root_dir: Path | str | None = None,
-    mode: str = "primary", agent_config: AgentConfig | None = None
-) -> tuple[Agent, SandboxContext]:
+    mode: str = "primary", agent_config: AgentConfig | None = None,
+    runtime_registries: RuntimeRegistries | None = None,
+) -> tuple[Agent, SandboxContext, RuntimeRegistries]:
     """Create configured Agent and SandboxContext.
 
     Returns:
-        Tuple of (Agent, SandboxContext)
+        Tuple of (Agent, SandboxContext, RuntimeRegistries)
     """
     from bu_agent_sdk.agent.subagent_manager import SubagentManager
 
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
+    runtime = runtime_registries or create_runtime_registries()
 
-    system_prompt = _build_system_prompt(ctx.working_dir)
-
-    from bu_agent_sdk.agent.registry import get_agent_registry
-    registry = get_agent_registry()
+    system_prompt = _build_system_prompt(
+        ctx.working_dir,
+        skill_registry=runtime.skill_registry,
+        agent_registry=runtime.agent_registry,
+    )
 
     subagent_manager = SubagentManager(
         agent_factory=_create_subagent_factory,
-        registry=registry,
+        registry=runtime.agent_registry,
         all_tools=ALL_TOOLS,
         workspace=ctx.working_dir,
         context=ctx,
@@ -228,7 +270,7 @@ def create_agent(
     if subagent_manager:
         subagent_manager.set_main_agent(agent)
 
-    return agent, ctx
+    return agent, ctx, runtime
 
 
 def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
@@ -257,8 +299,25 @@ async def main():
     """Main entry point."""
     args = parse_args()
 
-    agent, ctx = create_agent(model=args.model, root_dir=args.root_dir)
-    cli = ClaudeCodeCLI(agent=agent, context=ctx)
+    runtime = create_runtime_registries()
+    agent, ctx, runtime = create_agent(
+        model=args.model,
+        root_dir=args.root_dir,
+        runtime_registries=runtime,
+    )
+    cli = ClaudeCodeCLI(
+        agent=agent,
+        context=ctx,
+        slash_registry=runtime.slash_registry,
+        at_registry=runtime.skill_registry,
+        agent_registry=runtime.agent_registry,
+        plugin_manager=runtime.plugin_manager,
+        system_prompt_builder=lambda: _build_system_prompt(
+            ctx.working_dir,
+            skill_registry=runtime.skill_registry,
+            agent_registry=runtime.agent_registry,
+        ),
+    )
 
     try:
         await cli.run()

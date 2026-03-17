@@ -220,7 +220,7 @@ class AgentSlashHandler:
         details.append(f"[dim]{prompt_preview}[/dim]")
 
         # File path
-        file_path = self.agents_dir / f"{config.name}.md"
+        file_path = config.source_path or (self.agents_dir / f"{config.name}.md")
         if file_path.exists():
             details.append("")
             details.append(f"[bold cyan]File:[/] [dim]{file_path}[/dim]")
