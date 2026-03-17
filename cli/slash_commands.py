@@ -8,6 +8,7 @@ Provides autocomplete for slash commands starting with '/', including:
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import re
 from typing import Callable
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -372,20 +373,37 @@ def is_slash_command(text: str) -> bool:
     return text.strip().startswith("/")
 
 
-def parse_slash_command(text: str) -> tuple[str, list[str]]:
-    """Parse a slash command into name and arguments.
+@dataclass(slots=True)
+class ParsedSlashCommand:
+    """Structured result for a slash command parse."""
+
+    name: str
+    args: list[str]
+    args_text: str = ""
+
+
+def parse_slash_command(text: str) -> ParsedSlashCommand:
+    """Parse a slash command into name, arguments, and raw argument text.
 
     Args:
         text: Slash command text (e.g., "/model gpt-4o")
 
     Returns:
-        Tuple of (command_name, arguments_list)
+        ParsedSlashCommand with the command name and parsed arguments
     """
-    parts = text.strip()[1:].split()
-    if not parts:
-        return "", []
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return ParsedSlashCommand(name="", args=[], args_text="")
 
-    command_name = parts[0]
-    args = parts[1:] if len(parts) > 1 else []
+    command_body = stripped[1:].lstrip()
+    if not command_body:
+        return ParsedSlashCommand(name="", args=[], args_text="")
 
-    return command_name, args
+    match = re.match(r"^(?P<name>\S+)(?P<rest>[\s\S]*)$", command_body)
+    if match is None:
+        return ParsedSlashCommand(name="", args=[], args_text="")
+
+    command_name = match.group("name")
+    args_text = match.group("rest").lstrip()
+    args = args_text.split() if args_text else []
+    return ParsedSlashCommand(name=command_name, args=args, args_text=args_text)

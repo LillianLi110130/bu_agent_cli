@@ -30,7 +30,11 @@ from bu_agent_sdk.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from bu_agent_sdk.plugin import PluginManager
+from bu_agent_sdk.plugin import (
+    PluginCommandExecutor,
+    PluginExecutionError,
+    PluginManager,
+)
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -167,6 +171,7 @@ class ClaudeCodeCLI:
         )
         self._agent_registry = agent_registry
         self._plugin_manager = plugin_manager
+        self._plugin_executor = PluginCommandExecutor()
         self._system_prompt_builder = system_prompt_builder
         self._model_presets_path = (
             Path(__file__).resolve().parent.parent
@@ -1036,7 +1041,10 @@ class ClaudeCodeCLI:
         Returns:
             True if the command was handled, False otherwise
         """
-        command_name, args = parse_slash_command(text)
+        parsed_command = parse_slash_command(text)
+        command_name = parsed_command.name
+        args = parsed_command.args
+        args_text = parsed_command.args_text
 
         # Handle help command
         if command_name in ("help", "h"):
@@ -1236,7 +1244,23 @@ class ClaudeCodeCLI:
         if self._plugin_manager is not None:
             plugin_command = self._plugin_manager.get_command(command_name)
             if plugin_command is not None:
-                await self._run_agent(plugin_command.render_prompt(args), has_image=False)
+                try:
+                    command_output = await self._plugin_executor.execute(
+                        plugin_command,
+                        args=args,
+                        args_text=args_text,
+                        working_dir=self._ctx.working_dir,
+                    )
+                except PluginExecutionError as e:
+                    self._console.print(f"[red]{e}[/red]")
+                    return True
+
+                if plugin_command.mode == "python":
+                    if command_output:
+                        self._console.print(command_output)
+                    return True
+
+                await self._run_agent(command_output, has_image=False)
                 return True
 
         # Unknown command

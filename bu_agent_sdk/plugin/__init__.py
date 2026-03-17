@@ -1,9 +1,13 @@
+from .executor import PluginCommandExecutor, PluginExecutionError
 from .manager import PluginManager
-from .types import PluginManifest, PluginPromptCommand, PluginRecord
+from .types import PluginCommand, PluginManifest, PluginPromptCommand, PluginRecord
 
 __all__ = [
     "PluginManager",
-    "PluginManifest",
+    "PluginCommandExecutor",
+    "PluginExecutionError",
+    "PluginCommand",
     "PluginPromptCommand",
+    "PluginManifest",
     "PluginRecord",
 ]

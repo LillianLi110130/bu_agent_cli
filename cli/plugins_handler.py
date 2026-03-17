@@ -101,7 +101,12 @@ class PluginSlashHandler:
         if plugin.agents:
             lines.append(f"[bold cyan]Agents:[/] {', '.join(plugin.agents)}")
         if plugin.commands:
-            lines.append(f"[bold cyan]Commands:[/] {', '.join('/' + item for item in plugin.commands)}")
+            command_labels = []
+            for item in plugin.commands:
+                command = self._manager.get_command(item)
+                mode_suffix = f" ({command.mode})" if command is not None else ""
+                command_labels.append("/" + item + mode_suffix)
+            lines.append(f"[bold cyan]Commands:[/] {', '.join(command_labels)}")
         if plugin.warnings:
             lines.append(f"[bold yellow]Warnings:[/] {'; '.join(plugin.warnings)}")
 

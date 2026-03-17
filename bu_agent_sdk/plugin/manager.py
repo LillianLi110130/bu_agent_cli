@@ -9,7 +9,7 @@ from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.slash_commands import SlashCommand, SlashCommandRegistry
 
 from .loader import PluginLoader
-from .types import PluginPromptCommand, PluginRecord
+from .types import PluginCommand, PluginRecord
 
 
 class PluginManager:
@@ -21,20 +21,23 @@ class PluginManager:
         slash_registry: SlashCommandRegistry,
         skill_registry: AtCommandRegistry,
         agent_registry: AgentRegistry,
+        *,
+        current_cli_version: str | None = None,
     ):
         self.plugin_dir = plugin_dir
-        self._loader = PluginLoader(plugin_dir)
+        self._loader = PluginLoader(plugin_dir, current_cli_version=current_cli_version)
         self._slash_registry = slash_registry
         self._skill_registry = skill_registry
         self._agent_registry = agent_registry
         self._plugins: dict[str, PluginRecord] = {}
-        self._commands: dict[str, PluginPromptCommand] = {}
+        self._commands: dict[str, PluginCommand] = {}
 
     def load_all(self) -> list[PluginRecord]:
         self.unload_all()
         loaded: list[PluginRecord] = []
+        seen_manifest_names: dict[str, Path] = {}
         for plugin_path in self._loader.discover():
-            loaded.append(self._load_plugin(plugin_path))
+            loaded.append(self._load_plugin(plugin_path, seen_manifest_names))
         loaded.sort(key=lambda item: item.name)
         return loaded
 
@@ -54,10 +57,14 @@ class PluginManager:
     def get_plugin(self, name: str) -> PluginRecord | None:
         return self._plugins.get(name)
 
-    def get_command(self, full_name: str) -> PluginPromptCommand | None:
+    def get_command(self, full_name: str) -> PluginCommand | None:
         return self._commands.get(full_name)
 
-    def _load_plugin(self, plugin_path: Path) -> PluginRecord:
+    def _load_plugin(
+        self,
+        plugin_path: Path,
+        seen_manifest_names: dict[str, Path],
+    ) -> PluginRecord:
         try:
             manifest = self._loader.load_manifest(plugin_path)
         except Exception as exc:
@@ -67,9 +74,25 @@ class PluginManager:
                 status="failed",
                 error=str(exc),
             )
-            self._plugins[record.name] = record
+            self._plugins[plugin_path.name] = record
             return record
 
+        if manifest.name in seen_manifest_names:
+            original_path = seen_manifest_names[manifest.name]
+            record = PluginRecord(
+                name=plugin_path.name,
+                path=plugin_path,
+                status="failed",
+                manifest=manifest,
+                error=(
+                    f"Duplicate plugin name '{manifest.name}' conflicts with "
+                    f"'{original_path.name}'"
+                ),
+            )
+            self._plugins[plugin_path.name] = record
+            return record
+
+        seen_manifest_names[manifest.name] = plugin_path
         record = PluginRecord(
             name=manifest.name,
             path=plugin_path,
@@ -137,7 +160,7 @@ class PluginManager:
             return
 
         for md_file in sorted(commands_dir.glob("*.md")):
-            command = self._loader.load_prompt_command(plugin.name, md_file)
+            command = self._loader.load_command(plugin.path, plugin.name, md_file)
             self._commands[command.full_name] = command
             self._slash_registry.register(
                 SlashCommand(

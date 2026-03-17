@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(slots=True)
@@ -40,14 +41,16 @@ class PluginManifest:
 
 
 @dataclass(slots=True)
-class PluginPromptCommand:
-    """Prompt-only slash command contributed by a plugin."""
+class PluginCommand:
+    """Slash command resource contributed by a plugin."""
 
     plugin_name: str
     name: str
     description: str
     path: Path
-    content: str
+    mode: Literal["prompt", "python"] = "prompt"
+    content: str = ""
+    script: Path | None = None
     usage: str = ""
     category: str = "Plugins"
     examples: list[str] = field(default_factory=list)
@@ -56,14 +59,24 @@ class PluginPromptCommand:
     def full_name(self) -> str:
         return f"{self.plugin_name}:{self.name}"
 
-    def render_prompt(self, args: list[str]) -> str:
-        args_text = " ".join(args).strip()
+    @property
+    def plugin_root(self) -> Path:
+        return self.path.parent.parent
+
+    def render_prompt(self, args_text: str) -> str:
+        if self.mode != "prompt":
+            raise ValueError(f"Command '{self.full_name}' is not a prompt command")
+
+        args_text = args_text.strip()
         prompt = self.content.strip()
         if "{{args}}" in prompt:
             return prompt.replace("{{args}}", args_text)
         if not args_text:
             return prompt
         return f"{prompt}\n\n---\n\n## Command Arguments\n{args_text}"
+
+
+PluginPromptCommand = PluginCommand
 
 
 @dataclass(slots=True)

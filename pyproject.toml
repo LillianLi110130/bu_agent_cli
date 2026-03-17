@@ -9,6 +9,7 @@ dependencies = [
     "openai>=1.0.0",
     "httpx>=0.24.0",
     "prompt-toolkit>=3.0.0",
+    "packaging>=23.0",
     "rich>=13.0.0",
     "python-dotenv>=1.0.0",
     "anyio>=3.0.0",
@@ -43,6 +44,7 @@ packages = ["bu_agent_sdk", "cli", "tools"]
 ".devagent" = ".devagent"
 ".env.example" = ".env.example"
 "README.md" = "README.md"
+"plugins" = "plugins"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -57,6 +59,7 @@ include = [
     ".devagent/**",
     ".env.example",
     "README.md",
+    "plugins/**",
     "pyproject.toml",
 ]
 
