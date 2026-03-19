@@ -16,7 +16,6 @@ from plugins.runtime_helpers import (
     require_paths,
     run_devagent,
     spec_dir,
-    sync_plugin_subagents,
 )
 
 
@@ -47,8 +46,6 @@ def main() -> int:
     if not require_devagent():
         print("Error: devagent command not found")
         return 0
-
-    sync_plugin_subagents(plugin_root, working_dir)
 
     prompt = render_prompt(
         read_prompt(plugin_root, "prompts/tasks.md"),

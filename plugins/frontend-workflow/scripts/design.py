@@ -16,7 +16,6 @@ from plugins.runtime_helpers import (
     require_paths,
     run_devagent,
     spec_dir,
-    sync_plugin_subagents,
 )
 
 
@@ -48,7 +47,6 @@ def main() -> int:
         return 0
 
     artifacts_dir.mkdir(parents=True, exist_ok=True)
-    sync_plugin_subagents(plugin_root, working_dir)
 
     prompt = render_prompt(
         read_prompt(plugin_root, "prompts/design.md"),
