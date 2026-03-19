@@ -29,6 +29,7 @@ def test_workflow_plugins_load_expected_commands():
 
     frontend = manager.get_plugin("frontend-workflow")
     ta_workflow = manager.get_plugin("ta-workflow")
+    tgcrab_frontend = manager.get_plugin("tgcrab-frontend")
 
     assert frontend is not None
     assert frontend.status == "loaded"
@@ -43,6 +44,14 @@ def test_workflow_plugins_load_expected_commands():
     assert set(ta_workflow.commands) == {
         "ta-workflow:decompose",
         "ta-workflow:ta",
+    }
+
+    assert tgcrab_frontend is not None
+    assert tgcrab_frontend.status == "loaded"
+    assert set(tgcrab_frontend.commands) == {
+        "tgcrab-frontend:design",
+        "tgcrab-frontend:requirement",
+        "tgcrab-frontend:tasks",
     }
 
     assert manager.get_command("frontend-workflow:init") is None

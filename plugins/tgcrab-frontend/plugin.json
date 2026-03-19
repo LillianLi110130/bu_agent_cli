@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "tgcrab-frontend",
+  "version": "1.0.0",
+  "description": "使用当前仓库 agent 执行前端需求分析、技术设计与任务拆解的纯 prompt 插件",
+  "min_cli_version": "0.1.0",
+  "capabilities": {
+    "agents": false,
+    "commands": true,
+    "skills": false
+  }
+}
