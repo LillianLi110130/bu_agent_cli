@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "ta-workflow",
+  "version": "1.0.0",
+  "description": "TA 两阶段任务拆解插件：TA 分析与任务分解",
+  "min_cli_version": "0.1.0",
+  "capabilities": {
+    "agents": false,
+    "commands": true,
+    "skills": false
+  }
+}

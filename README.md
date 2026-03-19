@@ -1,4 +1,4 @@
-﻿# BU Agent CLI
+# BU Agent CLI
 
 一个面向编码场景的 Agent CLI，基于 `bu_agent_sdk` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派和上下文压缩。
 
@@ -27,6 +27,7 @@
 - 扩展层：
   - Skills：`bu_agent_sdk/skills/`
   - 子代理配置：`bu_agent_sdk/prompts/agents/*.md`
+  - 规划插件：`plugins/`
 
 ## 安装
 
@@ -99,38 +100,72 @@ bu-agent --root-dir ./your-project
 - `/pwd`
 - `/clear` `/cls`
 - `/model [show|list|<preset>]`
-- `/ralph <init-spec|init-agent|ta|decompose|dry-run|run|status|cancel> ...`
+- `/ralph <init-spec|init-agent|dry-run|run|status|cancel> ...`
 - `/skills`
 - `/reset`
 - `/history`（占位，暂未实现完整历史展示）
 
-## Ralph Loop
+## Ralph 与规划插件
 
-Ralph Loop 是仓库内置的一套命令式需求拆解和批量实现工作流。它通过 `/ralph` 显式触发，不走主 Agent 的工具调用链。
+Ralph 现在只负责两件事：
 
-当前推荐使用两阶段拆解流程：
+- 初始化标准 spec 目录和最小 `.devagent`
+- 执行 `plan/plan.json` 与 `plan/*.md` 中定义的任务
+
+任务拆解不再由 Ralph Core 负责，而是交给插件完成。当前内置两类规划插件：
+
+- `ta-workflow`
+  - 两阶段：`/ta-workflow:ta`、`/ta-workflow:decompose`
+- `frontend-workflow`
+  - 三阶段：`/frontend-workflow:requirement`、`/frontend-workflow:design`、`/frontend-workflow:tasks`
+
+推荐流程：
 
 ```text
 /ralph init-spec my_spec
 /ralph init-agent
-# 手动将原始需求文档放入 docs/spec/my_spec/requirement/
-/ralph ta my_spec
-/ralph decompose my_spec
+# 将原始需求放入 docs/spec/my_spec/input/
+/frontend-workflow:requirement my_spec
+/frontend-workflow:design my_spec
+/frontend-workflow:tasks my_spec
 /ralph dry-run my_spec
 /ralph run my_spec --silent
 /ralph status
 ```
 
+标准 spec 目录：
+
+```text
+docs/spec/<spec_name>/
+├── input/
+├── artifacts/
+├── plan/
+│   └── plan.json
+├── implement/
+└── logs/
+```
+
 说明：
 
-- `/ralph ta`：调用 `TA.md` 生成标准化前置文档
-  - `<spec_name>-requirements.md`
-  - `<spec_name>-design.md`
-  - `<spec_name>-task.md`
-- `/ralph decompose`：优先消费上述 3 个文档，再生成 `plan/*.md` 和 `plan.json`
-- `/ralph run`：后台执行 `ralph_loop.py`，批量处理 `plan.json` 中的任务
+- `input/`：原始需求输入
+- `artifacts/`：插件拆解过程的中间产物
+- `plan/`：Ralph 真正消费的最终计划
+- `implement/`：执行阶段产物
+- `logs/`：拆解和执行日志
 
-详细命令说明、目录约定、日志说明和 FAQ 见 [RALPH_LOOP_GUIDE.md](./RALPH_LOOP_GUIDE.md)。
+最小 `.devagent` 结构：
+
+```text
+.devagent/
+├── agents/
+└── commands/
+    └── ralph/
+        └── implement.md
+```
+
+插件会在各自阶段命令执行前，自动把 `dev_subagents/*.md` 同步到工作区 `.devagent/agents/`。
+
+详细说明见 [RALPH_LOOP_GUIDE.md](./RALPH_LOOP_GUIDE.md)。
 
 ## Skill 命令（@）
 
@@ -173,6 +208,7 @@ bu_agent_cli/
 ├── ralph_loop.py
 ├── .devagent/
 ├── template/
+├── plugins/
 ├── cli/
 │   ├── app.py
 │   ├── slash_commands.py
@@ -202,4 +238,4 @@ bu_agent_cli/
 
 ## 说明
 
-- README 以当前仓库代码为准，若你新增工具或子代理，请同步更新本文档。
+- README 以当前仓库代码为准，若你新增工具、插件或子代理，请同步更新本文档。

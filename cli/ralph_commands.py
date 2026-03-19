@@ -57,22 +57,6 @@ class RalphSlashHandler:
             result = await self.service.init_agent(target_dir=namespace.target_dir)
             return self._print_result(result.success, result.message)
 
-        if command == "ta":
-            description = " ".join(namespace.description).strip()
-            result = await self.service.ta(
-                spec_name=namespace.spec_name,
-                description=description,
-            )
-            return self._print_result(result.success, result.message)
-
-        if command == "decompose":
-            description = " ".join(namespace.description).strip()
-            result = await self.service.decompose(
-                spec_name=namespace.spec_name,
-                description=description,
-            )
-            return self._print_result(result.success, result.message)
-
         if command == "dry-run":
             result = await self.service.dry_run(
                 spec_name=namespace.spec_name,
@@ -132,14 +116,6 @@ class RalphSlashHandler:
 
         init_agent = subparsers.add_parser("init-agent", add_help=False)
         init_agent.add_argument("--target-dir", default=".")
-
-        ta = subparsers.add_parser("ta", add_help=False)
-        ta.add_argument("spec_name")
-        ta.add_argument("description", nargs="*")
-
-        decompose = subparsers.add_parser("decompose", add_help=False)
-        decompose.add_argument("spec_name")
-        decompose.add_argument("description", nargs="*")
 
         dry_run = subparsers.add_parser("dry-run", add_help=False)
         self._add_execution_args(dry_run)

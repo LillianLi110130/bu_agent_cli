@@ -13,7 +13,6 @@ from plugins.runtime_helpers import (
     read_prompt,
     render_prompt,
     require_devagent,
-    require_paths,
     run_devagent,
     spec_dir,
     sync_plugin_subagents,
@@ -27,34 +26,31 @@ def main() -> int:
     args = payload.get("args", [])
 
     if not args:
-        print("Usage: /frontend-workflow:design <spec_name>")
+        print("Usage: /ta-workflow:ta <spec_name>")
         return 0
 
     spec_name = args[0]
     current_spec_dir = spec_dir(working_dir, spec_name)
-    artifacts_dir = current_spec_dir / "artifacts" / "frontend-workflow"
-    requirement_file = artifacts_dir / "01_requirement.md"
-    design_file = artifacts_dir / "02_design.md"
     input_dir = current_spec_dir / "input"
+    artifacts_dir = current_spec_dir / "artifacts" / "ta-workflow"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
 
-    missing = require_paths([requirement_file])
-    if missing:
-        print("Error: missing prerequisite files:")
-        for path in missing:
-            print(f"  - {path}")
+    if not input_dir.exists():
+        print(f"Error: input directory not found: {input_dir}")
         return 0
     if not require_devagent():
         print("Error: devagent command not found")
         return 0
 
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
     sync_plugin_subagents(plugin_root, working_dir)
 
     prompt = render_prompt(
-        read_prompt(plugin_root, "prompts/design.md"),
+        read_prompt(plugin_root, "prompts/ta.md"),
+        spec_name=spec_name,
         input_dir=str(input_dir).replace('\\', '/'),
-        requirement_file=str(requirement_file).replace('\\', '/'),
-        design_file=str(design_file).replace('\\', '/'),
+        requirements_file=str((artifacts_dir / '01_requirements.md')).replace('\\', '/'),
+        design_file=str((artifacts_dir / '02_design.md')).replace('\\', '/'),
+        task_domains_file=str((artifacts_dir / '03_task_domains.md')).replace('\\', '/'),
     )
     return run_devagent(working_dir, prompt)
 

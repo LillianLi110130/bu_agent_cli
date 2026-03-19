@@ -30,7 +30,8 @@ def test_ralph_service_init_spec():
         assert spec_dir.exists()
         assert (spec_dir / "plan" / "plan.json").exists()
         assert json.loads((spec_dir / "plan" / "plan.json").read_text(encoding="utf-8")) == []
-        assert (spec_dir / "requirement").exists()
+        assert (spec_dir / "input").exists()
+        assert (spec_dir / "artifacts").exists()
         assert (spec_dir / "implement").exists()
         assert (spec_dir / "logs").exists()
     finally:
@@ -49,7 +50,8 @@ def test_ralph_service_init_agent():
 
         assert result.success is True
         assert (workspace_root / ".devagent" / "commands" / "ralph" / "implement.md").exists()
-        assert (workspace_root / ".devagent" / "agents" / "code-reviewer.md").exists()
+        assert (workspace_root / ".devagent" / "agents").exists()
+        assert not (workspace_root / ".devagent" / "agents" / "code-reviewer.md").exists()
     finally:
         shutil.rmtree(workspace_root, ignore_errors=True)
 
@@ -69,29 +71,18 @@ def test_ralph_handler_status_without_runs():
         shutil.rmtree(workspace_root, ignore_errors=True)
 
 
-def test_ralph_decompose_prompt_includes_ta_outputs():
+def test_ralph_service_resolves_spec_execution_paths_from_input_and_plan():
     repo_root = Path(__file__).resolve().parent.parent
     temp_root = repo_root / ".pytest_tmp"
     temp_root.mkdir(exist_ok=True)
     workspace_root = make_workspace(temp_root)
     try:
-        prompt_dir = workspace_root / ".devagent" / "commands" / "ralph"
-        prompt_dir.mkdir(parents=True, exist_ok=True)
-        source_prompt = repo_root / ".devagent" / "commands" / "ralph" / "DECOMPOSE_TASK.md"
-        shutil.copy2(source_prompt, prompt_dir / "DECOMPOSE_TASK.md")
-
         service = RalphService(workspace_root=workspace_root, script_root=repo_root)
         paths = service._resolve_paths("demo")
 
-        prompt = service._build_decompose_prompt(paths, description="focus on payment flow")
-
-        assert "requirements_file:" in prompt
-        assert "design_file:" in prompt
-        assert "task_file:" in prompt
-        assert "demo-requirements.md" in prompt
-        assert "demo-design.md" in prompt
-        assert "demo-task.md" in prompt
-        assert "focus on payment flow" in prompt
+        assert paths.requirement_dir == workspace_root / "docs" / "spec" / "demo" / "input"
+        assert paths.plan_file == workspace_root / "docs" / "spec" / "demo" / "plan" / "plan.json"
+        assert paths.log_dir == workspace_root / "docs" / "spec" / "demo" / "logs"
     finally:
         shutil.rmtree(workspace_root, ignore_errors=True)
 
@@ -102,5 +93,6 @@ def test_slash_registry_contains_ralph():
 
     assert command is not None
     assert command.name == "ralph"
-    assert "init-spec" in command.usage
-    assert "ta" in command.usage
+    assert command.usage == "/ralph <init-spec|init-agent|dry-run|run|status|cancel> ..."
+    assert all("/ralph ta" not in example for example in command.examples)
+    assert all("/ralph decompose" not in example for example in command.examples)

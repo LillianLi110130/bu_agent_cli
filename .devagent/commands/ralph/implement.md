@@ -102,9 +102,9 @@
 
 ### 步骤五：按需使用 subagent
 
-- 如果 `<task_file>` 中包含明确的测试或验证要求，请使用 `qa-validation-engineer` subagent 辅助验证，并将结果写入 `<task_name>_implement.md`
-- 如果 `<spec_dir>/PLAN_CHECKLIST.md` 存在且内容非空，请使用 `code-reviewer` subagent 按清单执行审查，并将结论写入 `<task_name>_implement.md`
-- 如果 subagent 不可用或执行失败，请记录失败原因，但不要伪造结果
+- 如果 `<task_file>` 中包含明确的测试或验证要求，且工作区存在 `qa-validation-engineer` subagent，请使用它辅助验证，并将结果写入 `<task_name>_implement.md`
+- 如果 `<spec_dir>/PLAN_CHECKLIST.md` 存在且内容非空，且工作区存在 `code-reviewer` subagent，请使用它按清单执行审查，并将结论写入 `<task_name>_implement.md`
+- 如果对应 subagent 不存在、不可用或执行失败，请记录原因，但不要伪造结果
 
 ### 步骤六：更新实现记录
 
@@ -133,5 +133,5 @@
 2. `<implement_dir>/<task_name>_implement.md` 已创建或更新
 3. 代码改动已完成，并与任务目标一致
 4. 验证结果为真实结果，不能验证时已说明原因
-5. 若存在 `PLAN_CHECKLIST.md`，已尝试执行对应审查
+5. 若存在 `PLAN_CHECKLIST.md` 且 `code-reviewer` 可用，已尝试执行对应审查
 6. 总结中明确写出已完成内容、剩余风险和限制
