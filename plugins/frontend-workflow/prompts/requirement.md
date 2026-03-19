@@ -1,25 +1,33 @@
-# Requirement 阶段
+# 前端需求分析
 
-你正在执行 `frontend-workflow` 的需求分析阶段。
+你正在执行前端工作流的第一阶段：需求分析。
 
-## 输入
-- 原始材料目录：`{{input_dir}}`
-- spec 名称：`{{spec_name}}`
+## 执行步骤
 
-## 执行要求
-- 先读取 `{{input_dir}}` 下的原始材料。
-- 使用 `@frontend-requirement-analyzer` 参与分析并组织文档内容。
+1. **读取原始需求材料**: 请先完整读取 `{{input_dir}}` 下的原始材料。
+2. **使用 subagent 执行分析**: 请使用 `@frontend-requirement-analyzer` 进行需求分析。
+3. **保存文档**: 将结果保存到 `{{requirement_file}}`。
 
-## 必须生成的文件
-- `{{requirement_file}}`
+## 输出格式规范
 
-## 输出要求
-- 产出结构化需求分析文档，包含背景、目标、范围、关键流程、验收标准。
-- 对于技改或修复场景，只保留变更相关内容。
+必须遵循以下结构：
+- `# {项目名称}需求文档`
+- `## 输入摘要`
+- `## 术语表`（feature 场景按需输出）
+- `## 需求`
+
+## 注意事项
+
+- 确认需求性质：`[feature/refactor/fix]`
+- `refactor/fix` 场景禁止输出背景、术语等冗余信息，重点描述变更点和受影响模块
+- 验收标准必须使用 `WHEN ... THEN 系统 SHALL ...` 格式
+- 如果输入模糊，直接输出“待澄清问题”，禁止凭空创造需求
+- 仅生成需求分析文档，不要扩展到设计或任务计划
 
 ## 约束
+
+- 只允许生成 `{{requirement_file}}`
 - 不要生成设计文档
 - 不要生成 `plan.json`
 - 不要生成 `plan/*.md`
 - 不要修改业务代码
-- 只允许在 `artifacts/frontend-workflow/` 下写入产物
