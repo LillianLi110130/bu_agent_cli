@@ -1,8 +1,11 @@
 import asyncio
+import io
 import json
 import shutil
 import uuid
 from pathlib import Path
+
+from rich.console import Console
 
 from cli.ralph_commands import RalphSlashHandler
 from cli.ralph_service import RalphService
@@ -67,6 +70,52 @@ def test_ralph_handler_status_without_runs():
         handled = asyncio.run(handler.handle(["status"]))
 
         assert handled is True
+    finally:
+        shutil.rmtree(workspace_root, ignore_errors=True)
+
+
+def test_ralph_handler_run_requires_spec_name_or_plan_file():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace_root = make_workspace(temp_root)
+    output = io.StringIO()
+    try:
+        handler = RalphSlashHandler(
+            workspace_root=workspace_root,
+            console=Console(file=output, force_terminal=False, color_system=None),
+        )
+
+        handled = asyncio.run(handler.handle(["run"]))
+
+        assert handled is True
+        rendered = output.getvalue()
+        assert "/ralph run requires <spec_name> or --plan-file." in rendered
+        assert "Usage: /ralph run <spec_name> <optional flags>" in rendered
+        assert "/ralph run --plan-file <path> <optional flags>" in rendered
+    finally:
+        shutil.rmtree(workspace_root, ignore_errors=True)
+
+
+def test_ralph_handler_dry_run_requires_spec_name_or_plan_file():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace_root = make_workspace(temp_root)
+    output = io.StringIO()
+    try:
+        handler = RalphSlashHandler(
+            workspace_root=workspace_root,
+            console=Console(file=output, force_terminal=False, color_system=None),
+        )
+
+        handled = asyncio.run(handler.handle(["dry-run"]))
+
+        assert handled is True
+        rendered = output.getvalue()
+        assert "/ralph dry-run requires <spec_name> or --plan-file." in rendered
+        assert "Usage: /ralph dry-run <spec_name> <optional flags>" in rendered
+        assert "/ralph dry-run --plan-file <path> <optional flags>" in rendered
     finally:
         shutil.rmtree(workspace_root, ignore_errors=True)
 

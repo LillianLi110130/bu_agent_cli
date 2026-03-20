@@ -44,7 +44,6 @@ class RalphSlashHandler:
             return True
 
         command = namespace.command
-
         if command == "init-spec":
             result = await self.service.init_spec(
                 spec_name=namespace.spec_name,
@@ -58,6 +57,8 @@ class RalphSlashHandler:
             return self._print_result(result.success, result.message)
 
         if command == "dry-run":
+            if not self._validate_execution_args("dry-run", namespace.spec_name, namespace.plan_file):
+                return True
             result = await self.service.dry_run(
                 spec_name=namespace.spec_name,
                 plan_file=namespace.plan_file,
@@ -72,6 +73,8 @@ class RalphSlashHandler:
             return self._print_result(result.success, result.message)
 
         if command == "run":
+            if not self._validate_execution_args("run", namespace.spec_name, namespace.plan_file):
+                return True
             result = await self.service.run(
                 spec_name=namespace.spec_name,
                 plan_file=namespace.plan_file,
@@ -100,6 +103,20 @@ class RalphSlashHandler:
         style = "green" if success else "red"
         self.console.print(f"[{style}]{message}[/{style}]")
         return True
+
+    def _validate_execution_args(
+        self,
+        command: str,
+        spec_name: str | None,
+        plan_file: str | None,
+    ) -> bool:
+        if spec_name or plan_file:
+            return True
+
+        self.console.print(f"[red]/ralph {command} requires <spec_name> or --plan-file.[/red]")
+        self.console.print(f"[dim]Usage: /ralph {command} <spec_name> <optional flags>[/dim]")
+        self.console.print(f"[dim]   or: /ralph {command} --plan-file <path> <optional flags>[/dim]")
+        return False
 
     def _build_parser(self) -> argparse.ArgumentParser:
         parser = RalphArgumentParser(
