@@ -194,13 +194,14 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="plugins",
-                description="List and reload built-in plugins",
-                usage="/plugins [list|show|reload]",
+                description="List, install, reload built-in plugins",
+                usage="/plugins [list|show|reload|install]",
                 examples=[
                     "/plugins",
                     "/plugins list",
                     "/plugins show review-kit",
                     "/plugins reload",
+                    "/plugins install /path/to/my-plugin",
                 ],
                 category="Plugins",
             ),
