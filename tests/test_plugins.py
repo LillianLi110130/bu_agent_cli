@@ -675,6 +675,83 @@ def test_plugin_slash_handler_copy_rejects_existing_workspace_plugin():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def test_plugin_slash_handler_uninstall_removes_builtin_even_when_workspace_overrides():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = workspace / "builtin_plugins"
+        workspace_plugin_root = workspace / ".tg_agent" / "plugins"
+        builtin_root.mkdir()
+        workspace_plugin_root.mkdir(parents=True)
+        _write_plugin(builtin_root)
+        _write_plugin(workspace_plugin_root)
+
+        manager = _create_manager(
+            workspace,
+            builtin_root,
+            workspace_plugin_root=workspace_plugin_root,
+        )
+        manager.load_all()
+
+        console = Console(record=True, width=120)
+        handler = PluginSlashHandler(manager=manager, console=console)
+
+        result = asyncio.run(handler.handle(["uninstall", "review-kit", "--force"]))
+        manager.reload_all()
+
+        output = console.export_text()
+        assert result.handled is True
+        assert result.reloaded is True
+        assert not (builtin_root / "review-kit").exists()
+        assert (workspace_plugin_root / "review-kit").exists()
+        assert "uninstalled successfully" in output
+
+        plugin = manager.get_plugin("review-kit")
+        assert plugin is not None
+        assert plugin.source == "workspace"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_plugin_slash_handler_uninstall_rejects_workspace_only_plugin():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = workspace / "builtin_plugins"
+        workspace_plugin_root = workspace / ".tg_agent" / "plugins"
+        builtin_root.mkdir()
+        workspace_plugin_root.mkdir(parents=True)
+        _write_plugin(workspace_plugin_root)
+
+        manager = _create_manager(
+            workspace,
+            builtin_root,
+            workspace_plugin_root=workspace_plugin_root,
+        )
+        manager.load_all()
+
+        console = Console(record=True, width=120)
+        handler = PluginSlashHandler(manager=manager, console=console)
+
+        result = asyncio.run(handler.handle(["uninstall", "review-kit", "--force"]))
+        output = console.export_text()
+
+        assert result.handled is True
+        assert result.reloaded is False
+        assert "Built-in plugin not found: review-kit" in output
+        assert (workspace_plugin_root / "review-kit").exists()
+
+        plugin = manager.get_plugin("review-kit")
+        assert plugin is not None
+        assert plugin.source == "workspace"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def test_cli_runs_python_plugin_command_and_prints_output_without_agent():
     repo_root = Path(__file__).resolve().parent.parent
     temp_root = repo_root / ".pytest_tmp"

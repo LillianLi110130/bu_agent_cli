@@ -224,15 +224,15 @@ class PluginSlashHandler:
             return PluginSlashResult()
 
         plugin_name = args[0]
-        plugin = self._manager.get_plugin(plugin_name)
+        plugin = self._manager.get_plugin_from_source(plugin_name, "builtin")
 
         if plugin is None:
-            self._console.print(f"[red]Plugin not found: {plugin_name}[/red]")
-            self._console.print("[dim]Use /plugins list to see available plugins.[/dim]")
+            self._console.print(f"[red]Built-in plugin not found: {plugin_name}[/red]")
+            self._console.print("[dim]Use /plugins list to see available plugins and sources.[/dim]")
             return PluginSlashResult()
 
         # Check if plugin path exists
-        plugin_path = self._manager.plugin_dir / plugin_name
+        plugin_path = plugin.path
         if not plugin_path.exists():
             self._console.print(f"[red]Plugin directory not found: {plugin_path}[/red]")
             return PluginSlashResult()
