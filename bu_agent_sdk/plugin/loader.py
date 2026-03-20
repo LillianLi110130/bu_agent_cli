@@ -26,7 +26,13 @@ class PluginLoader:
     def discover(self) -> list[Path]:
         if not self.plugin_dir.exists():
             return []
-        return sorted(path for path in self.plugin_dir.iterdir() if path.is_dir())
+        return sorted(
+            path
+            for path in self.plugin_dir.iterdir()
+            if path.is_dir()
+            and not _is_ignored_plugin_dir(path)
+            and (path / "plugin.json").is_file()
+        )
 
     def load_manifest(self, plugin_path: Path) -> PluginManifest:
         manifest_path = plugin_path / "plugin.json"
@@ -160,3 +166,8 @@ def _optional_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _is_ignored_plugin_dir(path: Path) -> bool:
+    name = path.name
+    return name.startswith(".") or (name.startswith("__") and name.endswith("__"))
