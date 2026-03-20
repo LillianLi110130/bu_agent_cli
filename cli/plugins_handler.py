@@ -43,9 +43,11 @@ class PluginSlashHandler:
             return await self._reload()
         if subcommand == "install":
             return await self._install(sub_args)
+        if subcommand == "uninstall":
+            return await self._uninstall(sub_args)
 
         self._console.print(f"[red]Unknown subcommand: {subcommand}[/red]")
-        self._console.print("[dim]Available: list, show, reload, install[/dim]")
+        self._console.print("[dim]Available: list, show, reload, install, uninstall[/dim]")
         return PluginSlashResult()
 
     async def _list(self) -> PluginSlashResult:
@@ -190,5 +192,55 @@ class PluginSlashHandler:
             return PluginSlashResult()
 
         # Reload plugins to pick up the newly installed one
+        self._console.print("[dim]Reloading plugins...[/dim]")
+        return PluginSlashResult(reloaded=True)
+
+    async def _uninstall(self, args: list[str]) -> PluginSlashResult:
+        """Uninstall a plugin by removing its directory."""
+        if not args:
+            self._console.print("[red]Usage: /plugins uninstall <plugin_name>[/red]")
+            self._console.print("[dim]Example: /plugins uninstall my-plugin[/dim]")
+            return PluginSlashResult()
+
+        plugin_name = args[0]
+        plugin = self._manager.get_plugin(plugin_name)
+
+        if plugin is None:
+            self._console.print(f"[red]Plugin not found: {plugin_name}[/red]")
+            self._console.print("[dim]Use /plugins list to see available plugins.[/dim]")
+            return PluginSlashResult()
+
+        # Check if plugin path exists
+        plugin_path = self._manager.plugin_dir / plugin_name
+        if not plugin_path.exists():
+            self._console.print(f"[red]Plugin directory not found: {plugin_path}[/red]")
+            return PluginSlashResult()
+
+        # Safety check: don't delete if it's not under plugins dir
+        try:
+            plugin_path.resolve().relative_to(self._manager.plugin_dir.resolve())
+        except ValueError:
+            self._console.print(f"[red]Plugin path is not under plugins directory: {plugin_path}[/red]")
+            return PluginSlashResult()
+
+        # Confirm before deleting (unless --force flag is provided)
+        force = "--force" in args or "-f" in args
+        if not force:
+            self._console.print(f"[yellow]About to uninstall plugin: {plugin_name}[/yellow]")
+            self._console.print(f"[dim]Path: {plugin_path}[/dim]")
+            self._console.print("[dim]Use --force to skip confirmation in non-interactive mode.[/dim]")
+            # In non-interactive CLI, we can't wait for input, so require --force
+            self._console.print("[red]Please add --force flag to confirm uninstallation.[/red]")
+            return PluginSlashResult()
+
+        # Remove plugin directory
+        try:
+            shutil.rmtree(plugin_path)
+            self._console.print(f"[green]Plugin '{plugin_name}' uninstalled successfully.[/green]")
+        except Exception as e:
+            self._console.print(f"[red]Failed to uninstall plugin: {e}[/red]")
+            return PluginSlashResult()
+
+        # Reload plugins to update the registry
         self._console.print("[dim]Reloading plugins...[/dim]")
         return PluginSlashResult(reloaded=True)

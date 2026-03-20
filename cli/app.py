@@ -1230,6 +1230,7 @@ class ClaudeCodeCLI:
             )
             result = await handler.handle(args)
             if result.reloaded:
+                self._plugin_manager.reload_all()
                 self._refresh_system_prompt()
             return result.handled
 
