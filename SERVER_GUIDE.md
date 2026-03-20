@@ -1,4 +1,4 @@
-# BU Agent SDK HTTP 服务使用指南
+# TG Agent SDK HTTP 服务使用指南
 
 ## 快速开始
 
@@ -39,7 +39,7 @@ python test_server.py
 启动成功后会看到：
 
 ```
-Starting BU Agent SDK Server on http://127.0.0.1:8000
+Starting TG Agent SDK Server on http://127.0.0.1:8000
 API docs available at http://127.0.0.1:8000/docs
 INFO:     Started server process
 INFO:     Uvicorn running on http://127.0.0.1:8000
@@ -197,3 +197,4 @@ conda run -n 314 python test_client_simple.py
 set OPENAI_API_KEY=your-key
 conda run -n 314 python test_client.py
 ```
+

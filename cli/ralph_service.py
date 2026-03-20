@@ -258,7 +258,7 @@ class RalphService:
 
     def _load_initializer(self) -> Any:
         spec = importlib.util.spec_from_file_location(
-            "bu_agent_cli_ralph_init",
+            "tg_agent_cli_ralph_init",
             self._ralph_init_script,
         )
         if spec is None or spec.loader is None:
@@ -484,3 +484,4 @@ class RalphService:
             yield
         finally:
             os.chdir(previous)
+

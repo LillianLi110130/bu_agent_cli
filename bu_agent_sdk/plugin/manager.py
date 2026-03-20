@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -13,33 +14,79 @@ from .types import PluginCommand, PluginRecord
 
 
 class PluginManager:
-    """Manage built-in prompt-resource plugins from the repository."""
+    """Manage built-in and workspace plugins."""
 
     def __init__(
         self,
-        plugin_dir: Path,
+        plugin_dir: Path | None,
         slash_registry: SlashCommandRegistry,
         skill_registry: AtCommandRegistry,
         agent_registry: AgentRegistry,
         *,
+        plugin_dirs: list[tuple[str, Path]] | None = None,
         current_cli_version: str | None = None,
     ):
-        self.plugin_dir = plugin_dir
-        self._loader = PluginLoader(plugin_dir, current_cli_version=current_cli_version)
+        if plugin_dirs is None:
+            if plugin_dir is None:
+                raise ValueError("plugin_dir or plugin_dirs is required")
+            plugin_dirs = [("builtin", plugin_dir)]
+        elif not plugin_dirs:
+            raise ValueError("plugin_dirs must not be empty")
+
+        normalized_dirs: list[tuple[str, Path]] = []
+        seen_sources: set[str] = set()
+        for source, path in plugin_dirs:
+            source_name = source.strip()
+            if not source_name:
+                raise ValueError("Plugin source name must not be empty")
+            if source_name in seen_sources:
+                raise ValueError(f"Duplicate plugin source: {source_name}")
+            normalized_dirs.append((source_name, path))
+            seen_sources.add(source_name)
+
+        self.plugin_dir = plugin_dir or normalized_dirs[0][1]
+        self.plugin_dirs = normalized_dirs
+        self._loaders = {
+            source: PluginLoader(path, current_cli_version=current_cli_version)
+            for source, path in normalized_dirs
+        }
+        self._source_roots = {source: path for source, path in normalized_dirs}
         self._slash_registry = slash_registry
         self._skill_registry = skill_registry
         self._agent_registry = agent_registry
         self._plugins: dict[str, PluginRecord] = {}
         self._commands: dict[str, PluginCommand] = {}
+        self._source_plugins: dict[str, dict[str, PluginRecord]] = {
+            source: {} for source, _ in normalized_dirs
+        }
 
     def load_all(self) -> list[PluginRecord]:
         self.unload_all()
-        loaded: list[PluginRecord] = []
-        seen_manifest_names: dict[str, Path] = {}
-        for plugin_path in self._loader.discover():
-            loaded.append(self._load_plugin(plugin_path, seen_manifest_names))
-        loaded.sort(key=lambda item: item.name)
-        return loaded
+        merged_records: dict[str, PluginRecord] = {}
+
+        for source, source_root in self.plugin_dirs:
+            loader = self._loaders[source]
+            source_records = self._discover_source_plugins(source, source_root, loader)
+            source_map: dict[str, PluginRecord] = {}
+            for record in source_records:
+                source_map[record.name] = record
+                merged_records[record.name] = record
+            self._source_plugins[source] = source_map
+
+        for record in sorted(merged_records.values(), key=lambda item: item.name):
+            if record.status != "loaded":
+                continue
+            try:
+                self._register_skills(record)
+                self._register_agents(record)
+                self._register_commands(record)
+            except Exception as exc:
+                self._unregister_plugin(record)
+                record.status = "failed"
+                record.error = str(exc)
+
+        self._plugins = merged_records
+        return self.list_plugins()
 
     def reload_all(self) -> list[PluginRecord]:
         return self.load_all()
@@ -50,6 +97,7 @@ class PluginManager:
                 self._unregister_plugin(plugin)
         self._plugins.clear()
         self._commands.clear()
+        self._source_plugins = {source: {} for source, _ in self.plugin_dirs}
 
     def list_plugins(self) -> list[PluginRecord]:
         return sorted(self._plugins.values(), key=lambda item: item.name)
@@ -57,64 +105,89 @@ class PluginManager:
     def get_plugin(self, name: str) -> PluginRecord | None:
         return self._plugins.get(name)
 
+    def get_plugin_from_source(self, name: str, source: str) -> PluginRecord | None:
+        return self._source_plugins.get(source, {}).get(name)
+
     def get_command(self, full_name: str) -> PluginCommand | None:
         return self._commands.get(full_name)
 
-    def _load_plugin(
+    def copy_builtin_plugin(self, name: str) -> Path:
+        builtin_plugin = self.get_plugin_from_source(name, "builtin")
+        if builtin_plugin is None or builtin_plugin.status != "loaded":
+            raise ValueError(f"Built-in plugin not found: {name}")
+
+        workspace_root = self._source_roots.get("workspace")
+        if workspace_root is None:
+            raise ValueError("Workspace plugin directory is not configured")
+
+        target_dir = workspace_root / name
+        if target_dir.exists():
+            raise FileExistsError(f"Workspace plugin already exists: {target_dir}")
+
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(builtin_plugin.path, target_dir)
+        return target_dir
+
+    def _discover_source_plugins(
         self,
-        plugin_path: Path,
-        seen_manifest_names: dict[str, Path],
-    ) -> PluginRecord:
-        try:
-            manifest = self._loader.load_manifest(plugin_path)
-        except Exception as exc:
-            record = PluginRecord(
-                name=plugin_path.name,
-                path=plugin_path,
-                status="failed",
-                error=str(exc),
+        source: str,
+        source_root: Path,
+        loader: PluginLoader,
+    ) -> list[PluginRecord]:
+        discovered: list[PluginRecord] = []
+        seen_manifest_names: dict[str, Path] = {}
+
+        for plugin_path in loader.discover():
+            try:
+                manifest = loader.load_manifest(plugin_path)
+            except Exception as exc:
+                discovered.append(
+                    PluginRecord(
+                        name=plugin_path.name,
+                        path=plugin_path,
+                        status="failed",
+                        source=source,
+                        source_root=source_root,
+                        error=str(exc),
+                    )
+                )
+                continue
+
+            if manifest.name in seen_manifest_names:
+                original_path = seen_manifest_names[manifest.name]
+                discovered.append(
+                    PluginRecord(
+                        name=plugin_path.name,
+                        path=plugin_path,
+                        status="failed",
+                        source=source,
+                        source_root=source_root,
+                        manifest=manifest,
+                        error=(
+                            f"Duplicate plugin name '{manifest.name}' conflicts with "
+                            f"'{original_path.name}'"
+                        ),
+                    )
+                )
+                continue
+
+            seen_manifest_names[manifest.name] = plugin_path
+            discovered.append(
+                PluginRecord(
+                    name=manifest.name,
+                    path=plugin_path,
+                    status="loaded",
+                    source=source,
+                    source_root=source_root,
+                    manifest=manifest,
+                )
             )
-            self._plugins[plugin_path.name] = record
-            return record
 
-        if manifest.name in seen_manifest_names:
-            original_path = seen_manifest_names[manifest.name]
-            record = PluginRecord(
-                name=plugin_path.name,
-                path=plugin_path,
-                status="failed",
-                manifest=manifest,
-                error=(
-                    f"Duplicate plugin name '{manifest.name}' conflicts with "
-                    f"'{original_path.name}'"
-                ),
-            )
-            self._plugins[plugin_path.name] = record
-            return record
-
-        seen_manifest_names[manifest.name] = plugin_path
-        record = PluginRecord(
-            name=manifest.name,
-            path=plugin_path,
-            status="loaded",
-            manifest=manifest,
-        )
-
-        try:
-            self._register_skills(record)
-            self._register_agents(record)
-            self._register_commands(record)
-        except Exception as exc:
-            self._unregister_plugin(record)
-            record.status = "failed"
-            record.error = str(exc)
-
-        self._plugins[record.name] = record
-        return record
+        return discovered
 
     def _register_skills(self, plugin: PluginRecord) -> None:
         skills_dir = plugin.path / "skills"
-        if not self._loader.should_load(plugin.manifest, "skills", skills_dir):  # type: ignore[arg-type]
+        if not self._loaders[plugin.source].should_load(plugin.manifest, "skills", skills_dir):  # type: ignore[arg-type]
             return
         if not skills_dir.exists():
             return
@@ -138,7 +211,7 @@ class PluginManager:
 
     def _register_agents(self, plugin: PluginRecord) -> None:
         agents_dir = plugin.path / "agents"
-        if not self._loader.should_load(plugin.manifest, "agents", agents_dir):  # type: ignore[arg-type]
+        if not self._loaders[plugin.source].should_load(plugin.manifest, "agents", agents_dir):  # type: ignore[arg-type]
             return
         if not agents_dir.exists():
             return
@@ -154,13 +227,14 @@ class PluginManager:
 
     def _register_commands(self, plugin: PluginRecord) -> None:
         commands_dir = plugin.path / "commands"
-        if not self._loader.should_load(plugin.manifest, "commands", commands_dir):  # type: ignore[arg-type]
+        if not self._loaders[plugin.source].should_load(plugin.manifest, "commands", commands_dir):  # type: ignore[arg-type]
             return
         if not commands_dir.exists():
             return
 
+        loader = self._loaders[plugin.source]
         for md_file in sorted(commands_dir.glob("*.md")):
-            command = self._loader.load_command(plugin.path, plugin.name, md_file)
+            command = loader.load_command(plugin.path, plugin.name, md_file)
             self._commands[command.full_name] = command
             self._slash_registry.register(
                 SlashCommand(

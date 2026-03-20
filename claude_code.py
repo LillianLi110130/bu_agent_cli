@@ -60,11 +60,7 @@ def _format_skills(skills: list[AtCommand]) -> str:
         return "No skills available."
 
     skills_formatted = "\n".join(
-        (
-            f"- {skill.name}\n"
-            f"  - Path: {skill.path}\n"
-            f"  - Desc: {skill.description}"
-        )
+        (f"- {skill.name}\n" f"  - Path: {skill.path}\n" f"  - Desc: {skill.description}")
         for skill in sorted(skills, key=lambda item: item.name)
     )
     return skills_formatted
@@ -96,6 +92,7 @@ def _get_system_info() -> str:
         # Linux: 尝试获取发行版信息 (Ubuntu 20.04, CentOS 7, etc.)
         try:
             import distro
+
             # 使用 distro 模块获取更友好的发行版名称
             distro_name = distro.name()
             distro_version = distro.version()
@@ -131,16 +128,23 @@ def _get_system_info() -> str:
 
 def create_runtime_registries(
     *,
+    workspace_root: Path,
     plugin_dir: Path | None = None,
+    plugin_dirs: list[tuple[str, Path]] | None = None,
     skills_dir: Path | None = None,
     agents_dir: Path | None = None,
 ) -> RuntimeRegistries:
-    """Create shared registries for built-ins and built-in plugins."""
+    """Create shared registries for built-ins and workspace plugins."""
     slash_registry = SlashCommandRegistry()
     skill_registry = AtCommandRegistry(skills_dir or _SKILLS_DIR)
     agent_registry = AgentRegistry(agents_dir or _AGENTS_DIR)
+    resolved_plugin_dirs = plugin_dirs or [
+        ("builtin", plugin_dir or _PLUGINS_DIR),
+        ("workspace", workspace_root / ".tg_agent" / "plugins"),
+    ]
     plugin_manager = PluginManager(
-        plugin_dir=plugin_dir or _PLUGINS_DIR,
+        plugin_dir=None,
+        plugin_dirs=resolved_plugin_dirs,
         slash_registry=slash_registry,
         skill_registry=skill_registry,
         agent_registry=agent_registry,
@@ -197,7 +201,6 @@ def _build_system_prompt(
     return prompt
 
 
-
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Claude Code CLI - Interactive coding assistant")
@@ -228,8 +231,10 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
 
 
 def create_agent(
-    model: str | None, root_dir: Path | str | None = None,
-    mode: str = "primary", agent_config: AgentConfig | None = None,
+    model: str | None,
+    root_dir: Path | str | None = None,
+    mode: str = "primary",
+    agent_config: AgentConfig | None = None,
     runtime_registries: RuntimeRegistries | None = None,
 ) -> tuple[Agent, SandboxContext, RuntimeRegistries]:
     """Create configured Agent and SandboxContext.
@@ -241,7 +246,9 @@ def create_agent(
 
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
-    runtime = runtime_registries or create_runtime_registries()
+    runtime = runtime_registries or create_runtime_registries(
+        workspace_root=ctx.working_dir,
+    )
 
     system_prompt = _build_system_prompt(
         ctx.working_dir,
@@ -276,9 +283,12 @@ def create_agent(
 def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
     """Factory function to create subagent instances."""
     from config.model_config import get_model_config
+
     model, base_url, api_key = get_model_config(config.model)
 
-    llm = ChatOpenAI(model=model, api_key=api_key, base_url=base_url, temperature=config.temperature)
+    llm = ChatOpenAI(
+        model=model, api_key=api_key, base_url=base_url, temperature=config.temperature
+    )
 
     # 为子代理添加系统信息到系统提示词
     system_info_text = _get_system_info()
@@ -299,11 +309,9 @@ async def main():
     """Main entry point."""
     args = parse_args()
 
-    runtime = create_runtime_registries()
     agent, ctx, runtime = create_agent(
         model=args.model,
         root_dir=args.root_dir,
-        runtime_registries=runtime,
     )
     cli = ClaudeCodeCLI(
         agent=agent,

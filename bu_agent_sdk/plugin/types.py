@@ -86,6 +86,8 @@ class PluginRecord:
     name: str
     path: Path
     status: str
+    source: str = "builtin"
+    source_root: Path | None = None
     manifest: PluginManifest | None = None
     commands: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)

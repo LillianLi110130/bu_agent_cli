@@ -192,6 +192,7 @@ def _create_manager(
     workspace: Path,
     plugin_root: Path,
     *,
+    workspace_plugin_root: Path | None = None,
     current_cli_version: str | None = None,
 ) -> PluginManager:
     builtin_skills = workspace / "builtin_skills"
@@ -199,8 +200,13 @@ def _create_manager(
     builtin_skills.mkdir(exist_ok=True)
     builtin_agents.mkdir(exist_ok=True)
 
+    plugin_dirs = [("builtin", plugin_root)]
+    if workspace_plugin_root is not None:
+        plugin_dirs.append(("workspace", workspace_plugin_root))
+
     return PluginManager(
-        plugin_dir=plugin_root,
+        plugin_dir=None if workspace_plugin_root is not None else plugin_root,
+        plugin_dirs=plugin_dirs if workspace_plugin_root is not None else None,
         slash_registry=SlashCommandRegistry(),
         skill_registry=AtCommandRegistry(builtin_skills),
         agent_registry=AgentRegistry(builtin_agents),
@@ -256,7 +262,7 @@ def test_plugin_manager_loads_python_command_and_executor_receives_payload():
                 "print(json.dumps({"
                 "\"args_text\": payload['args_text'], "
                 "\"plugin_root_name\": Path(payload['plugin_root']).name, "
-                "\"cwd\": os.getcwd()"
+                '"cwd": os.getcwd()'
                 "}))\n"
             ),
         )
@@ -466,9 +472,7 @@ def test_plugin_executor_reports_python_failure():
             plugin_root,
             include_python_command=True,
             python_script_body=(
-                "import sys\n"
-                "sys.stderr.write('boom')\n"
-                "raise SystemExit(2)\n"
+                "import sys\n" "sys.stderr.write('boom')\n" "raise SystemExit(2)\n"
             ),
         )
 
@@ -518,6 +522,155 @@ def test_plugin_slash_handler_supports_list_show_and_reload():
         assert "review-kit" in output
         assert "/review-kit:review (prompt)" in output
         assert "/review-kit:summarize (python)" in output
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_workspace_plugin_overrides_builtin_plugin():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = workspace / "builtin_plugins"
+        workspace_plugin_root = workspace / ".tg_agent" / "plugins"
+        builtin_root.mkdir()
+        workspace_plugin_root.mkdir(parents=True)
+
+        _write_plugin(
+            builtin_root,
+            prompt_command_body="# Review\n\nBuiltin version: {{args}}",
+        )
+        _write_plugin(
+            workspace_plugin_root,
+            prompt_command_body="# Review\n\nWorkspace version: {{args}}",
+        )
+
+        manager = _create_manager(
+            workspace,
+            builtin_root,
+            workspace_plugin_root=workspace_plugin_root,
+        )
+        manager.load_all()
+
+        plugin = manager.get_plugin("review-kit")
+        assert plugin is not None
+        assert plugin.status == "loaded"
+        assert plugin.source == "workspace"
+        assert plugin.path == workspace_plugin_root / "review-kit"
+
+        builtin_plugin = manager.get_plugin_from_source("review-kit", "builtin")
+        assert builtin_plugin is not None
+        assert builtin_plugin.source == "builtin"
+
+        command = manager.get_command("review-kit:review")
+        assert command is not None
+        assert "Workspace version" in command.render_prompt("auth.py")
+        assert "Builtin version" not in command.render_prompt("auth.py")
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_workspace_broken_plugin_overrides_builtin_without_fallback():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = workspace / "builtin_plugins"
+        workspace_plugin_root = workspace / ".tg_agent" / "plugins"
+        builtin_root.mkdir()
+        workspace_plugin_root.mkdir(parents=True)
+
+        _write_plugin(builtin_root)
+        broken_workspace_plugin = workspace_plugin_root / "review-kit"
+        broken_workspace_plugin.mkdir()
+        (broken_workspace_plugin / "plugin.json").write_text("{not-json}", encoding="utf-8")
+
+        manager = _create_manager(
+            workspace,
+            builtin_root,
+            workspace_plugin_root=workspace_plugin_root,
+        )
+        manager.load_all()
+
+        plugin = manager.get_plugin("review-kit")
+        assert plugin is not None
+        assert plugin.status == "failed"
+        assert plugin.source == "workspace"
+        assert plugin.error is not None
+        assert "invalid manifest json" in plugin.error.lower()
+        assert manager.get_command("review-kit:review") is None
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_plugin_slash_handler_can_copy_builtin_plugin_into_workspace():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = workspace / "builtin_plugins"
+        workspace_plugin_root = workspace / ".tg_agent" / "plugins"
+        builtin_root.mkdir()
+        _write_plugin(builtin_root)
+
+        manager = _create_manager(
+            workspace,
+            builtin_root,
+            workspace_plugin_root=workspace_plugin_root,
+        )
+        manager.load_all()
+
+        console = Console(record=True, width=120)
+        handler = PluginSlashHandler(manager=manager, console=console)
+
+        copy_result = asyncio.run(handler.handle(["copy", "review-kit"]))
+        reload_result = asyncio.run(handler.handle(["reload"]))
+
+        copied_plugin = workspace_plugin_root / "review-kit"
+        output = console.export_text()
+        assert copy_result.handled is True
+        assert reload_result.reloaded is True
+        assert copied_plugin.exists()
+        assert "Copied plugin to workspace" in output
+        assert "Run /plugins reload after editing." in output
+
+        plugin = manager.get_plugin("review-kit")
+        assert plugin is not None
+        assert plugin.source == "workspace"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_plugin_slash_handler_copy_rejects_existing_workspace_plugin():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = workspace / "builtin_plugins"
+        workspace_plugin_root = workspace / ".tg_agent" / "plugins"
+        builtin_root.mkdir()
+        workspace_plugin_root.mkdir(parents=True)
+        _write_plugin(builtin_root)
+        _write_plugin(workspace_plugin_root)
+
+        manager = _create_manager(
+            workspace,
+            builtin_root,
+            workspace_plugin_root=workspace_plugin_root,
+        )
+        manager.load_all()
+
+        console = Console(record=True, width=120)
+        handler = PluginSlashHandler(manager=manager, console=console)
+
+        result = asyncio.run(handler.handle(["copy", "review-kit"]))
+        output = console.export_text()
+        assert result.handled is True
+        assert "Workspace plugin already exists" in output
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

@@ -194,12 +194,13 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="plugins",
-                description="List and reload built-in plugins",
-                usage="/plugins [list|show|reload]",
+                description="List, copy, and reload plugins",
+                usage="/plugins [list|show|copy|reload]",
                 examples=[
                     "/plugins",
                     "/plugins list",
                     "/plugins show review-kit",
+                    "/plugins copy review-kit",
                     "/plugins reload",
                 ],
                 category="Plugins",
@@ -268,10 +269,7 @@ class SlashCommandRegistry:
             List of matching SlashCommand instances
         """
         prefix_lower = prefix.lower()
-        return [
-            cmd for cmd in self._commands.values()
-            if cmd.name.lower().startswith(prefix_lower)
-        ]
+        return [cmd for cmd in self._commands.values() if cmd.name.lower().startswith(prefix_lower)]
 
 
 # =============================================================================
@@ -289,9 +287,7 @@ class SlashCommandCompleter(Completer):
     def __init__(self, registry: SlashCommandRegistry):
         self._registry = registry
 
-    def get_completions(
-        self, document: Document, complete_event: CompleteEvent
-    ) -> iter:
+    def get_completions(self, document: Document, complete_event: CompleteEvent) -> iter:
         """Get completions for the current document.
 
         Args:

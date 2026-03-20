@@ -1,1 +1,2 @@
-"""CLI package for bu-agent-cli."""
+"""CLI package for tg-agent-cli."""
+

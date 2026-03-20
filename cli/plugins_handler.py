@@ -37,21 +37,24 @@ class PluginSlashHandler:
             return await self._list()
         if subcommand == "show":
             return await self._show(sub_args)
+        if subcommand == "copy":
+            return await self._copy(sub_args)
         if subcommand == "reload":
             return await self._reload()
 
         self._console.print(f"[red]Unknown subcommand: {subcommand}[/red]")
-        self._console.print("[dim]Available: list, show, reload[/dim]")
+        self._console.print("[dim]Available: list, show, copy, reload[/dim]")
         return PluginSlashResult()
 
     async def _list(self) -> PluginSlashResult:
         plugins = self._manager.list_plugins()
         if not plugins:
-            self._console.print("[yellow]No built-in plugins found.[/yellow]")
+            self._console.print("[yellow]No plugins found.[/yellow]")
             return PluginSlashResult()
 
-        table = Table(title="Built-in Plugins")
+        table = Table(title="Plugins")
         table.add_column("Name", style="cyan")
+        table.add_column("Source", style="magenta")
         table.add_column("Status", style="white")
         table.add_column("Version", style="dim")
         table.add_column("Resources", style="white")
@@ -64,6 +67,7 @@ class PluginSlashHandler:
             description = plugin.description or (plugin.error or "")
             table.add_row(
                 plugin.name,
+                plugin.source,
                 f"[{status_style}]{plugin.status}[/{status_style}]",
                 version,
                 resources,
@@ -87,6 +91,7 @@ class PluginSlashHandler:
 
         lines = [
             f"[bold cyan]Name:[/] {plugin.name}",
+            f"[bold cyan]Source:[/] {plugin.source}",
             f"[bold cyan]Status:[/] {plugin.status}",
             f"[bold cyan]Version:[/] {plugin.version or '-'}",
             f"[bold cyan]Path:[/] [dim]{plugin.path}[/dim]",
@@ -122,11 +127,27 @@ class PluginSlashHandler:
         self._console.print()
         return PluginSlashResult()
 
+    async def _copy(self, args: list[str]) -> PluginSlashResult:
+        if not args:
+            self._console.print("[red]Usage: /plugins copy <name>[/red]")
+            return PluginSlashResult()
+
+        try:
+            target_dir = self._manager.copy_builtin_plugin(args[0])
+        except FileExistsError as exc:
+            self._console.print(f"[red]{exc}[/red]")
+            return PluginSlashResult()
+        except ValueError as exc:
+            self._console.print(f"[red]{exc}[/red]")
+            return PluginSlashResult()
+
+        self._console.print(f"[green]Copied plugin to workspace:[/green] [dim]{target_dir}[/dim]")
+        self._console.print("[dim]Run /plugins reload after editing.[/dim]")
+        return PluginSlashResult()
+
     async def _reload(self) -> PluginSlashResult:
         plugins = self._manager.reload_all()
         loaded = sum(1 for plugin in plugins if plugin.status == "loaded")
         failed = sum(1 for plugin in plugins if plugin.status != "loaded")
-        self._console.print(
-            f"[green]Reloaded plugins.[/green] loaded={loaded} failed={failed}"
-        )
+        self._console.print(f"[green]Reloaded plugins.[/green] loaded={loaded} failed={failed}")
         return PluginSlashResult(reloaded=True)

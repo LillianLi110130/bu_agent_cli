@@ -15,7 +15,7 @@ class RalphProcessManager:
 
     def __init__(self, workspace_root: Path):
         self._workspace_root = workspace_root.resolve()
-        self._state_dir = self._workspace_root / ".bu_agent" / "ralph"
+        self._state_dir = self._workspace_root / ".tg_agent" / "ralph"
         self._log_dir = self._state_dir / "process_logs"
         self._state_file = self._state_dir / "runs.json"
         self._lock = threading.Lock()
@@ -230,3 +230,4 @@ class RalphProcessManager:
         except OSError:
             return False
         return True
+

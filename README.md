@@ -1,4 +1,4 @@
-# BU Agent CLI
+# TG Agent CLI
 
 一个面向编码场景的 Agent CLI，基于 `bu_agent_sdk` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派和上下文压缩。
 
@@ -48,16 +48,16 @@ pip install -e .
 
 ```bash
 # 方式 1：安装后的命令行入口
-bu-agent
+tg-agent
 
 # 方式 2：直接运行脚本
 python claude_code.py
 
 # 指定模型
-bu-agent --model gpt-4o
+tg-agent --model gpt-4o
 
 # 指定沙箱根目录
-bu-agent --root-dir ./your-project
+tg-agent --root-dir ./your-project
 ```
 
 ## 模型预设与会话内切换
@@ -202,7 +202,7 @@ docs/spec/<spec_name>/
 ## 项目结构（实际）
 
 ```text
-bu_agent_cli/
+tg_agent_cli/
 ├── claude_code.py
 ├── ralph_init.py
 ├── ralph_loop.py
@@ -239,3 +239,5 @@ bu_agent_cli/
 ## 说明
 
 - README 以当前仓库代码为准，若你新增工具、插件或子代理，请同步更新本文档。
+
+
