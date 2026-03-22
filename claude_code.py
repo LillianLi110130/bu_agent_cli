@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from bu_agent_sdk import Agent
+from bu_agent_sdk.agent import AgentHook, AuditHook
 from bu_agent_sdk.llm import ChatOpenAI
 from bu_agent_sdk.agent.config import AgentConfig
 from bu_agent_sdk.agent.registry import AgentRegistry
@@ -230,6 +231,18 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
     )
 
 
+def build_agent_hooks(*, mode: str) -> list[AgentHook]:
+    """Build runtime hooks for agent instances.
+
+    Keep the default set non-invasive for CLI usage. The built-in
+    FinishGuardHook is already attached inside Agent, so this helper
+    only adds optional extra hooks.
+    """
+    hooks: list[AgentHook] = [AuditHook()]
+
+    return hooks
+
+
 def create_agent(
     model: str | None,
     root_dir: Path | str | None = None,
@@ -272,6 +285,7 @@ def create_agent(
         dependency_overrides={get_sandbox_context: lambda: ctx},
         mode=mode,
         agent_config=agent_config,
+        hooks=build_agent_hooks(mode=mode),
     )
 
     if subagent_manager:
@@ -301,6 +315,7 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
         mode="subagent",
         agent_config=config,
         dependency_overrides={get_sandbox_context: lambda: parent_ctx},
+        hooks=build_agent_hooks(mode="subagent"),
     )
     return agent
 

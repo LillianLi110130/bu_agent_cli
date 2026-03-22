@@ -158,7 +158,7 @@ class ContextManager:
         """Inject a message into context, optionally pinning it."""
         msg = message
         if pinned and message.role not in ("system", "developer"):
-            msg = DeveloperMessage(content=getattr(message, "content", ""))
+            msg = UserMessage(content=getattr(message, "content", ""))
 
         after_roles_set = set(after_roles)
         insert_at = 0

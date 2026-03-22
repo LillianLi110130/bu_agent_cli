@@ -16,6 +16,7 @@ from typing import Any, Callable
 from bu_agent_sdk import Agent
 from bu_agent_sdk.agent import (
     FinalResponseEvent,
+    ModelRoutingHook,
     TextEvent,
     ThinkingEvent,
     ToolCallEvent,
@@ -64,6 +65,7 @@ from cli.image_input import (
     is_image_command,
     parse_image_command,
 )
+from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from tools import SandboxContext, SecurityError
@@ -182,14 +184,28 @@ class ClaudeCodeCLI:
         self._auto_vision_preset: str | None = None
         self._image_summary_preset: str | None = None
         self._model_presets = self._load_model_presets()
-        self._sticky_preset: str | None = self._resolve_current_preset_name()
-        self._auto_switched: bool = False
-        self._auto_from_preset: str | None = None
+        self._model_switch_service = ModelSwitchService(
+            agent=self._agent,
+            model_presets=self._model_presets,
+            default_model_preset=self._default_model_preset,
+            auto_vision_preset=self._auto_vision_preset,
+            image_summary_preset=self._image_summary_preset,
+            console=self._console,
+        )
+        self._model_auto_state = ModelAutoState(
+            sticky_preset=self._model_switch_service.resolve_current_preset_name()
+        )
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
+        self._agent.register_hook(
+            ModelRoutingHook(
+                service=self._model_switch_service,
+                auto_state=self._model_auto_state,
+            )
+        )
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -257,92 +273,25 @@ class ClaudeCodeCLI:
         return presets
 
     def _clear_auto_switch_state(self) -> None:
-        self._auto_switched = False
-        self._auto_from_preset = None
+        self._model_switch_service.clear_auto_switch_state(self._model_auto_state)
 
     def _preset_supports_vision(self, preset_name: str | None) -> bool:
-        if not preset_name:
-            return False
-        preset = self._model_presets.get(preset_name)
-        if not preset:
-            return False
-        return bool(preset.get("vision", False))
+        return self._model_switch_service.preset_supports_vision(preset_name)
 
     def _resolve_vision_preset_name(self) -> str | None:
-        if (
-            self._auto_vision_preset
-            and self._auto_vision_preset in self._model_presets
-            and self._preset_supports_vision(self._auto_vision_preset)
-        ):
-            return self._auto_vision_preset
-        for name in self._model_presets.keys():
-            if self._preset_supports_vision(name):
-                return name
-        return None
+        return self._model_switch_service.resolve_vision_preset_name()
 
     def _resolve_image_summary_preset_name(self) -> str | None:
-        if (
-            self._image_summary_preset
-            and self._image_summary_preset in self._model_presets
-            and self._preset_supports_vision(self._image_summary_preset)
-        ):
-            return self._image_summary_preset
-        return None
+        return self._model_switch_service.resolve_image_summary_preset_name()
     
     def _resolve_image_summary_llm(self) -> tuple[Any | None, str | None, str | None]:
-        summary_preset = self._resolve_image_summary_preset_name()
-        current_preset = (
-            self._resolve_exact_current_preset_name()
-            or self._resolve_current_preset_name()
-        )
-        if summary_preset:
-            if (
-                current_preset
-                and current_preset == summary_preset
-                and self._preset_supports_vision(current_preset)
-            ):
-                return self._agent.llm, current_preset, None
-            target_preset = summary_preset
-        elif current_preset and self._preset_supports_vision(current_preset):
-            target_preset = current_preset
-        else:
-            target_preset = self._resolve_vision_preset_name()
-
-        if not target_preset:
-            return None, None, "No vision preset configured."
-
-        preset = self._model_presets.get(target_preset)
-        if not preset:
-            return None, None, f"Vision preset '{target_preset}' not found."
-
-        api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
-        api_key = os.getenv(api_key_env)
-        if not api_key:
-            return None, None, f"Missing API key env var: {api_key_env}"
-
-        model = str(preset["model"])
-        base_url_raw = preset.get("base_url")
-        base_url = str(base_url_raw) if isinstance(base_url_raw, str) else None
-
-        try:
-            return (
-                ChatOpenAI(model=model, api_key=api_key, base_url=base_url),
-                target_preset,
-                None,
-            )
-        except Exception as e:
-            return None, None, f"Failed to initialize vision summarizer: {e}"
+        return self._model_switch_service._resolve_image_summary_llm()
 
     def _normalize_image_summary(self, text: str, max_chars: int) -> str:
-        normalized = " ".join(text.split())
-        if not normalized:
-            return "未提取到可用图像信息。"
-        if len(normalized) <= max_chars:
-            return normalized
-        return normalized[: max_chars - 3].rstrip() + "..."
+        return self._model_switch_service._normalize_image_summary(text, max_chars)
 
     def _normalize_image_detail(self, text: str) -> str:
-        return self._normalize_image_summary(text, self.IMAGE_DETAIL_MAX_CHARS)
+        return self._model_switch_service._normalize_image_detail(text)
 
     async def _extract_image_detail(
         self,
@@ -350,225 +299,24 @@ class ClaudeCodeCLI:
         image_part: ContentPartImageParam,
         user_text_hint: str,
     ) -> str:
-        max_chars = self.IMAGE_DETAIL_MAX_CHARS
-        system_prompt = (
-            "你是图像信息提取器。请从截图中做高保真提取，重点支持代码和报错场景。"
-            f"请输出中文纯文本，不使用Markdown，不超过{max_chars}字。"
-            "按以下顺序输出：截图类型、可见文本原样摘录、关键代码片段、错误信息与调用栈、"
-            "文件名和行号、与用户问题相关结论、不确定项。"
-            "看不清的内容必须明确写“不可辨识”，禁止臆测。"
+        return await self._model_switch_service._extract_image_detail(
+            llm,
+            image_part,
+            user_text_hint,
         )
-        user_prompt = f"请对这张图做详细信息提取。用户原问题: {user_text_hint or '（无）'}"
-        high_detail_part = ContentPartImageParam(
-            image_url=ImageURL(
-                url=str(image_part.image_url.url),
-                detail="high",
-                media_type=image_part.image_url.media_type,
-            )
-        )
-        response = await llm.ainvoke(
-            messages=[
-                SystemMessage(content=system_prompt),
-                UserMessage(
-                    content=[
-                        ContentPartTextParam(text=user_prompt),
-                        high_detail_part,
-                    ]
-                ),
-            ],
-            tools=None,
-            tool_choice=None,
-        )
-        return self._normalize_image_detail(response.content or "")
     
     async def _compress_image_detail(self, llm: Any, detail_text: str) -> str:
-        max_chars = self.IMAGE_MEMORY_MAX_CHARS
-        system_prompt = (
-            "你是信息压缩器。把详细图像记忆压缩为后续文本模型可用的短记忆。"
-            f"输出中文纯文本，不使用Markdown，不超过{max_chars}字。"
-            "必须保留：关键错误关键词、文件名/行号、关键结论、主要不确定项。"
-        )
-        user_prompt = f"请压缩以下图像详细记忆：\n{detail_text}"
-        response = await llm.ainvoke(
-            messages=[
-                SystemMessage(content=system_prompt),
-                UserMessage(content=user_prompt),
-            ],
-            tools=None,
-            tool_choice=None,
-        )
-        return self._normalize_image_summary(response.content or "", max_chars)
+        return await self._model_switch_service._compress_image_detail(llm, detail_text)
     
     async def _prepare_text_model_image_memory(self, *, manual: bool) -> None:
-        messages = self._agent._context.get_messages()
-        total_images = 0
-        for msg in messages:
-            if not isinstance(msg, UserMessage):
-                continue
-            if not isinstance(msg.content, list):
-                continue
-            for part in msg.content:
-                if getattr(part, "type", None) == "image_url":
-                    total_images += 1
-
-        if total_images == 0:
-            return
-        
-        summary_llm, summary_label, summary_error = self._resolve_image_summary_llm()
-        if summary_llm is not None and summary_label is not None:
-            self._console.print(
-                f"[dim]Converting {total_images} historical image(s) into text memory via {summary_label}...[/dim]"
-            )
-        else:
-            self._console.print(
-                f"[yellow]Vision summarizer unavailable ({summary_error}); using fallback image memory.[/yellow]"
-            )
-
-        summarized_count = 0
-        fallback_count = 0
-
-        for msg in messages:
-            if not isinstance(msg, UserMessage):
-                continue
-            if not isinstance(msg.content, list):
-                continue
-
-            user_text_hint = "\n".join(
-                part.text
-                for part in msg.content
-                if getattr(part, "type", None) == "text"
-            ).strip()
-
-            new_parts: list[ContentPartTextParam | ContentPartImageParam] = []
-            changed = False
-
-            for part in msg.content:
-                if getattr(part, "type", None) != "image_url":
-                    new_parts.append(part)
-                    continue
-
-                memory_text: str
-                if summary_llm is not None:
-                    try:
-                        detail_text = await self._extract_image_detail(
-                            summary_llm,
-                            part,
-                            user_text_hint=user_text_hint,
-                        )
-                        summary_text = await self._compress_image_detail(
-                            summary_llm, detail_text
-                        )
-                        memory_text = f"[ImageSummary] {summary_text}"
-                        summarized_count += 1
-                    except Exception as e:
-                        err_preview = " ".join(str(e).split())[:120]
-                        memory_text = "[ImageSummary] " + self._normalize_image_summary(
-                            f"视觉摘要失败（{err_preview}），切换到文本模型时已移除原始图像数据。",
-                            self.IMAGE_MEMORY_MAX_CHARS,
-                        )
-                        fallback_count += 1
-                else:
-                    memory_text = "[ImageSummary] " + self._normalize_image_summary(
-                        "未配置可用视觉摘要模型，切换到文本模型时已移除原始图像数据。",
-                        self.IMAGE_MEMORY_MAX_CHARS,
-                    )
-                    fallback_count += 1
-                new_parts.append(
-                    ContentPartTextParam(
-                        text=memory_text
-                    )
-                )
-                changed = True
-
-            if changed:
-                msg.content = new_parts
-
-        self._agent._context.rebuild_role_index()
-
-        stripped = self._agent._context.strip_user_image_inputs()
-        if stripped:
-            self._console.print(
-                f"[yellow]Removed {stripped} residual image part(s) after memory conversion.[/yellow]"
-            )
-
-        status_style = "yellow" if manual else "dim"
-        self._console.print(
-            f"[{status_style}]Converted {summarized_count}/{total_images} image(s) into text memory.[/{status_style}]"
-        )
-        if fallback_count:
-            self._console.print(
-                f"[{status_style}]Fallback memory used for {fallback_count} image(s).[/"
-                f"{status_style}]"
-            )
+        await self._model_switch_service.prepare_text_model_image_memory(manual=manual)
     
     async def _apply_auto_model_policy(self, has_image: bool) -> bool:
-        """Apply automatic model switching for image/text turns."""
-        if not self._model_presets:
-            return True
-
-        if self._sticky_preset is None:
-            self._sticky_preset = self._resolve_current_preset_name()
-
-        sticky_is_vision = self._preset_supports_vision(self._sticky_preset)
-        current_preset = (
-            self._resolve_exact_current_preset_name()
-            or self._resolve_current_preset_name()
+        """Backward-compatible wrapper for automatic model switching."""
+        return await self._model_switch_service.ensure_model_for_turn(
+            has_image=has_image,
+            auto_state=self._model_auto_state,
         )
-
-        if has_image:
-            # If user intentionally stays on a vision model, never auto-switch.
-            if sticky_is_vision:
-                return True
-
-            if current_preset and self._preset_supports_vision(current_preset):
-                if not self._auto_switched:
-                    self._auto_switched = True
-                    self._auto_from_preset = self._sticky_preset
-                return True
-
-            vision_preset = self._resolve_vision_preset_name()
-            if not vision_preset:
-                self._console.print(
-                    "[red]Image input requires a vision preset. Configure `vision: true` and `auto_vision_preset` in config/model_presets.json.[/red]"
-                )
-                return False
-
-            self._console.print(
-                f"[dim]Auto switch to vision preset: {vision_preset}[/dim]"
-            )
-            switched = await self._switch_model_preset(vision_preset, manual=False)
-            if not switched:
-                self._console.print(
-                    "[red]Failed to switch to vision model. Image request aborted.[/red]"
-                )
-                return False
-
-            self._auto_switched = True
-            self._auto_from_preset = self._sticky_preset
-            return True
-
-        # Text-only turn.
-        if not self._auto_switched:
-            return True
-        if sticky_is_vision:
-            return True
-
-        target_preset = self._auto_from_preset or self._sticky_preset
-        if not target_preset:
-            self._clear_auto_switch_state()
-            return True
-            
-        self._console.print(
-            f"[dim]Auto switch back to text preset: {target_preset}[/dim]"
-        )
-        switched = await self._switch_model_preset(target_preset, manual=False)
-        if switched:
-            self._clear_auto_switch_state()
-        else:
-            self._console.print(
-                "[yellow]Auto switch-back failed; continue with current model.[/yellow]"
-            )
-        return True
 
     def _maybe_inject_agents_md(self) -> None:
         """Inject AGENTS.md into context once per content hash."""
@@ -726,32 +474,11 @@ class ClaudeCodeCLI:
 
     def _resolve_current_preset_name(self) -> str | None:
         """Best-effort preset match for current model/base URL."""
-        exact_match = self._resolve_exact_current_preset_name()
-        if exact_match is not None:
-            return exact_match
-
-        if self._default_model_preset in self._model_presets:
-            return self._default_model_preset
-
-        return next(iter(self._model_presets.keys()), None)
+        return self._model_switch_service.resolve_current_preset_name()
 
     def _resolve_exact_current_preset_name(self) -> str | None:
         """Exact preset match for current model/base URL, without fallback."""
-        if not self._model_presets:
-            return None
-
-        current_model = str(self._agent.llm.model)
-        current_base_url = getattr(self._agent.llm, "base_url", None)
-        current_base_url_str = str(current_base_url) if current_base_url else None
-
-        for name, preset in self._model_presets.items():
-            if preset.get("model") != current_model:
-                continue
-            preset_base_url = preset.get("base_url")
-            if preset_base_url is None or preset_base_url == current_base_url_str:
-                return name
-
-        return None
+        return self._model_switch_service.resolve_exact_current_preset_name()
 
     def _start_model_pick_mode(self):
         """Show numbered model presets and enter pick mode."""
@@ -822,105 +549,11 @@ class ClaudeCodeCLI:
 
     async def _switch_model_preset(self, preset_name: str, *, manual: bool = True) -> bool:
         """Switch to a configured model preset without clearing conversation context."""
-        preset = self._model_presets.get(preset_name)
-        if not preset:
-            self._console.print(f"[red]Unknown preset: {preset_name}[/red]")
-            self._console.print("[dim]Use /model list to see available presets.[/dim]")
-            return False
-
-        current_preset = self._resolve_exact_current_preset_name()
-        current_is_vision = self._preset_supports_vision(current_preset)
-        target_is_vision = bool(preset.get("vision", False))
-
-        if current_preset == preset_name:
-            if manual:
-                self._sticky_preset = preset_name
-                self._clear_auto_switch_state()
-            self._console.print(
-                f"[dim]Already using preset [cyan]{preset_name}[/cyan].[/dim]"
-            )
-            return True
-
-        model = str(preset["model"])
-        api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
-        api_key = os.getenv(api_key_env)
-        if not api_key:
-            self._console.print(
-                f"[red]Missing API key env var: {api_key_env}. Switch aborted.[/red]"
-            )
-            return False
-
-        context_snapshot: list[Any] | None = None
-        if current_is_vision and not target_is_vision:
-            context_snapshot = [
-                message.model_copy(deep=True)
-                for message in self._agent._context.get_messages()
-            ]
-            try:
-                await self._prepare_text_model_image_memory(manual=manual)
-            except Exception as e:
-                self._agent._context.replace_messages(context_snapshot)
-                self._console.print(
-                    f"[red]Failed to prepare image memory before switch: {e}[/red]"
-                )
-                return False
-
-        try:
-            preflight = await self._agent.preflight_model_switch(model)
-        except Exception as e:
-            if context_snapshot is not None:
-                self._agent._context.replace_messages(context_snapshot)
-            self._console.print(f"[red]Model switch preflight failed: {e}[/red]")
-            return False
-        if not preflight.ok:
-            if context_snapshot is not None:
-                self._agent._context.replace_messages(context_snapshot)
-            self._console.print(
-                f"[red]Model switch preflight failed: {preflight.reason or 'context is too large'}[/red]"
-            )
-            self._console.print(
-                f"[dim]Estimated tokens: {preflight.estimated_tokens}, "
-                f"threshold: {preflight.threshold}, "
-                f"utilization: {preflight.threshold_utilization:.0%}[/dim]"
-            )
-            return False
-
-        old_llm = self._agent.llm
-        old_model = str(old_llm.model)
-        old_base_url = getattr(old_llm, "base_url", None)
-        new_base_url_raw = preset.get("base_url")
-        new_base_url = str(new_base_url_raw) if isinstance(new_base_url_raw, str) else None
-        if new_base_url is None and old_base_url is not None:
-            new_base_url = str(old_base_url)
-
-        try:
-            self._agent.llm = ChatOpenAI(
-                model=model,
-                api_key=api_key,
-                base_url=new_base_url,
-            )
-        except Exception as e:
-            self._agent.llm = old_llm
-            if context_snapshot is not None:
-                self._agent._context.replace_messages(context_snapshot)
-            self._console.print(f"[red]Failed to switch model: {e}[/red]")
-            return False
-
-        if preflight.compacted:
-            self._console.print(
-                "[yellow]Context was compacted before switching to fit target model.[/yellow]"
-            )
-
-        self._console.print(
-            f"[green]Model switched:[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
+        return await self._model_switch_service.switch_model_preset(
+            preset_name,
+            manual=manual,
+            auto_state=self._model_auto_state,
         )
-        self._console.print(
-            f"[dim]Context preserved ({len(self._agent.messages)} messages).[/dim]"
-        )
-        if manual:
-            self._sticky_preset = preset_name
-            self._clear_auto_switch_state()
-        return True
 
     def _start_loading(self, message: str = "Thinking") -> _LoadingIndicator:
         """Start a loading animation."""
@@ -1327,13 +960,11 @@ class ClaudeCodeCLI:
 
     async def _run_agent(self, user_input: UserInputPayload, has_image: bool = False):
         """Run the agent with user input and display events."""
-        if not await self._apply_auto_model_policy(has_image=has_image):
-            return
         self._step_number = 0
         self._console.print()
 
         # Inject AGENTS.md (if present) before each user query
-        self._maybe_inject_agents_md()
+        # self._maybe_inject_agents_md()
 
         # Start loading animation
         self._loading = self._start_loading("Thinking")

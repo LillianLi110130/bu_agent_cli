@@ -4,6 +4,10 @@ Event types for agent streaming.
 These events are yielded by `agent.query_stream()` to provide visibility
 into the agent's execution.
 
+These are UI/output events only. They are not used to drive the internal
+runtime loop; hook/runtime control events live in
+`bu_agent_sdk.agent.runtime_events`.
+
 Usage:
     async for event in agent.query_stream("do something"):
         match event:

@@ -65,6 +65,9 @@ from pathlib import Path
 from bu_agent_sdk.agent.compaction import CompactionConfig
 from bu_agent_sdk.agent.context import ContextManager
 from bu_agent_sdk.agent.config import AgentConfig
+from bu_agent_sdk.agent.hooks import AgentHook, FinishGuardHook, HookManager
+from bu_agent_sdk.agent.runtime_loop import AgentRuntimeLoop
+from bu_agent_sdk.agent.runtime_state import AgentRunState
 
 logger = logging.getLogger("bu_agent_sdk.agent")
 from bu_agent_sdk.agent.events import (
@@ -241,11 +244,19 @@ class Agent:
     """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
     agent_config: AgentConfig | None = None
     """Agent configuration with tool permissions and other metadata."""
+    hooks: list[AgentHook] = field(default_factory=list, repr=False)
+    """Runtime hooks executed around internal loop events."""
 
     # Internal state
     _context: ContextManager = field(default_factory=ContextManager, repr=False)
     _tool_map: dict[str, Tool] = field(default_factory=dict, repr=False)
     _token_cost: TokenCost = field(default=None, repr=False)  # type: ignore
+    _hook_manager: HookManager = field(default_factory=HookManager, repr=False)
+    task_complete_exc_type: type[TaskComplete] = field(
+        default=TaskComplete,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self):
         # Validate that all tools are Tool instances
@@ -272,6 +283,7 @@ class Agent:
             llm=self.llm,
             token_cost=self._token_cost,
         )
+        self._hook_manager = HookManager([FinishGuardHook(), *self.hooks])
 
     @property
     def tool_definitions(self) -> list[ToolDefinition]:
@@ -300,6 +312,12 @@ class Agent:
         """Clear the message history and token usage."""
         self._context.clear_messages()
         self._token_cost.clear_history()
+
+    def register_hook(self, hook: AgentHook) -> None:
+        """Register a runtime hook after agent initialization."""
+        self.hooks.append(hook)
+        self._hook_manager.hooks.append(hook)
+        self._hook_manager.hooks.sort(key=lambda item: getattr(item, "priority", 100))
 
     def _filter_tools_by_config(self):
         """根据agent配置过滤工具"""
@@ -847,97 +865,9 @@ Keep the summary brief but informative."""
         Returns:
             The agent's response text.
         """
-        # Add system prompt on first message
-        if not self._context and self.system_prompt:
-            # Cache the static system prompt when provider supports it (Anthropic).
-            self._context.add_message(SystemMessage(content=self.system_prompt, cache=True))
-
-        # Add the user message
-        self._context.add_message(UserMessage(content=message))
-
-        iterations = 0
-        tool_calls_made = 0
-        overflow_recovery_attempted = False
-        incomplete_todos_prompted = False  # Track if we've already prompted about incomplete todos
-
-        while iterations < self.max_iterations:
-            iterations += 1
-
-            # Destroy ephemeral messages from previous iteration before LLM sees them again
-            # 清理一些历史冗余的工具输出结果，总体思想是对每种工具只保留最近N条结果
-            self._destroy_ephemeral_messages()
-
-            # Invoke the LLM
-            try:
-                response = await self._invoke_llm()
-            except Exception as e:
-                if not overflow_recovery_attempted and self._is_context_overflow_error(e):
-                    overflow_recovery_attempted = True
-                    compacted = await self._compact_messages_now()
-                    if compacted:
-                        logger.warning(
-                            "Recovered from context overflow by compacting history and retrying once."
-                        )
-                        continue
-                raise
-
-            # Add assistant message to history
-            assistant_msg = AssistantMessage(
-                content=response.content,
-                tool_calls=response.tool_calls if response.tool_calls else None,
-            )
-            self._context.add_message(assistant_msg)
-
-            # If no tool calls, check if should finish
-            if not response.has_tool_calls:
-                if not self.require_done_tool:
-                    # 这种模型下，只要没有调用工具，就视为结束
-                    # CLI mode: LLM stopped calling tools, check for incomplete todos before finishing
-                    if not incomplete_todos_prompted:
-                        # 检查未完成todo，防止llm忘了以前说过的todo（自动纠正）
-                        # 留了一个未完成的hook，可以根据自己的plan格式自己实现
-                        incomplete_prompt = await self._get_incomplete_todos_prompt()
-                        if incomplete_prompt:
-                            # 如果有没做完的，修改标识符，更新messages，继续循环
-                            # 是一个最低程度的自我纠正，只会重复一次
-                            incomplete_todos_prompted = True
-                            self._context.add_message(UserMessage(content=incomplete_prompt))
-                            continue  # Give the LLM a chance to handle incomplete todos
-
-                    # All done - return the response
-                    # todo: 看看代码，大概就是做一下压缩
-                    await self._maintain_context(response)
-                    # 返回最终文本
-                    return response.content or ""
-                # Autonomous mode: require done tool, continue loop
-                # LLM必须显式调用一个done tool，否则即使没有tool call，也不会退出
-                continue
-
-            # 如果有tool calls，执行工具
-            # Execute all tool calls
-            for tool_call in response.tool_calls:
-                tool_calls_made += 1
-                try:
-                    # todo: 看看这个代码
-                    tool_result = await self._execute_tool_call(tool_call)
-                    self._context.add_message(tool_result)
-                except TaskComplete as e:
-                    # 工具可以通过抛异常来结束agent
-                    self._context.add_message(
-                        ToolMessage(
-                            tool_call_id=tool_call.id,
-                            tool_name=tool_call.function.name,
-                            content=f"Task completed: {e.message}",
-                            is_error=False,
-                        )
-                    )
-                    return e.message
-
-            # Check for compaction after tool execution
-            await self._maintain_context(response)
-
-        # Max iterations reached - generate summary of what was accomplished
-        return await self._generate_max_iterations_summary()
+        state = AgentRunState(query_mode="query", max_iterations=self.max_iterations)
+        runtime_loop = AgentRuntimeLoop(agent=self, state=state)
+        return await runtime_loop.run(message)
 
     @observe(name="agent_query_stream")
     async def query_stream(
@@ -971,157 +901,10 @@ Keep the summary brief but informative."""
                     case FinalResponseEvent(content=text):
                         print(f"Done: {text}")
         """
-        # Add system prompt on first message
-        if not self._context and self.system_prompt:
-            # Cache the static system prompt when provider supports it (Anthropic).
-            self._context.add_message(SystemMessage(content=self.system_prompt, cache=True))
-
-        # Add the user message (supports both string and multi-modal content)
-        self._context.add_message(UserMessage(content=message))
-
-        iterations = 0
-        overflow_recovery_attempted = False
-        incomplete_todos_prompted = False  # Track if already prompted about incomplete todos
-
-        while iterations < self.max_iterations:
-            iterations += 1
-
-            # Destroy ephemeral messages from previous iteration before LLM sees them again
-            # _destroy_ephemeral_messages暂时留了一个入口hook，可以根据自己的plan工具自己实现
-            self._destroy_ephemeral_messages()
-
-            # Invoke the LLM
-            try:
-                response = await self._invoke_llm()
-            except Exception as e:
-                if not overflow_recovery_attempted and self._is_context_overflow_error(e):
-                    overflow_recovery_attempted = True
-                    compacted = await self._compact_messages_now()
-                    if compacted:
-                        yield HiddenUserMessageEvent(
-                            content=(
-                                "Context exceeded model window. "
-                                "Automatically compacted history and retried."
-                            )
-                        )
-                        continue
-                raise
-
-            # Check for thinking content and yield it
-            if response.thinking:
-                yield ThinkingEvent(content=response.thinking)
-
-            # Add assistant message to history
-            assistant_msg = AssistantMessage(
-                content=response.content,
-                tool_calls=response.tool_calls if response.tool_calls else None,
-            )
-            self._context.add_message(assistant_msg)
-
-            # If no tool calls, check if should finish
-            if not response.has_tool_calls:
-                if not self.require_done_tool:
-                    # CLI mode: LLM stopped calling tools, check for incomplete todos before finishing
-                    if not incomplete_todos_prompted:
-                        incomplete_prompt = await self._get_incomplete_todos_prompt()
-                        if incomplete_prompt:
-                            incomplete_todos_prompted = True
-                            self._context.add_message(UserMessage(content=incomplete_prompt))
-                            yield HiddenUserMessageEvent(content=incomplete_prompt)
-                            continue  # Give the LLM a chance to handle incomplete todos
-
-                    # All done - return the response
-                    await self._maintain_context(response)
-                    if response.content:
-                        yield TextEvent(content=response.content)
-                    yield FinalResponseEvent(content=response.content or "")
-                    return
-                # Autonomous mode: require done tool, yield text and continue loop
-                if response.content:
-                    yield TextEvent(content=response.content)
-                continue
-
-            # Yield text content if present alongside tool calls
-            if response.content:
-                yield TextEvent(content=response.content)
-
-            # Execute all tool calls, yielding events for each
-            step_number = 0
-            for tool_call in response.tool_calls:
-                step_number += 1
-                tool_name = tool_call.function.name
-
-                # Yield the tool call event
-                try:
-                    args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    args = {"_raw": tool_call.function.arguments}
-
-                # Emit step start event
-                yield StepStartEvent(
-                    step_id=tool_call.id,
-                    title=tool_name,
-                    step_number=step_number,
-                )
-
-                yield ToolCallEvent(
-                    tool=tool_name,
-                    args=args,
-                    tool_call_id=tool_call.id,
-                    display_name=tool_name,
-                )
-
-                # Execute the tool
-                step_start_time = time.time()
-                try:
-                    tool_result = await self._execute_tool_call(tool_call)
-                    self._context.add_message(tool_result)
-
-                    # Extract screenshot if present (for browser tools)
-                    screenshot_base64 = self._extract_screenshot(tool_result)
-
-                    # Yield the tool result event
-                    yield ToolResultEvent(
-                        tool=tool_name,
-                        result=tool_result.text,
-                        tool_call_id=tool_call.id,
-                        is_error=tool_result.is_error,
-                        screenshot_base64=screenshot_base64,
-                    )
-
-                    # Emit step complete event
-                    step_duration_ms = (time.time() - step_start_time) * 1000
-                    yield StepCompleteEvent(
-                        step_id=tool_call.id,
-                        status="error" if tool_result.is_error else "completed",
-                        duration_ms=step_duration_ms,
-                    )
-                except TaskComplete as e:
-                    # done_autonomous already validates todos before raising TaskComplete,
-                    # so can complete immediately
-                    self._context.add_message(
-                        ToolMessage(
-                            tool_call_id=tool_call.id,
-                            tool_name=tool_call.function.name,
-                            content=f"Task completed: {e.message}",
-                            is_error=False,
-                        )
-                    )
-                    yield ToolResultEvent(
-                        tool=tool_call.function.name,
-                        result=f"Task completed: {e.message}",
-                        tool_call_id=tool_call.id,
-                        is_error=False,
-                    )
-                    yield FinalResponseEvent(content=e.message)
-                    return
-
-            # Check for compaction after tool execution
-            await self._maintain_context(response)
-
-        # Max iterations reached - generate summary of what was accomplished
-        summary = await self._generate_max_iterations_summary()
-        yield FinalResponseEvent(content=summary)
+        state = AgentRunState(query_mode="stream", max_iterations=self.max_iterations)
+        runtime_loop = AgentRuntimeLoop(agent=self, state=state)
+        async for event in runtime_loop.run_stream(message, emit_ui_events=True):
+            yield event
 
     @observe(name="agent_query_stream_delta")
     async def query_stream_delta(

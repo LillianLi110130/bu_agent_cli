@@ -8,6 +8,16 @@ from bu_agent_sdk.agent.compaction import (
     CompactionService,
 )
 from bu_agent_sdk.agent.context import ContextManager
+from bu_agent_sdk.agent.hooks import (
+    AgentHook,
+    AuditHook,
+    FinishGuardHook,
+    HookContext,
+    HookDecision,
+    HookManager,
+    ToolPolicyHook,
+)
+from bu_agent_sdk.agent.model_routing_hook import ModelRoutingHook
 from bu_agent_sdk.agent.events import (
     AgentEvent,
     FinalResponseEvent,
@@ -17,6 +27,8 @@ from bu_agent_sdk.agent.events import (
     ToolResultEvent,
 )
 from bu_agent_sdk.agent.registry import AgentRegistry, get_agent_registry
+from bu_agent_sdk.agent.runtime_events import RuntimeEvent
+from bu_agent_sdk.agent.runtime_state import AgentRunState
 from bu_agent_sdk.agent.service import Agent, TaskComplete
 from bu_agent_sdk.agent.config import AgentConfig, parse_agent_config
 
@@ -30,6 +42,17 @@ __all__ = [
     "ThinkingEvent",
     "ToolCallEvent",
     "ToolResultEvent",
+    # Runtime loop / hooks
+    "RuntimeEvent",
+    "AgentRunState",
+    "AgentHook",
+    "HookDecision",
+    "HookContext",
+    "HookManager",
+    "FinishGuardHook",
+    "ToolPolicyHook",
+    "AuditHook",
+    "ModelRoutingHook",
     # Compaction
     "CompactionConfig",
     "CompactionResult",
