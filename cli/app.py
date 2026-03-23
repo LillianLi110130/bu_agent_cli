@@ -16,6 +16,9 @@ from typing import Any, Callable
 from bu_agent_sdk import Agent
 from bu_agent_sdk.agent import (
     FinalResponseEvent,
+    HumanApprovalDecision,
+    HumanApprovalRequest,
+    HumanInLoopConfig,
     ModelRoutingHook,
     TextEvent,
     ThinkingEvent,
@@ -65,6 +68,7 @@ from cli.image_input import (
     is_image_command,
     parse_image_command,
 )
+from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
@@ -72,6 +76,19 @@ from tools import SandboxContext, SecurityError
 
 ModelPreset = dict[str, str | bool]
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
+
+
+class _CLIHumanApprovalHandler:
+    """CLI-backed approval handler used by runtime hooks."""
+
+    def __init__(self, cli: "ClaudeCodeCLI"):
+        self._cli = cli
+
+    async def request_approval(
+        self,
+        request: HumanApprovalRequest,
+    ) -> HumanApprovalDecision:
+        return await self._cli._request_human_approval(request)
 
 
 # =============================================================================
@@ -167,6 +184,7 @@ class ClaudeCodeCLI:
         self._ctx = context
         self._step_number = 0
         self._loading: _LoadingIndicator | None = None
+        self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
             Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
@@ -200,6 +218,9 @@ class ClaudeCodeCLI:
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
+        self._approval_handler = _CLIHumanApprovalHandler(self)
+        self._agent.human_in_loop_handler = self._approval_handler
+        self._agent.human_in_loop_config = HumanInLoopConfig(enabled=True)
         self._agent.register_hook(
             ModelRoutingHook(
                 service=self._model_switch_service,
@@ -590,6 +611,9 @@ class ClaudeCodeCLI:
         self._console.print(f"[dim]Tools:[/] bash, read, write, edit, glob, grep, todos")
         self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
         self._console.print(f"[dim]Skill Commands:[/] Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see all")
+        self._console.print(
+            "[dim]审批模式：[/]已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
+        )
         if self._model_presets:
             self._console.print(
                 f"[dim]Model presets:[/] {', '.join(self._model_presets.keys())}"
@@ -605,6 +629,7 @@ class ClaudeCodeCLI:
   [blue]exit[/blue]          - Exit the CLI
   [blue]pwd[/blue]           - Print current working directory
   [blue]ls [path][/blue]     - List files in directory (AI can do this too)
+  [blue]/approval on|off|status[/blue] - 控制高风险工具的人类审批开关
 
 [bold cyan]Available Tools (for AI):[/bold cyan]
 
@@ -623,6 +648,57 @@ class ClaudeCodeCLI:
   - The AI will use tools automatically to help you
 """
         self._console.print(Panel(help_text, border_style="dim"))
+
+    def _print_approval_status(self) -> None:
+        status = "已开启" if self._agent.human_in_loop_config.enabled else "已关闭"
+        style = "green" if self._agent.human_in_loop_config.enabled else "yellow"
+        self._console.print(f"[{style}]审批模式：{status}[/{style}]")
+
+    async def _request_human_approval(
+        self,
+        request: HumanApprovalRequest,
+    ) -> HumanApprovalDecision:
+        self._stop_loading(self._loading)
+        self._loading = None
+
+        args_preview = json.dumps(request.arguments, ensure_ascii=False, default=str)
+        if len(args_preview) > 240:
+            args_preview = args_preview[:237].rstrip() + "..."
+
+        command_preview_line = (
+            f"[bold]命令预览：[/bold] {request.command_preview}\n"
+            if request.command_preview
+            else ""
+        )
+        panel = Panel(
+            f"[bold]工具：[/bold] {request.tool_name}\n"
+            f"[bold]风险级别：[/bold] {request.risk_level}\n"
+            f"[bold]审批原因：[/bold] {request.reason}\n"
+            f"{command_preview_line}"
+            f"[bold]参数：[/bold] {args_preview}\n"
+            "[dim]提示：如需关闭后续审批，可在本轮结束后输入 /approval off。[/dim]",
+            title="[bold yellow]需要审批[/bold yellow]",
+            border_style="yellow",
+        )
+        self._console.print()
+        self._console.print(panel)
+
+        approved = await self._prompter.prompt_yes_no(
+            "是否批准这次工具调用？如需关闭后续审批，可在本轮结束后使用 /approval off",
+            default=False,
+        )
+        if approved:
+            self._console.print("[green]已批准。[/green]")
+            self._console.print()
+            return HumanApprovalDecision(approved=True)
+
+        reason = await self._prompter.prompt_text(
+            "拒绝原因",
+            optional=True,
+        )
+        self._console.print("[yellow]已拒绝。[/yellow]")
+        self._console.print()
+        return HumanApprovalDecision(approved=False, reason=reason or None)
 
     def _print_slash_help(self):
         """Print slash command help information."""
@@ -725,6 +801,19 @@ class ClaudeCodeCLI:
 
             # Convenience: /model <preset>
             await self._switch_model_preset(args[0])
+            return True
+
+        if command_name == "approval":
+            if not args or args[0].lower() == "status":
+                self._print_approval_status()
+                return True
+
+            if len(args) != 1 or args[0].lower() not in {"on", "off"}:
+                self._console.print("[red]用法：/approval [on|off|status][/red]")
+                return True
+
+            self._agent.human_in_loop_config.enabled = args[0].lower() == "on"
+            self._print_approval_status()
             return True
 
         # Handle reset command

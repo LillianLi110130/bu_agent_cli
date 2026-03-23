@@ -8,11 +8,14 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bu_agent_sdk.agent.events import HiddenUserMessageEvent
+from bu_agent_sdk.agent.hitl import HumanApprovalRequest
 from bu_agent_sdk.agent.runtime_events import (
     FinishRequested,
     IterationStarted,
     RuntimeEvent,
+    RunFinished,
     ToolCallRequested,
+    ToolResultReceived,
 )
 from bu_agent_sdk.llm.messages import BaseMessage, ToolMessage, UserMessage
 
@@ -184,6 +187,89 @@ class ToolPolicyHook(BaseAgentHook):
                 is_error=True,
             ),
             reason=reason,
+        )
+
+
+@dataclass
+class HumanApprovalHook(BaseAgentHook):
+    """Request human approval before executing selected tool calls."""
+
+    policy: Any = None
+    priority: int = 18
+
+    async def before_event(
+        self,
+        event: RuntimeEvent,
+        ctx: HookContext,
+    ) -> HookDecision | None:
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        if not ctx.agent.human_in_loop_config.enabled:
+            return None
+
+        request = self._build_request(event, ctx)
+        if request is None:
+            return None
+
+        handler = ctx.agent.human_in_loop_handler
+        if handler is None:
+            return self._terminate_current_turn(
+                event,
+                "需要人工审批，但当前未配置审批处理器",
+            )
+
+        decision = await handler.request_approval(request)
+        if decision.approved:
+            return None
+
+        return self._terminate_current_turn(
+            event,
+            decision.reason or "该工具调用已被人工审批拒绝",
+        )
+
+    def _build_request(
+        self,
+        event: ToolCallRequested,
+        ctx: HookContext,
+    ) -> HumanApprovalRequest | None:
+        if self.policy is None:
+            return None
+        return self.policy(event, ctx)
+
+    @staticmethod
+    def _terminate_current_turn(
+        event: ToolCallRequested,
+        reason: str,
+    ) -> HookDecision:
+        tool_name = event.tool_call.function.name
+        normalized_reason = " ".join(reason.split())
+        message = f"工具 '{tool_name}' 已被人工审批拒绝"
+        if normalized_reason:
+            message += f"（{normalized_reason}）"
+        final_response = (
+            f"工具 '{tool_name}' 未执行，因为人工审批未通过。"
+            "本轮对话已结束，请输入你的下一条请求。"
+        )
+        return HookDecision(
+            action=HookAction.ABORT,
+            emitted_events=[
+                ToolResultReceived(
+                    tool_call=event.tool_call,
+                    tool_result=ToolMessage(
+                        tool_call_id=event.tool_call.id,
+                        tool_name=tool_name,
+                        content=message,
+                        is_error=True,
+                    ),
+                    iteration=event.iteration,
+                ),
+                RunFinished(
+                    final_response=final_response,
+                    iterations=event.iteration,
+                ),
+            ],
+            reason=final_response,
         )
 
 
