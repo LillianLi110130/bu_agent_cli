@@ -1,6 +1,7 @@
 """Sandbox context for secure filesystem access."""
 
 import asyncio
+import os
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -11,6 +12,34 @@ class SecurityError(Exception):
     """Raised when a path escapes the sandbox."""
 
     pass
+
+
+def _sanitize_path(path: str) -> str:
+    """Fix Windows paths with escape sequences like \\b, \\t, \\n.
+
+    When paths like 'D:\\llm_project\\bu_agent_cli' are created as regular
+    strings (not raw strings), Python interprets \\b as backspace.
+    This function detects and fixes such issues.
+    """
+    # Check for control characters that indicate escape sequence issues
+    # Common problematic escapes in Windows paths:
+    # \\a (bell), \\b (backspace), \\f (form feed), \\n (newline), \\r (cr), \\t (tab), \\v (vertical tab)
+    control_chars = {
+        '\a': '\\a',
+        '\b': '\\b',
+        '\f': '\\f',
+        '\n': '\\n',
+        '\r': '\\r',
+        '\t': '\\t',
+        '\v': '\\v',
+    }
+
+    for control, escape in control_chars.items():
+        if control in path:
+            # Replace the control character with its escaped form
+            path = path.replace(control, escape)
+
+    return path
 
 
 @dataclass
@@ -109,7 +138,13 @@ class SandboxContext:
 
     def resolve_path(self, path: str | Path) -> Path:
         """Resolve and validate a path is within the sandbox."""
-        path_obj = Path(path)
+        # Convert to string and sanitize escape sequences
+        path_str = str(path)
+        path_str = _sanitize_path(path_str)
+        # Normalize path separators to handle both Windows and Unix styles
+        normalized = os.path.normpath(path_str)
+
+        path_obj = Path(normalized)
         if path_obj.is_absolute():
             resolved = path_obj.resolve()
         else:
