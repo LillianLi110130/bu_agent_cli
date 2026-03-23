@@ -4,7 +4,15 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from bu_agent_sdk.agent import Agent, AuditHook, ToolPolicyHook
+from bu_agent_sdk.agent import (
+    Agent,
+    AuditHook,
+    HumanApprovalDecision,
+    HumanApprovalHook,
+    HumanApprovalRequest,
+    ToolPolicyHook,
+    build_default_approval_policy,
+)
 from bu_agent_sdk.agent.events import FinalResponseEvent, HiddenUserMessageEvent
 from bu_agent_sdk.llm.messages import BaseMessage, Function, ToolCall
 from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
@@ -54,6 +62,16 @@ class TodoAgent(Agent):
             self._todo_prompted_once = True
             return "There are unfinished todos. Continue working."
         return None
+
+
+class FakeApprovalHandler:
+    def __init__(self, decision: HumanApprovalDecision):
+        self.decision = decision
+        self.requests: list[HumanApprovalRequest] = []
+
+    async def request_approval(self, request: HumanApprovalRequest) -> HumanApprovalDecision:
+        self.requests.append(request)
+        return self.decision
 
 
 @pytest.mark.anyio
@@ -157,3 +175,203 @@ async def test_audit_hook_records_runtime_events():
     recorded_events = [record["event"] for record in audit_hook.records]
     assert "RunStarted" in recorded_events
     assert "RunFinished" in recorded_events
+
+
+@pytest.mark.anyio
+async def test_human_approval_hook_skips_when_disabled():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True))
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+    )
+    agent.human_in_loop_handler = handler
+    agent.human_in_loop_config.enabled = False
+
+    result = await agent.query("run shell")
+
+    assert result == "done"
+    assert called["value"] is True
+    assert handler.requests == []
+
+
+@pytest.mark.anyio
+async def test_human_approval_hook_allows_approved_tool_call():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True))
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="approved"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+    )
+    agent.human_in_loop_handler = handler
+    agent.human_in_loop_config.enabled = True
+
+    result = await agent.query("run shell")
+
+    assert result == "approved"
+    assert called["value"] is True
+    assert len(handler.requests) == 1
+    assert handler.requests[0].tool_name == "bash"
+    assert handler.requests[0].arguments["command"] == "echo hi"
+
+
+@pytest.mark.anyio
+async def test_human_approval_hook_blocks_rejected_tool_call():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    handler = FakeApprovalHandler(
+        HumanApprovalDecision(approved=False, reason="operator denied")
+    )
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                    )
+                ]
+            )
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+    )
+    agent.human_in_loop_handler = handler
+    agent.human_in_loop_config.enabled = True
+
+    result = await agent.query("run shell")
+
+    assert "本轮对话已结束" in result
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "已被人工审批拒绝" in tool_messages[0].text
+    assert "operator denied" in tool_messages[0].text
+    assert len(llm.invocations) == 1
+
+
+@pytest.mark.anyio
+async def test_human_approval_hook_fails_closed_without_handler():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                    )
+                ]
+            )
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+    )
+    agent.human_in_loop_config.enabled = True
+
+    result = await agent.query("run shell")
+
+    assert "本轮对话已结束" in result
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert "未配置审批处理器" in tool_messages[0].text
+    assert len(llm.invocations) == 1
+
+
+@pytest.mark.anyio
+async def test_query_stream_with_human_approval_rejection_still_finishes():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    handler = FakeApprovalHandler(
+        HumanApprovalDecision(approved=False, reason="operator denied")
+    )
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                    )
+                ]
+            )
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+    )
+    agent.human_in_loop_handler = handler
+    agent.human_in_loop_config.enabled = True
+
+    events = [event async for event in agent.query_stream("run shell")]
+
+    assert called["value"] is False
+    assert len(handler.requests) == 1
+    assert isinstance(events[-1], FinalResponseEvent)
+    assert "本轮对话已结束" in events[-1].content
