@@ -1,9 +1,39 @@
 """File operation tools: read, write, edit."""
 
+import difflib
 from bu_agent_sdk.tools import Depends, tool
 from typing import Annotated, Optional
 
 from tools.sandbox import SandboxContext, get_sandbox_context
+
+# Constants
+_MAX_FILE_CHARS = 128_000  # ~128KB - prevents OOM from reading huge files
+
+
+def _build_diff_error(old_text: str, content: str, file_path: str) -> str:
+    """Build a helpful error message with diff when old_text is not found."""
+    lines = content.splitlines(keepends=True)
+    old_lines = old_text.splitlines(keepends=True)
+    window = len(old_lines)
+
+    best_ratio, best_start = 0.0, 0
+    for i in range(max(1, len(lines) - window + 1)):
+        ratio = difflib.SequenceMatcher(None, old_lines, lines[i : i + window]).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_start = ratio, i
+
+    if best_ratio > 0.5:
+        diff = "\n".join(
+            difflib.unified_diff(
+                old_lines,
+                lines[best_start : best_start + window],
+                fromfile="old_string (provided)",
+                tofile=f"{file_path} (actual, line {best_start + 1})",
+                lineterm="",
+            )
+        )
+        return f"Error: old_string not found.\nBest match ({best_ratio:.0%} similar) at line {best_start + 1}:\n{diff}"
+    return f"Error: old_string not found in {file_path}. No similar text found."
 
 
 @tool("Read contents of a file")
@@ -13,7 +43,7 @@ async def read(
     offset_line: Optional[int] = None,
     n_lines: Optional[int] = None,
 ) -> str:
-    """Read a file and return its contents with line numbers.
+    """Read a file with optional line range and size limit.
 
     Args:
         file_path: Path to the file to read.
@@ -29,26 +59,38 @@ async def read(
         return f"File not found: {file_path}"
     if path.is_dir():
         return f"Path is a directory: {file_path}"
+
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        # Only check file size if no line range is specified
+        if n_lines is None and offset_line is None:
+            size = path.stat().st_size
+            if size > _MAX_FILE_CHARS * 4:
+                return (
+                    f"Error: File too large ({size:,} bytes). "
+                    f"Use offset_line and n_lines to read portions."
+                )
+
+        content = path.read_text(encoding="utf-8")
+        lines = content.splitlines()
         total = len(lines)
 
         # Determine the slice range
-        start = 0
-        if offset_line is not None:
-            start = max(0, offset_line - 1)  # convert 1-based to 0-based
-
-        end = total
-        if n_lines is not None:
-            end = min(total, start + n_lines)
+        start = max(0, (offset_line or 1) - 1)  # convert 1-based to 0-based
+        end = total if n_lines is None else min(total, start + n_lines)
 
         selected = lines[start:end]
-        numbered = [
-            f"{start + i + 1:4d}  {line}" for i, line in enumerate(selected)
-        ]
+        numbered = [f"{start + i + 1:4d}  {line}" for i, line in enumerate(selected)]
 
-        header = f"[Lines {start + 1}-{end} of {total}]"
-        return header + "\n" + "\n".join(numbered)
+        result = f"[Lines {start + 1}-{end} of {total}]\n" + "\n".join(numbered)
+
+        # Check result size after applying line range
+        if len(result) > _MAX_FILE_CHARS:
+            return result[:_MAX_FILE_CHARS] + (
+                f"\n\n... (truncated — result is {len(result):,} chars, "
+                f"use smaller n_lines to read less)"
+            )
+
+        return result
     except Exception as e:
         return f"Error reading file: {e}"
 
@@ -79,8 +121,17 @@ async def edit(
     old_string: str,
     new_string: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
+    replace_all: bool = False,
 ) -> str:
-    """Replace old_string with new_string in a file."""
+    """Replace old_string with new_string in a file.
+
+    Args:
+        file_path: Path to the file to edit.
+        old_string: The exact text to find and replace.
+        new_string: The text to replace with.
+        replace_all: If False, only replaces first occurrence and warns on duplicates.
+                     If True, replaces all occurrences.
+    """
     try:
         path = ctx.resolve_path(file_path)
     except Exception as e:
@@ -88,13 +139,25 @@ async def edit(
 
     if not path.exists():
         return f"File not found: {file_path}"
+
     try:
         content = path.read_text(encoding="utf-8")
+
         if old_string not in content:
-            return f"String not found in {file_path}"
+            return _build_diff_error(old_string, content, file_path)
+
         count = content.count(old_string)
-        new_content = content.replace(old_string, new_string)
+
+        # Safety check: warn on multiple occurrences
+        if count > 1 and not replace_all:
+            return (
+                f"Warning: old_string appears {count} times. "
+                f"Please provide more context to make it unique, or set replace_all=True."
+            )
+
+        new_content = content.replace(old_string, new_string, 1 if not replace_all else count)
         path.write_text(new_content, encoding="utf-8")
-        return f"Replaced {count} occurrence(s) in {file_path}"
+
+        return f"Replaced {1 if not replace_all else count} occurrence(s) in {file_path}"
     except Exception as e:
         return f"Error editing file: {e}"
