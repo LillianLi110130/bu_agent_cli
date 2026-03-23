@@ -1,0 +1,185 @@
+"""Shared agent bootstrap helpers for CLI and gateway runtimes."""
+
+from __future__ import annotations
+
+import os
+import platform
+from pathlib import Path
+from string import Template
+from typing import Any
+
+from bu_agent_sdk import Agent
+from bu_agent_sdk.agent.config import AgentConfig
+from bu_agent_sdk.llm import ChatOpenAI
+from bu_agent_sdk.skill.loader import load_skills
+from bu_agent_sdk.skill.types import Skill
+from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
+
+_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+_PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
+_SKILLS_DIR = _PACKAGE_ROOT / "skills"
+
+
+def _format_skills(skills: list[Skill]) -> str:
+    """Format skills list into a readable string for the prompt."""
+    if not skills:
+        return "No skills available."
+
+    return "\n".join(
+        (f"- {skill.name}\n" f"  - Path: {skill.path}\n" f"  - Desc: {skill.description}")
+        for skill in skills
+    )
+
+
+def _load_prompt_template(template_name: str = "system.md") -> str:
+    """Load a prompt template from the packaged prompts directory."""
+    template_path = _PROMPTS_DIR / template_name
+    if not template_path.exists():
+        raise FileNotFoundError(f"Prompt template not found: {template_path}")
+    return template_path.read_text(encoding="utf-8")
+
+
+def _get_system_info() -> str:
+    """Collect and format basic operating system information."""
+    system = platform.system()
+    release = platform.release()
+
+    if system == "Windows":
+        version = release.split(".")[0] if "." in release else release
+        return f"Windows {version}"
+
+    if system == "Linux":
+        try:
+            import distro
+
+            distro_name = distro.name()
+            distro_version = distro.version()
+            if distro_version:
+                return f"{distro_name} {distro_version}"
+            return distro_name
+        except ImportError:
+            try:
+                with open("/etc/os-release", encoding="utf-8") as os_release_file:
+                    content = os_release_file.read()
+                for line in content.split("\n"):
+                    if line.startswith("PRETTY_NAME="):
+                        pretty_name = line.split("=", 1)[1].strip('"')
+                        return pretty_name
+            except (IOError, OSError):
+                pass
+            return f"Linux {release}"
+
+    if system == "Darwin":
+        version = platform.mac_ver()[0]
+        if version:
+            return f"macOS {version}"
+        return "macOS"
+
+    return f"{system} {release}"
+
+
+def build_system_prompt(working_dir: Path) -> str:
+    """Build the system prompt using packaged skills and prompts."""
+    from bu_agent_sdk.agent.registry import get_agent_registry
+
+    skills = load_skills(_SKILLS_DIR)
+    skills_text = _format_skills(skills)
+
+    registry = get_agent_registry()
+    callable_agents = registry.list_callable_agents()
+
+    if callable_agents:
+        agent_lines = []
+        for agent_name in callable_agents:
+            config = registry.get_config(agent_name)
+            if config:
+                agent_lines.append(f"- {agent_name}: {config.description}")
+        agents_text = "\n".join(agent_lines)
+    else:
+        agents_text = "No subagents available."
+
+    template = Template(_load_prompt_template("system.md"))
+    return template.substitute(
+        SKILLS=skills_text,
+        WORKING_DIR=str(working_dir),
+        SUBAGENTS=agents_text,
+        SYSTEM_INFO=_get_system_info(),
+    )
+
+
+def create_llm(model: str | None = None) -> ChatOpenAI:
+    """Create an LLM instance from a preset or environment variables."""
+    resolved_model = model or os.getenv("LLM_MODEL", "GLM-4.7")
+    base_url = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
+    api_key = os.getenv("OPENAI_API_KEY", "OPENAI_API_KEY")
+
+    return ChatOpenAI(
+        model=resolved_model,
+        api_key=api_key,
+        base_url=base_url,
+    )
+
+
+def create_agent(
+    model: str | None,
+    root_dir: Path | str | None = None,
+    mode: str = "primary",
+    agent_config: AgentConfig | None = None,
+) -> tuple[Agent, SandboxContext]:
+    """Create a configured Agent and SandboxContext."""
+    from bu_agent_sdk.agent.registry import get_agent_registry
+    from bu_agent_sdk.agent.subagent_manager import SubagentManager
+
+    ctx = SandboxContext.create(root_dir)
+    llm = create_llm(model)
+    system_prompt = build_system_prompt(ctx.working_dir)
+    registry = get_agent_registry()
+
+    subagent_manager = SubagentManager(
+        agent_factory=_create_subagent_factory,
+        registry=registry,
+        all_tools=ALL_TOOLS,
+        workspace=ctx.working_dir,
+        context=ctx,
+    )
+    ctx.subagent_manager = subagent_manager
+
+    agent = Agent(
+        llm=llm,
+        tools=ALL_TOOLS,
+        system_prompt=system_prompt,
+        dependency_overrides={get_sandbox_context: lambda: ctx},
+        mode=mode,
+        agent_config=agent_config,
+    )
+
+    subagent_manager.set_main_agent(agent)
+    return agent, ctx
+
+
+def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
+    """Factory function to create subagent instances."""
+    from config.model_config import get_model_config
+
+    model, base_url, api_key = get_model_config(config.model)
+    system_info_text = _get_system_info()
+    system_prompt = (
+        f"{config.system_prompt}\n\n## System Information\n\n"
+        f"The current environment: {system_info_text}"
+    )
+
+    llm = ChatOpenAI(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=config.temperature,
+    )
+
+    return Agent(
+        llm=llm,
+        tools=all_tools,
+        system_prompt=system_prompt,
+        mode="subagent",
+        agent_config=config,
+        dependency_overrides={get_sandbox_context: lambda: parent_ctx},
+    )

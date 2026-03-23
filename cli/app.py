@@ -36,6 +36,11 @@ from bu_agent_sdk.plugin import (
     PluginExecutionError,
     PluginManager,
 )
+from bu_agent_sdk.bootstrap.session_bootstrap import (
+    WorkspaceInstructionState,
+    sync_workspace_agents_md,
+)
+from bu_agent_sdk.llm.messages import SystemMessage, UserMessage
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -176,9 +181,7 @@ class ClaudeCodeCLI:
         self._plugin_executor = PluginCommandExecutor()
         self._system_prompt_builder = system_prompt_builder
         self._model_presets_path = (
-            Path(__file__).resolve().parent.parent
-            / "config"
-            / "model_presets.json"
+            Path(__file__).resolve().parent.parent / "config" / "model_presets.json"
         )
         self._default_model_preset: str | None = None
         self._auto_vision_preset: str | None = None
@@ -206,6 +209,7 @@ class ClaudeCodeCLI:
                 auto_state=self._model_auto_state,
             )
         )
+        self._workspace_instruction_state = WorkspaceInstructionState()
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -233,7 +237,7 @@ class ClaudeCodeCLI:
         default_name = data.get("default")
         if isinstance(default_name, str) and default_name.strip():
             self._default_model_preset = default_name.strip()
-        
+
         auto_vision_name = data.get("auto_vision_preset")
         if isinstance(auto_vision_name, str) and auto_vision_name.strip():
             self._auto_vision_preset = auto_vision_name.strip()
@@ -283,7 +287,7 @@ class ClaudeCodeCLI:
 
     def _resolve_image_summary_preset_name(self) -> str | None:
         return self._model_switch_service.resolve_image_summary_preset_name()
-    
+
     def _resolve_image_summary_llm(self) -> tuple[Any | None, str | None, str | None]:
         return self._model_switch_service._resolve_image_summary_llm()
 
@@ -304,13 +308,13 @@ class ClaudeCodeCLI:
             image_part,
             user_text_hint,
         )
-    
+
     async def _compress_image_detail(self, llm: Any, detail_text: str) -> str:
         return await self._model_switch_service._compress_image_detail(llm, detail_text)
-    
+
     async def _prepare_text_model_image_memory(self, *, manual: bool) -> None:
         await self._model_switch_service.prepare_text_model_image_memory(manual=manual)
-    
+
     async def _apply_auto_model_policy(self, has_image: bool) -> bool:
         """Backward-compatible wrapper for automatic model switching."""
         return await self._model_switch_service.ensure_model_for_turn(
@@ -319,34 +323,12 @@ class ClaudeCodeCLI:
         )
 
     def _maybe_inject_agents_md(self) -> None:
-        """Inject AGENTS.md into context once per content hash."""
-        config_path = self._ctx.working_dir / "AGENTS.md"
-        if not config_path.exists():
-            return
-        # Ensure system prompt is present before injecting AGENTS.md
-        if not self._agent._context and self._agent.system_prompt:
-            self._agent._context.add_message(
-                SystemMessage(content=self._agent.system_prompt)
-            )
-        content = config_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return
-        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if self._agents_md_hash == content_hash and self._agents_md_content:
-            # If context was cleared, re-inject even if content unchanged
-            for msg in self._agent._context.get_messages():
-                if msg.role == "developer" and getattr(msg, "content", "") == self._agents_md_content:
-                    return
-        # Remove previously injected AGENTS.md content (if any)
-        if self._agents_md_content:
-            messages = self._agent._context.get_messages()
-            for i in range(len(messages) - 1, -1, -1):
-                msg = messages[i]
-                if msg.role == "developer" and getattr(msg, "content", "") == self._agents_md_content:
-                    self._agent._context.remove_message_at(i)
-        self._agents_md_hash = content_hash
-        self._agents_md_content = content
-        self._agent._context.inject_message(UserMessage(content=content), pinned=True)
+        """Inject workspace AGENTS.md into context if present."""
+        self._workspace_instruction_state = sync_workspace_agents_md(
+            agent=self._agent,
+            workspace_dir=self._ctx.working_dir,
+            state=self._workspace_instruction_state,
+        )
 
     def _build_project_snapshot(self) -> str:
         """Build a lightweight snapshot of the project for summarization."""
@@ -439,9 +421,7 @@ class ClaudeCodeCLI:
         self._console.print(f"Current model: [cyan]{model}[/cyan]")
         self._console.print(f"Preset: [dim]{preset_line}[/dim]")
         self._console.print(f"Base URL: [dim]{base_url_display}[/dim]")
-        self._console.print(
-            f"Context messages: [dim]{len(self._agent.messages)}[/dim]"
-        )
+        self._console.print(f"Context messages: [dim]{len(self._agent.messages)}[/dim]")
 
     def _print_model_presets(self):
         """Print configured model presets."""
@@ -1135,6 +1115,7 @@ class ClaudeCodeCLI:
         at_completer = AtCommandCompleter(self._at_registry)
         # Use merged completer to handle both / and @
         from prompt_toolkit.completion import merge_completers
+
         merged_completer = merge_completers([slash_completer, at_completer])
         threaded_completer = ThreadedCompleter(merged_completer)
 
@@ -1175,7 +1156,7 @@ class ClaudeCodeCLI:
             if self._model_pick_active:
                 if await self._handle_model_pick_input(user_input):
                     continue
-            
+
             # Handle quoted @ image command
             if is_image_command(user_input):
                 try:

@@ -1,15 +1,17 @@
-# TG Agent CLI
+# BU Agent CLI
 
-一个面向编码场景的 Agent CLI，基于 `bu_agent_sdk` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派和上下文压缩。
+一个面向编码场景的 Agent CLI / Gateway 项目，基于 `bu_agent_sdk` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派、工作区指令注入，以及 Telegram 私聊网关接入。
 
 ## 核心能力
 
-- 交互式 CLI：流式展示思考、工具调用和执行结果
-- 工具调用：内置 `bash`、文件读写编辑、搜索、todo、子代理工具
-- 子代理机制：通过 `task` 工具委派到专业代理（如 code_reviewer/frontend_developer）
-- 上下文管理：自动 compaction，缓解长对话上下文溢出
-- 模型切换：支持会话内通过 `/model` 命令切换预设模型（保留上下文）
-- Token 统计：记录 token 使用，并可选计算成本
+- **交互式 CLI**：本地终端对话，支持 slash 命令、`@skill` 调用和模型切换
+- **工具调用**：内置 `bash`、文件读写编辑、搜索、todo、子代理执行等工具
+- **子代理机制**：可将任务委派给专业子代理并同步等待结果，或并行执行多个子任务
+- **工作区指令同步**：自动读取工作区 `AGENTS.md`，并同步到当前会话上下文
+- **Gateway 会话隔离**：按 chat/session 维度维护独立运行时，避免不同会话串上下文
+- **Telegram 集成**：支持 Telegram 私聊消息接入与回复
+- **Heartbeat 机制**：定期检查 `HEARTBEAT.md`，在有任务时自动投递到网关会话
+- **Token 统计**：支持 token 使用统计与成本计算能力
 
 ## 架构概览
 
@@ -48,17 +50,47 @@ pip install -e .
 
 ```bash
 # 方式 1：安装后的命令行入口
-tg-agent
+bu-agent
 
 # 方式 2：直接运行脚本
 python claude_code.py
 
 # 指定模型
-tg-agent --model gpt-4o
+bu-agent --model gpt-4o
 
 # 指定沙箱根目录
-tg-agent --root-dir ./your-project
+bu-agent --root-dir ./your-project
 ```
+
+#### Gateway 启动前置条件
+
+1. 当前目录下准备好 `.env`
+2. 至少启用一种 channel：
+   - Telegram：配置 `TELEGRAM_BOT_TOKEN`
+   - Zhaohu：配置 `ZHAOHU_ENABLED=true`
+3. 如果启用 Telegram，还需要配置 `TELEGRAM_ALLOW_FROM`
+   - 例如：`TELEGRAM_ALLOW_FROM=123456789,987654321`
+   - 测试场景可使用 `TELEGRAM_ALLOW_FROM=*`
+4. 如果启用 Zhaohu webhook channel skeleton，可按需配置：
+   - `ZHAOHU_HOST`，默认 `0.0.0.0`
+   - `ZHAOHU_PORT`，默认 `18080`
+   - `ZHAOHU_WEBHOOK_PATH`，默认 `/webhook/zhaohu`
+5. 建议在工作区根目录启动，这样可直接使用：
+   - `AGENTS.md`：工作区规则，会在会话处理中自动同步到 Agent 上下文
+   - `HEARTBEAT.md`：heartbeat 任务来源
+
+> 注意：gateway 读取 `.env` 的位置是**当前启动目录**；`--root-dir` 控制的是 Agent 工作区，不会改变 `.env` 的加载位置。
+
+#### Gateway 会话行为
+
+- 当前实现的 Telegram channel 只处理 **private chat**
+- 当前提供 `ZhaohuChannel` webhook skeleton：启动后会拉起 FastAPI server，提供 `GET /healthz`，并接受 `POST ZHAOHU_WEBHOOK_PATH` 的通用扁平 webhook payload 后投递到 bus；但鉴权、协议适配与 outbound 回传仍暂未实现
+- 每个 chat/session 会创建独立的 `AgentRuntime`
+- 同一个会话会复用上下文，不同会话之间不会串历史消息
+- Telegram 内置命令：
+  - `/start`
+  - `/help`
+  - `/new`：清空当前会话运行时，开始新会话
 
 ## 模型预设与会话内切换
 
@@ -98,12 +130,19 @@ tg-agent --root-dir ./your-project
 - `/help`
 - `/exit` `/quit`
 - `/pwd`
-- `/clear` `/cls`
+- `/clear`
 - `/model [show|list|<preset>]`
 - `/ralph <init-spec|init-agent|dry-run|run|status|cancel> ...`
 - `/skills`
 - `/reset`
-- `/history`（占位，暂未实现完整历史展示）
+- `/init`
+- `/history`
+- `/tasks`
+- `/task <task_id>`
+- `/task_cancel <task_id>`
+- `/allow <path>`
+- `/allowed`
+- `/agents [list|show|create|edit|delete|import|export|validate|reload|templates]`
 
 ## Ralph 与规划插件
 
@@ -202,20 +241,11 @@ docs/spec/<spec_name>/
 ## 项目结构（实际）
 
 ```text
-tg_agent_cli/
+bu_agent_cli/
 ├── claude_code.py
-├── ralph_init.py
-├── ralph_loop.py
-├── .devagent/
-├── template/
-├── plugins/
 ├── cli/
 │   ├── app.py
-│   ├── slash_commands.py
-│   ├── ralph_commands.py
-│   ├── ralph_service.py
-│   ├── ralph_process_manager.py
-│   └── ralph_models.py
+│   └── slash_commands.py
 ├── tools/
 │   ├── bash.py
 │   ├── files.py
@@ -238,6 +268,4 @@ tg_agent_cli/
 
 ## 说明
 
-- README 以当前仓库代码为准，若你新增工具、插件或子代理，请同步更新本文档。
-
-
+- README 以当前仓库代码为准，若你新增工具或子代理，请同步更新本文档。
