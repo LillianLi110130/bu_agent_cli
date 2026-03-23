@@ -64,6 +64,7 @@ from pathlib import Path
 
 from bu_agent_sdk.agent.compaction import CompactionConfig
 from bu_agent_sdk.agent.context import ContextManager
+from bu_agent_sdk.agent.hitl import HumanInLoopConfig, HumanInLoopHandler
 from bu_agent_sdk.agent.config import AgentConfig
 from bu_agent_sdk.agent.hooks import AgentHook, FinishGuardHook, HookManager
 from bu_agent_sdk.agent.runtime_loop import AgentRuntimeLoop
@@ -244,6 +245,10 @@ class Agent:
     """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
     agent_config: AgentConfig | None = None
     """Agent configuration with tool permissions and other metadata."""
+    human_in_loop_config: HumanInLoopConfig = field(default_factory=HumanInLoopConfig, repr=False)
+    """Per-agent HITL switch state shared with runtime hooks and the CLI."""
+    human_in_loop_handler: HumanInLoopHandler | None = field(default=None, repr=False)
+    """Optional runtime handler used by hooks to request approval from a human."""
     hooks: list[AgentHook] = field(default_factory=list, repr=False)
     """Runtime hooks executed around internal loop events."""
 

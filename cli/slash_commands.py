@@ -100,6 +100,17 @@ class SlashCommandRegistry:
                 category="Settings",
             ),
             SlashCommand(
+                name="approval",
+                description="控制高风险工具调用的人类审批开关",
+                usage="/approval [on|off|status]",
+                examples=[
+                    "/approval on",
+                    "/approval off",
+                    "/approval status",
+                ],
+                category="Settings",
+            ),
+            SlashCommand(
                 name="history",
                 description="Show command history",
                 usage="/history",

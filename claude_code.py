@@ -24,7 +24,12 @@ from pathlib import Path
 from typing import Any
 
 from bu_agent_sdk import Agent
-from bu_agent_sdk.agent import AgentHook, AuditHook
+from bu_agent_sdk.agent import (
+    AgentHook,
+    AuditHook,
+    HumanApprovalHook,
+    build_default_approval_policy,
+)
 from bu_agent_sdk.llm import ChatOpenAI
 from bu_agent_sdk.agent.config import AgentConfig
 from bu_agent_sdk.agent.registry import AgentRegistry
@@ -238,7 +243,10 @@ def build_agent_hooks(*, mode: str) -> list[AgentHook]:
     FinishGuardHook is already attached inside Agent, so this helper
     only adds optional extra hooks.
     """
-    hooks: list[AgentHook] = [AuditHook()]
+    hooks: list[AgentHook] = [
+        HumanApprovalHook(policy=build_default_approval_policy(mode)),
+        AuditHook(),
+    ]
 
     return hooks
 
