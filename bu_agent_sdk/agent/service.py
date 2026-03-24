@@ -252,6 +252,8 @@ class Agent:
     _tool_map: dict[str, Tool] = field(default_factory=dict, repr=False)
     _token_cost: TokenCost = field(default=None, repr=False)  # type: ignore
     _hook_manager: HookManager = field(default_factory=HookManager, repr=False)
+    _cancel_event: asyncio.Event | None = field(default=None, init=False, repr=False)
+    """Cancellation event for interrupting long-running operations."""
     task_complete_exc_type: type[TaskComplete] = field(
         default=TaskComplete,
         init=False,
@@ -367,6 +369,52 @@ class Agent:
         self._context.replace_messages(messages)
         self._token_cost.clear_history()
 
+    async def _run_cancellable(self, coro):
+        """Run a coroutine with cancellation support.
+
+        If _cancel_event is set, raises CancelledError to interrupt the operation.
+        """
+        if self._cancel_event is None:
+            # No cancel event, run normally
+            return await coro
+
+        # Run with cancellation support
+        task = asyncio.create_task(coro)
+
+        while not task.done():
+            if self._cancel_event.is_set():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    raise
+                raise asyncio.CancelledError("Operation cancelled by user")
+
+            # Wait a bit for the task to complete or cancel event
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+                break
+            except asyncio.TimeoutError:
+                continue
+
+        return await task
+
+    async def _sleep_with_cancel(self, delay: float):
+        """Sleep with cancellation support."""
+        if self._cancel_event is None:
+            await asyncio.sleep(delay)
+            return
+
+        # Sleep in small chunks to check for cancellation
+        remaining = delay
+        chunk = 0.1
+        while remaining > 0:
+            if self._cancel_event.is_set():
+                raise asyncio.CancelledError("Sleep cancelled by user")
+            sleep_time = min(chunk, remaining)
+            await asyncio.sleep(sleep_time)
+            remaining -= sleep_time
+
     # 对标记为ephemeral 的 ToolMessage，按 tool 维度，只保留最近N条
     def _destroy_ephemeral_messages(self) -> None:
         """Destroy old ephemeral message content, keeping the last N per tool.
@@ -420,8 +468,12 @@ class Agent:
                 # Parse arguments
                 args = json.loads(tool_call.function.arguments)
 
+                # Check for cancellation before tool execution
+                if self._cancel_event and self._cancel_event.is_set():
+                    raise asyncio.CancelledError("Tool execution cancelled by user")
+
                 # Execute the tool (with dependency overrides if configured)
-                result = await tool.execute(_overrides=self.dependency_overrides, **args)
+                result = await self._run_cancellable(tool.execute(_overrides=self.dependency_overrides, **args))
 
                 # Check if the tool is marked as ephemeral (can be bool or int for keep count)
                 is_ephemeral = bool(tool.ephemeral)  # Convert int to bool (2 -> True)
@@ -442,6 +494,11 @@ class Agent:
 
                 return tool_message
 
+            except asyncio.CancelledError:
+                # Tool execution was cancelled
+                if Laminar is not None:
+                    Laminar.set_span_output({"cancelled": True})
+                raise
             except json.JSONDecodeError as e:
                 error_msg = f"Error parsing arguments: {e}"
                 if Laminar is not None:
@@ -524,12 +581,16 @@ class Agent:
         last_error: Exception | None = None
 
         for attempt in range(self.llm_max_retries):
+            # Check for cancellation before each attempt
+            if self._cancel_event and self._cancel_event.is_set():
+                raise asyncio.CancelledError("LLM invocation cancelled by user")
+
             try:
-                response = await self.llm.ainvoke(
+                response = await self._run_cancellable(self.llm.ainvoke(
                     messages=self._context.get_messages(),
                     tools=self.tool_definitions if self.tools else None,
                     tool_choice=self.tool_choice if self.tools else None,
-                )
+                ))
 
                 # Track token usage
                 if response.usage:
@@ -551,7 +612,8 @@ class Agent:
                         f"⚠️ Got rate limit error, retrying in {total_delay:.1f}s... "
                         f"(attempt {attempt + 1}/{self.llm_max_retries})"
                     )
-                    await asyncio.sleep(total_delay)
+                    # Sleep with cancellation support
+                    await self._sleep_with_cancel(total_delay)
                     continue
                 raise
 
@@ -871,7 +933,9 @@ Keep the summary brief but informative."""
 
     @observe(name="agent_query_stream")
     async def query_stream(
-        self, message: str | list[ContentPartTextParam | ContentPartImageParam]
+        self,
+        message: str | list[ContentPartTextParam | ContentPartImageParam],
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """
         Send a message to the agent and stream events as they occur.
@@ -882,6 +946,7 @@ Keep the summary brief but informative."""
         Args:
             message: The user message. Can be a string or a list of content parts
                 for multi-modal input (text + images).
+            cancel_event: Optional asyncio.Event to cancel the run mid-execution.
 
         Yields:
             AgentEvent instances for each step:
@@ -901,10 +966,20 @@ Keep the summary brief but informative."""
                     case FinalResponseEvent(content=text):
                         print(f"Done: {text}")
         """
-        state = AgentRunState(query_mode="stream", max_iterations=self.max_iterations)
-        runtime_loop = AgentRuntimeLoop(agent=self, state=state)
-        async for event in runtime_loop.run_stream(message, emit_ui_events=True):
-            yield event
+        # Store cancel event for use in operations
+        self._cancel_event = cancel_event
+        try:
+            state = AgentRunState(
+                query_mode="stream",
+                max_iterations=self.max_iterations,
+                cancel_event=cancel_event,
+            )
+            runtime_loop = AgentRuntimeLoop(agent=self, state=state)
+            async for event in runtime_loop.run_stream(message, emit_ui_events=True):
+                yield event
+        finally:
+            # Clear cancel event after run
+            self._cancel_event = None
 
     @observe(name="agent_query_stream_delta")
     async def query_stream_delta(

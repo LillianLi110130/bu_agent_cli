@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, AsyncIterator
@@ -65,6 +66,14 @@ class AgentRuntimeLoop:
         hook_ctx = HookContext(agent=self.agent, state=self.state)
 
         while queue and not self.state.done:
+            # Check for cancellation
+            if self.state.cancel_event and self.state.cancel_event.is_set():
+                self.state.done = True
+                self.state.final_response = "[Cancelled by user]"
+                self.state.finished_at = datetime.now(timezone.utc)
+                yield FinalResponseEvent(content="[Cancelled by user]")
+                break
+
             event = queue.popleft()
             self.state.current_event_name = type(event).__name__
 
@@ -127,11 +136,18 @@ class AgentRuntimeLoop:
             return [], []
 
         if isinstance(event, LLMCallRequested):
+            # Check for cancellation before LLM call
+            if self.state.cancel_event and self.state.cancel_event.is_set():
+                return [RunFinished(final_response="[Cancelled by user]", iterations=self.state.iterations)], []
+
             if event.messages != self.agent._context.get_messages():
                 self.agent._context.replace_messages(event.messages)
 
             try:
                 response = await self.agent._invoke_llm()
+            except asyncio.CancelledError:
+                # LLM call was cancelled
+                return [RunFinished(final_response="[Cancelled by user]", iterations=self.state.iterations)], []
             except Exception as error:
                 if (
                     not self.state.overflow_recovery_attempted
@@ -197,6 +213,10 @@ class AgentRuntimeLoop:
             return emitted_events, ui_events
 
         if isinstance(event, ToolCallRequested):
+            # Check for cancellation before tool execution
+            if self.state.cancel_event and self.state.cancel_event.is_set():
+                return [RunFinished(final_response="[Cancelled by user]", iterations=self.state.iterations)], []
+
             tool_name = event.tool_call.function.name
             ui_events: list[AgentEvent] = [
                 StepStartEvent(
@@ -224,6 +244,8 @@ class AgentRuntimeLoop:
 
             try:
                 tool_result = await self.agent._execute_tool_call(event.tool_call)
+            except asyncio.CancelledError:
+                return [RunFinished(final_response="[Cancelled by user]", iterations=self.state.iterations)], ui_events
             except self.agent.task_complete_exc_type as task_complete:
                 terminal_tool_message = ToolMessage(
                     tool_call_id=event.tool_call.id,

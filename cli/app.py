@@ -969,8 +969,77 @@ class ClaudeCodeCLI:
         # Start loading animation
         self._loading = self._start_loading("Thinking")
 
+        # Show cancel hint
+        self._console.print("[dim]Press 'q' to cancel this run[/dim]")
+
+        # Create cancellation event for 'q' key
+        import asyncio
+        cancel_event = asyncio.Event()
+
+        # Background task to listen for 'q' key
+        async def listen_for_cancel():
+            """Listen for 'q' key press to cancel the current agent run."""
+            import sys
+            import os
+
+            if os.name == 'nt':  # Windows
+                try:
+                    import msvcrt
+                    while not cancel_event.is_set():
+                        if msvcrt.kbhit():  # Check if key is available
+                            ch = msvcrt.getwch()  # Get wide char (Unicode)
+                            if ch.lower() == 'q':
+                                cancel_event.set()
+                                break
+                        await asyncio.sleep(0.05)  # Small delay to prevent busy-wait
+                except (ImportError, AttributeError):
+                    pass
+            else:  # Unix/Linux/macOS
+                try:
+                    import select
+                    import tty
+                    import termios
+
+                    # Save old terminal settings
+                    old_settings = None
+                    try:
+                        old_settings = termios.tcgetattr(sys.stdin)
+                        tty.setcbreak(sys.stdin.fileno())
+                    except (termios.error, OSError):
+                        # Not a TTY, skip
+                        return
+
+                    while not cancel_event.is_set():
+                        # Check if data is available on stdin
+                        if select.select([sys.stdin], [], [], 0)[0]:
+                            ch = sys.stdin.read(1)
+                            if ch.lower() == 'q':
+                                cancel_event.set()
+                                break
+                        await asyncio.sleep(0.05)
+                except (ImportError, AttributeError, termios.error, OSError):
+                    pass
+                finally:
+                    # Restore terminal settings
+                    if old_settings is not None:
+                        try:
+                            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+                        except (termios.error, OSError):
+                            pass
+
+        # Start the listener task
+        listener_task = asyncio.create_task(listen_for_cancel())
+
         try:
-            async for event in self._agent.query_stream(user_input):
+            # Pass cancel_event to agent for immediate cancellation
+            async for event in self._agent.query_stream(user_input, cancel_event=cancel_event):
+                # Cancellation is now handled inside query_stream for immediate response
+                # This check is for final confirmation
+                if cancel_event.is_set():
+                    self._console.print()
+                    self._console.print("[yellow]Agent run cancelled by user (q key)[/yellow]")
+                    break
+
                 if isinstance(event, ToolCallEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
@@ -985,6 +1054,7 @@ class ClaudeCodeCLI:
                         f"[bold]{event.tool}[/]"
                     )
                     self._console.print(f"  [dim]Args: {args_str}[/]")
+                    self._console.print("  [dim](Press 'q' to cancel)[/dim]")
 
                     # Start "Executing" loading while tool runs
                     self._loading = self._start_loading("Executing")
@@ -1020,13 +1090,26 @@ class ClaudeCodeCLI:
                 elif isinstance(event, FinalResponseEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    self._console.print()
-                    self._console.print()
+                    # Check if this was a cancellation
+                    if event.content == "[Cancelled by user]":
+                        self._console.print()
+                        self._console.print("[yellow]Agent run cancelled by user (q key)[/yellow]")
+                    else:
+                        self._console.print()
+                        self._console.print()
 
         except Exception as e:
             self._stop_loading(self._loading)
             self._loading = None
             self._console.print(f"[{self.COLOR_ERROR}]Error: {e}[/]")
+        finally:
+            # Cancel the listener task
+            cancel_event.set()
+            listener_task.cancel()
+            try:
+                await listener_task
+            except (asyncio.CancelledError, Exception):
+                pass
 
         # Ensure loading is stopped
         self._stop_loading(self._loading)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
@@ -24,3 +25,4 @@ class AgentRunState:
     current_event_name: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     finished_at: datetime | None = None
+    cancel_event: asyncio.Event | None = None
