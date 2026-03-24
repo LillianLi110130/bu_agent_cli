@@ -59,6 +59,34 @@ def test_ralph_service_init_agent():
         shutil.rmtree(workspace_root, ignore_errors=True)
 
 
+def test_ralph_service_init_agent_merges_existing_devagent():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace_root = make_workspace(temp_root)
+    try:
+        existing_file = workspace_root / ".devagent" / "agents" / "custom.md"
+        existing_file.parent.mkdir(parents=True, exist_ok=True)
+        existing_file.write_text("keep me", encoding="utf-8")
+
+        existing_prompt = workspace_root / ".devagent" / "commands" / "ralph" / "implement.md"
+        existing_prompt.parent.mkdir(parents=True, exist_ok=True)
+        existing_prompt.write_text("custom prompt", encoding="utf-8")
+
+        service = RalphService(workspace_root=workspace_root, script_root=repo_root)
+
+        result = asyncio.run(service.init_agent())
+
+        assert result.success is True
+        assert existing_file.read_text(encoding="utf-8") == "keep me"
+        assert existing_prompt.read_text(encoding="utf-8") == "custom prompt"
+        assert (workspace_root / ".devagent" / "agents" / ".gitkeep").exists()
+        assert (workspace_root / ".devagent" / "commands" / "ralph" / "implement.md").exists()
+        assert (workspace_root / ".devagent" / "agents").exists()
+    finally:
+        shutil.rmtree(workspace_root, ignore_errors=True)
+
+
 def test_ralph_handler_status_without_runs():
     repo_root = Path(__file__).resolve().parent.parent
     temp_root = repo_root / ".pytest_tmp"
