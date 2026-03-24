@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bu_agent_sdk.agent.runtime_events import ToolCallRequested
+from bu_agent_sdk.agent.tool_args import parse_tool_arguments_for_display
 
 if TYPE_CHECKING:
     from bu_agent_sdk.agent.hooks import HookContext
@@ -54,14 +54,7 @@ ApprovalPolicy = Callable[[ToolCallRequested, "HookContext"], HumanApprovalReque
 
 
 def _parse_tool_arguments(arguments: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(arguments)
-    except json.JSONDecodeError:
-        return {"_raw": arguments}
-
-    if isinstance(parsed, dict):
-        return parsed
-    return {"_value": parsed}
+    return parse_tool_arguments_for_display(arguments)
 
 
 def build_default_approval_policy(mode: str) -> ApprovalPolicy:

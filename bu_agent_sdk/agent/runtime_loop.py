@@ -33,6 +33,7 @@ from bu_agent_sdk.agent.runtime_events import (
     ToolResultReceived,
 )
 from bu_agent_sdk.agent.runtime_state import AgentRunState
+from bu_agent_sdk.agent.tool_args import parse_tool_arguments_for_display
 from bu_agent_sdk.llm.messages import AssistantMessage, SystemMessage, ToolMessage, UserMessage
 
 if TYPE_CHECKING:
@@ -326,12 +327,7 @@ class AgentRuntimeLoop:
 
     @staticmethod
     def _parse_args(arguments: str) -> dict:
-        import json
-
-        try:
-            return json.loads(arguments)
-        except json.JSONDecodeError:
-            return {"_raw": arguments}
+        return parse_tool_arguments_for_display(arguments)
 
     @staticmethod
     def _drain_ui_events(ctx: HookContext, emit_ui_events: bool) -> list[AgentEvent]:

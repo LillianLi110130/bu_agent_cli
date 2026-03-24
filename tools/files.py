@@ -4,7 +4,9 @@ import difflib
 from bu_agent_sdk.tools import Depends, tool
 from typing import Annotated, Optional
 
+from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
+from tools.text_encoding import read_text_with_fallback
 
 # Constants
 _MAX_FILE_CHARS = 128_000  # ~128KB - prevents OOM from reading huge files
@@ -51,14 +53,11 @@ async def read(
         n_lines: Number of lines to read. Defaults to reading all remaining lines.
     """
     try:
-        path = ctx.resolve_path(file_path)
+        path = resolve_target_path(file_path, ctx, kind="file")
     except Exception as e:
+        if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
+            return str(e)
         return f"Security error: {e}"
-
-    if not path.exists():
-        return f"File not found: {file_path}"
-    if path.is_dir():
-        return f"Path is a directory: {file_path}"
 
     try:
         # Only check file size if no line range is specified
@@ -70,7 +69,7 @@ async def read(
                     f"Use offset_line and n_lines to read portions."
                 )
 
-        content = path.read_text(encoding="utf-8")
+        content, _ = read_text_with_fallback(path)
         lines = content.splitlines()
         total = len(lines)
 
@@ -133,16 +132,14 @@ async def edit(
                      If True, replaces all occurrences.
     """
     try:
-        path = ctx.resolve_path(file_path)
+        path = resolve_target_path(file_path, ctx, kind="file")
     except Exception as e:
+        if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
+            return str(e)
         return f"Security error: {e}"
 
-    if not path.exists():
-        return f"File not found: {file_path}"
-
     try:
-        content = path.read_text(encoding="utf-8")
-
+        content, encoding = read_text_with_fallback(path)
         if old_string not in content:
             return _build_diff_error(old_string, content, file_path)
 
@@ -156,7 +153,7 @@ async def edit(
             )
 
         new_content = content.replace(old_string, new_string, 1 if not replace_all else count)
-        path.write_text(new_content, encoding="utf-8")
+        path.write_text(new_content, encoding=encoding)
 
         return f"Replaced {1 if not replace_all else count} occurrence(s) in {file_path}"
     except Exception as e:

@@ -69,6 +69,11 @@ from bu_agent_sdk.agent.config import AgentConfig
 from bu_agent_sdk.agent.hooks import AgentHook, FinishGuardHook, HookManager
 from bu_agent_sdk.agent.runtime_loop import AgentRuntimeLoop
 from bu_agent_sdk.agent.runtime_state import AgentRunState
+from bu_agent_sdk.agent.tool_args import (
+    ToolArgumentsError,
+    parse_tool_arguments_for_display,
+    parse_tool_arguments_for_execution,
+)
 
 logger = logging.getLogger("bu_agent_sdk.agent")
 from bu_agent_sdk.agent.events import (
@@ -471,7 +476,7 @@ class Agent:
         with span_context:
             try:
                 # Parse arguments
-                args = json.loads(tool_call.function.arguments)
+                args = parse_tool_arguments_for_execution(tool_call.function.arguments)
 
                 # Check for cancellation before tool execution
                 if self._cancel_event and self._cancel_event.is_set():
@@ -504,7 +509,7 @@ class Agent:
                 if Laminar is not None:
                     Laminar.set_span_output({"cancelled": True})
                 raise
-            except json.JSONDecodeError as e:
+            except ToolArgumentsError as e:
                 error_msg = f"Error parsing arguments: {e}"
                 if Laminar is not None:
                     Laminar.set_span_output({"error": error_msg})
@@ -1103,9 +1108,9 @@ Keep the summary brief but informative."""
                 tool_name = tool_call.function.name
 
                 try:
-                    args = json.loads(tool_call.function.arguments)
-                except json.JSONDecodeError:
-                    args = {"_raw": tool_call.function.arguments}
+                    args = parse_tool_arguments_for_execution(tool_call.function.arguments)
+                except ToolArgumentsError:
+                    args = parse_tool_arguments_for_display(tool_call.function.arguments)
 
                 yield StepStartEvent(
                     step_id=tool_call.id,

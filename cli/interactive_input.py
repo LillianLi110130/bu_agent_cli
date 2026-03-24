@@ -16,6 +16,8 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.shortcuts import confirm
 from rich.console import Console
 
+from tools.text_encoding import read_text_with_fallback
+
 
 class InteractivePrompter:
     """Interactive input helper for CLI."""
@@ -294,7 +296,8 @@ class InteractivePrompter:
                 self.console.print(f"[red]File not found: {path}[/red]")
                 return None
 
-            return path.read_text(encoding="utf-8")
+            content, _ = read_text_with_fallback(path)
+            return content
 
         except (EOFError, KeyboardInterrupt):
             return None

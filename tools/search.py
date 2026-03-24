@@ -4,7 +4,9 @@ import re
 from bu_agent_sdk.tools import Depends, tool
 from typing import Annotated
 
+from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
+from tools.text_encoding import read_text_with_fallback
 
 
 @tool("Find files matching a glob pattern")
@@ -37,8 +39,13 @@ async def grep(
 ) -> str:
     """Search for pattern in files recursively."""
     try:
-        search_dir = ctx.resolve_path(path) if path else ctx.working_dir
+        if path:
+            search_target = resolve_target_path(path, ctx, kind="any")
+        else:
+            search_target = ctx.working_dir
     except Exception as e:
+        if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
+            return str(e)
         return f"Security error: {e}"
 
     try:
@@ -47,11 +54,17 @@ async def grep(
         return f"Invalid regex: {e}"
 
     results = []
-    for file_path in search_dir.rglob("*"):
+    if search_target.is_file():
+        files_to_search = [search_target]
+    else:
+        files_to_search = search_target.rglob("*")
+
+    for file_path in files_to_search:
         if not file_path.is_file():
             continue
         try:
-            for i, line in enumerate(file_path.read_text().splitlines(), 1):
+            content, _ = read_text_with_fallback(file_path)
+            for i, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
                     rel_path = file_path.relative_to(ctx.root_dir)
                     results.append(f"{rel_path}:{i}: {line[:100]}")
