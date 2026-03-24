@@ -41,19 +41,20 @@ tg-agent = "claude_code:cli_main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build.targets.wheel]
-packages = ["bu_agent_sdk", "cli", "tools"]
-
 [tool.hatch.build.targets.wheel.force-include]
-"claude_code.py" = "claude_code.py"
-"config" = "config"
-"ralph_init.py" = "ralph_init.py"
-"ralph_loop.py" = "ralph_loop.py"
-"template" = "template"
-".devagent" = ".devagent"
-".env.example" = ".env.example"
-"README.md" = "README.md"
-"plugins" = "plugins"
+"bu_agent_sdk" = "tg_agent_cli/bu_agent_sdk"
+"cli" = "tg_agent_cli/cli"
+"tools" = "tg_agent_cli/tools"
+"claude_code.py" = "tg_agent_cli/claude_code.py"
+"config" = "tg_agent_cli/config"
+"ralph_init.py" = "tg_agent_cli/ralph_init.py"
+"ralph_loop.py" = "tg_agent_cli/ralph_loop.py"
+"template" = "tg_agent_cli/template"
+".devagent" = "tg_agent_cli/.devagent"
+".env.example" = "tg_agent_cli/.env.example"
+"README.md" = "tg_agent_cli/README.md"
+"plugins" = "tg_agent_cli/plugins"
+"tg_agent_cli.pth" = "tg_agent_cli.pth"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -69,6 +70,7 @@ include = [
     ".env.example",
     "README.md",
     "plugins/**",
+    "tg_agent_cli.pth",
     "pyproject.toml",
 ]
 
