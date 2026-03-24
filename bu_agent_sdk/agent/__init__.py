@@ -8,6 +8,13 @@ from bu_agent_sdk.agent.compaction import (
     CompactionService,
 )
 from bu_agent_sdk.agent.context import ContextManager
+from bu_agent_sdk.agent.hitl import (
+    HumanApprovalDecision,
+    HumanApprovalRequest,
+    HumanInLoopConfig,
+    HumanInLoopHandler,
+    build_default_approval_policy,
+)
 from bu_agent_sdk.agent.hooks import (
     AgentHook,
     AuditHook,
@@ -15,6 +22,7 @@ from bu_agent_sdk.agent.hooks import (
     HookContext,
     HookDecision,
     HookManager,
+    HumanApprovalHook,
     ToolPolicyHook,
 )
 from bu_agent_sdk.agent.model_routing_hook import ModelRoutingHook
@@ -53,6 +61,12 @@ __all__ = [
     "ToolPolicyHook",
     "AuditHook",
     "ModelRoutingHook",
+    "HumanApprovalRequest",
+    "HumanApprovalDecision",
+    "HumanInLoopConfig",
+    "HumanInLoopHandler",
+    "HumanApprovalHook",
+    "build_default_approval_policy",
     # Compaction
     "CompactionConfig",
     "CompactionResult",

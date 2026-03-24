@@ -16,3 +16,4 @@ __pycache__/
 .vscode/
 .bu_agent/
 .pytest_tmp/
+.DS_Store

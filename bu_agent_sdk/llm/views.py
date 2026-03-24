@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic import BaseModel
 
 from bu_agent_sdk.llm.messages import ToolCall

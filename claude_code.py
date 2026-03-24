@@ -24,11 +24,19 @@ from pathlib import Path
 from typing import Any
 
 from bu_agent_sdk import Agent
-from bu_agent_sdk.agent import AgentHook, AuditHook
+from bu_agent_sdk.agent import (
+    AgentHook,
+    AuditHook,
+    HumanApprovalHook,
+    build_default_approval_policy,
+)
 from bu_agent_sdk.llm import ChatOpenAI
 from bu_agent_sdk.agent.config import AgentConfig
 from bu_agent_sdk.agent.registry import AgentRegistry
 from bu_agent_sdk.plugin import PluginManager
+from rich.console import Console
+
+from bu_agent_sdk.bootstrap.agent_factory import create_agent
 from cli.app import ClaudeCodeCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.slash_commands import SlashCommandRegistry
@@ -191,16 +199,7 @@ def _build_system_prompt(
 
     template_str = _load_prompt_template("system.md")
 
-    template = Template(template_str)
-    prompt = template.substitute(
-        SKILLS=skills_text,
-        WORKING_DIR=str(working_dir),
-        SUBAGENTS=agents_text,
-        SYSTEM_INFO=system_info_text,
-    )
-
-    return prompt
-
+console = Console()
 
 def parse_args():
     """Parse command line arguments."""
@@ -238,7 +237,10 @@ def build_agent_hooks(*, mode: str) -> list[AgentHook]:
     FinishGuardHook is already attached inside Agent, so this helper
     only adds optional extra hooks.
     """
-    hooks: list[AgentHook] = [AuditHook()]
+    hooks: list[AgentHook] = [
+        HumanApprovalHook(policy=build_default_approval_policy(mode)),
+        AuditHook(),
+    ]
 
     return hooks
 
@@ -345,7 +347,7 @@ async def main():
     try:
         await cli.run()
     except KeyboardInterrupt:
-        print("\n[yellow]Goodbye![/yellow]")
+        console.print("\n[yellow]Goodbye![/yellow]")
 
 
 def cli_main():
