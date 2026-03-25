@@ -38,6 +38,37 @@ class _Match:
     score: int
 
 
+_SEPARATOR_TRANSLATION = str.maketrans(
+    {
+        "（": "(",
+        "）": ")",
+        "【": "[",
+        "】": "]",
+        "《": "<",
+        "》": ">",
+        "，": ",",
+        "。": ".",
+        "、": ",",
+        "；": ";",
+        "：": ":",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "—": "-",
+        "–": "-",
+        "－": "-",
+        "‒": "-",
+        "―": "-",
+        "﹘": "-",
+        "﹣": "-",
+        "·": "-",
+        "•": "-",
+        "　": " ",
+    }
+)
+
+
 def resolve_target_path(
     query: str,
     ctx: SandboxContext,
@@ -201,15 +232,19 @@ def _matches_kind(path: Path, kind: TargetKind) -> bool:
 
 
 def _normalize_strict(text: str) -> str:
-    normalized = unicodedata.normalize("NFKC", text).strip().lower()
+    normalized = unicodedata.normalize("NFKC", text).translate(_SEPARATOR_TRANSLATION).strip().lower()
     normalized = normalized.replace("\\", "/")
     normalized = re.sub(r"/+", "/", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    normalized = re.sub(r"[-_.:,;]+", "-", normalized)
+    normalized = re.sub(r"\(\s*", "(", normalized)
+    normalized = re.sub(r"\s*\)", ")", normalized)
     return normalized
 
 
 def _normalize_relaxed(text: str) -> str:
     normalized = _normalize_strict(text)
-    normalized = re.sub(r"\s+", "", normalized)
+    normalized = re.sub(r"[\s\-_.,:;()\[\]{}<>\"'`]+", "", normalized)
     return normalized
 
 
@@ -219,5 +254,5 @@ def _split_query_parts(query: str) -> list[str]:
     tokens: list[str] = []
     for part in parts:
         tokens.append(_normalize_relaxed(part))
-        tokens.extend(token for token in re.split(r"[\s._-]+", part) if token)
+        tokens.extend(token for token in re.split(r"[\s._,:;()<>\[\]{}\"'`-]+", part) if token)
     return [_normalize_relaxed(token) for token in tokens if token]

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import json
 
 import pytest
 
 from bu_agent_sdk.agent import (
     Agent,
     AuditHook,
+    ExcelReadGuardHook,
     HumanApprovalDecision,
     HumanApprovalHook,
     HumanApprovalRequest,
@@ -264,9 +266,7 @@ async def test_human_approval_hook_blocks_rejected_tool_call():
         called["value"] = True
         return f"ran: {command}"
 
-    handler = FakeApprovalHandler(
-        HumanApprovalDecision(approved=False, reason="operator denied")
-    )
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=False, reason="operator denied"))
     llm = FakeLLM(
         [
             ChatInvokeCompletion(
@@ -338,6 +338,130 @@ async def test_human_approval_hook_fails_closed_without_handler():
 
 
 @pytest.mark.anyio
+async def test_excel_read_guard_hook_blocks_excel_related_bash_after_read_excel():
+    called = {"value": False}
+
+    @tool("Read excel")
+    async def read_excel(file_path: str) -> str:
+        return json.dumps(
+            {
+                "resolved_path": file_path,
+                "sheet_names": ["Sheet1"],
+                "selected_sheet": None,
+                "preview_limits": {"max_rows": 20, "max_cols": 20},
+                "sheets": [],
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(
+                            name="read_excel",
+                            arguments='{"file_path":"D:/workspace/demo.xlsx"}',
+                        ),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        function=Function(
+                            name="bash",
+                            arguments='{"command":"python -c \\"import openpyxl\\""}',
+                        ),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[read_excel, bash],
+        hooks=[ExcelReadGuardHook()],
+    )
+
+    result = await agent.query("analyze workbook")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 2
+    assert tool_messages[1].is_error is True
+    assert "read_excel" in tool_messages[1].text
+    assert "Do not use `bash`" in tool_messages[1].text
+
+
+@pytest.mark.anyio
+async def test_excel_read_guard_hook_allows_non_excel_bash_after_read_excel():
+    called = {"value": False}
+
+    @tool("Read excel")
+    async def read_excel(file_path: str) -> str:
+        return json.dumps(
+            {
+                "resolved_path": file_path,
+                "sheet_names": ["Sheet1"],
+                "selected_sheet": None,
+                "preview_limits": {"max_rows": 20, "max_cols": 20},
+                "sheets": [],
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(
+                            name="read_excel",
+                            arguments='{"file_path":"D:/workspace/demo.xlsx"}',
+                        ),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[read_excel, bash],
+        hooks=[ExcelReadGuardHook()],
+    )
+
+    result = await agent.query("analyze workbook")
+
+    assert result == "done"
+    assert called["value"] is True
+
+
+@pytest.mark.anyio
 async def test_query_stream_with_human_approval_rejection_still_finishes():
     called = {"value": False}
 
@@ -346,9 +470,7 @@ async def test_query_stream_with_human_approval_rejection_still_finishes():
         called["value"] = True
         return f"ran: {command}"
 
-    handler = FakeApprovalHandler(
-        HumanApprovalDecision(approved=False, reason="operator denied")
-    )
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=False, reason="operator denied"))
     llm = FakeLLM(
         [
             ChatInvokeCompletion(

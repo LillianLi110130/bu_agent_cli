@@ -18,6 +18,7 @@ from bu_agent_sdk.agent.hitl import (
 from bu_agent_sdk.agent.hooks import (
     AgentHook,
     AuditHook,
+    ExcelReadGuardHook,
     FinishGuardHook,
     HookContext,
     HookDecision,
@@ -60,6 +61,7 @@ __all__ = [
     "FinishGuardHook",
     "ToolPolicyHook",
     "AuditHook",
+    "ExcelReadGuardHook",
     "ModelRoutingHook",
     "HumanApprovalRequest",
     "HumanApprovalDecision",

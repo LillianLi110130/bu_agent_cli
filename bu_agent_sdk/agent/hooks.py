@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
 from bu_agent_sdk.agent.events import HiddenUserMessageEvent
 from bu_agent_sdk.agent.hitl import HumanApprovalRequest
+from bu_agent_sdk.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
 from bu_agent_sdk.agent.runtime_events import (
     FinishRequested,
     IterationStarted,
@@ -24,6 +27,7 @@ if TYPE_CHECKING:
     from bu_agent_sdk.agent.service import Agent
 
 logger = logging.getLogger("bu_agent_sdk.agent.hooks")
+_EXCEL_COMMAND_RE = re.compile(r"(?i)(openpyxl|\.xlsx\b|\.xlsm\b|\.xltx\b|\.xltm\b)")
 
 
 class HookAction(str, Enum):
@@ -90,16 +94,14 @@ class AgentHook(Protocol):
         self,
         event: RuntimeEvent,
         ctx: HookContext,
-    ) -> HookDecision | None:
-        ...
+    ) -> HookDecision | None: ...
 
     async def after_event(
         self,
         event: RuntimeEvent,
         ctx: HookContext,
         emitted_events: list[RuntimeEvent],
-    ) -> HookDecision | None:
-        ...
+    ) -> HookDecision | None: ...
 
 
 @dataclass
@@ -188,6 +190,92 @@ class ToolPolicyHook(BaseAgentHook):
             ),
             reason=reason,
         )
+
+
+@dataclass
+class ExcelReadGuardHook(BaseAgentHook):
+    """Block Excel-related shell retries after a successful read_excel call."""
+
+    priority: int = 19
+    state_attr: str = "_successful_excel_reads"
+
+    async def before_event(
+        self,
+        event: RuntimeEvent,
+        ctx: HookContext,
+    ) -> HookDecision | None:
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        if event.tool_call.function.name != "bash":
+            return None
+
+        successful_reads = self._get_successful_reads(ctx)
+        if not successful_reads:
+            return None
+
+        try:
+            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
+        except ToolArgumentsError:
+            return None
+
+        command = args.get("command")
+        if not isinstance(command, str) or not _EXCEL_COMMAND_RE.search(command):
+            return None
+
+        listed_paths = "\n".join(f"- {path}" for path in successful_reads)
+        return HookDecision(
+            action=HookAction.OVERRIDE_RESULT,
+            override_result=ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name="bash",
+                content=(
+                    "Error: `read_excel` already succeeded for the current turn.\n"
+                    f"Resolved Excel file(s):\n{listed_paths}\n"
+                    "Do not use `bash` to reopen or enumerate Excel workbooks. "
+                    "Answer from the existing `read_excel` result, or call `read_excel` "
+                    "again on the same resolved path with a different `sheet_name`, "
+                    "`find_text`, `offset_row`, `max_rows`, or `max_cols` if you need more detail."
+                ),
+                is_error=True,
+            ),
+            reason="blocked Excel-related bash retry after read_excel",
+        )
+
+    async def after_event(
+        self,
+        event: RuntimeEvent,
+        ctx: HookContext,
+        emitted_events: list[RuntimeEvent],
+    ) -> HookDecision | None:
+        if not isinstance(event, ToolResultReceived):
+            return None
+
+        if event.tool_call.function.name != "read_excel":
+            return None
+
+        try:
+            payload = json.loads(event.tool_result.content)
+        except (TypeError, json.JSONDecodeError):
+            return None
+
+        resolved_path = payload.get("resolved_path")
+        if not isinstance(resolved_path, str) or not resolved_path:
+            return None
+
+        successful_reads = self._get_successful_reads(ctx)
+        if resolved_path not in successful_reads:
+            successful_reads.append(resolved_path)
+        return None
+
+    def _get_successful_reads(self, ctx: HookContext) -> list[str]:
+        reads = getattr(ctx.state, self.state_attr, None)
+        if isinstance(reads, list):
+            return reads
+
+        reads = []
+        setattr(ctx.state, self.state_attr, reads)
+        return reads
 
 
 @dataclass
