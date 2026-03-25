@@ -19,8 +19,10 @@ Environment Variables:
 import argparse
 import asyncio
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
+import socket
 from typing import Any
 
 from bu_agent_sdk import Agent
@@ -39,7 +41,9 @@ from rich.console import Console
 from bu_agent_sdk.bootstrap.agent_factory import create_agent
 from cli.app import ClaudeCodeCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
+from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
 from cli.slash_commands import SlashCommandRegistry
+from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 
@@ -199,7 +203,23 @@ def _build_system_prompt(
 
     template_str = _load_prompt_template("system.md")
 
+
 console = Console()
+
+_DEFAULT_IM_GATEWAY_BASE_URL = os.getenv("BU_AGENT_IM_GATEWAY_BASE_URL", "http://127.0.0.1:8765")
+_DEFAULT_WORKER_HOST = (
+    os.getenv("COMPUTERNAME") or os.getenv("HOSTNAME") or socket.gethostname() or "local"
+)
+_DEFAULT_IM_WORKER_ID = os.getenv("BU_AGENT_IM_WORKER_ID", f"worker-{_DEFAULT_WORKER_HOST}")
+
+
+@dataclass
+class WorkerProcessHandle:
+    """Track the spawned worker process and its redirected log file."""
+
+    process: asyncio.subprocess.Process
+    log_file: Any
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -214,7 +234,136 @@ def parse_args():
         "-r",
         help="Root directory for sandbox (default: current working directory)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--local-bridge",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Route local terminal input through the file-backed bridge queue (default: enabled)",
+    )
+    parser.add_argument(
+        "--im-enable",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable worker bridge mode for a remote IM session (default: enabled)",
+    )
+    parser.add_argument(
+        "--im-worker-id",
+        default=None,
+        help=f"Worker identifier for the remote session (default: {_DEFAULT_IM_WORKER_ID})",
+    )
+    parser.add_argument(
+        "--im-gateway-base-url",
+        default=None,
+        help=f"Gateway base URL for the worker (default: {_DEFAULT_IM_GATEWAY_BASE_URL})",
+    )
+    args = parser.parse_args()
+    if args.im_enable:
+        args.local_bridge = True
+        args.im_worker_id = args.im_worker_id or _DEFAULT_IM_WORKER_ID
+        args.im_gateway_base_url = args.im_gateway_base_url or _DEFAULT_IM_GATEWAY_BASE_URL
+    return args
+
+
+def _build_bridge_store(
+    *,
+    args: argparse.Namespace,
+    ctx: SandboxContext,
+) -> FileBridgeStore | None:
+    """Create the file-backed bridge store for local or IM-enabled runs."""
+    if not (args.local_bridge or args.im_enable):
+        return None
+    binding_source = args.im_worker_id or "local-cli"
+    session_binding_id = resolve_session_binding_id(binding_source)
+    return FileBridgeStore(root_dir=ctx.working_dir, session_binding_id=session_binding_id)
+
+
+async def _start_im_worker_process(
+    *,
+    args: argparse.Namespace,
+    ctx: SandboxContext,
+) -> WorkerProcessHandle | None:
+    """Start the background worker process when IM mode is enabled."""
+    if not args.im_enable:
+        return None
+
+    missing = [
+        name
+        for name, value in (
+            ("--im-worker-id", args.im_worker_id),
+            ("--im-gateway-base-url", args.im_gateway_base_url),
+        )
+        if not value
+    ]
+    if missing:
+        missing_str = ", ".join(missing)
+        raise ValueError(f"IM worker mode requires: {missing_str}")
+
+    command = [
+        sys.executable,
+        "-m",
+        "cli.worker.main",
+        "--worker-id",
+        str(args.im_worker_id),
+        "--gateway-base-url",
+        str(args.im_gateway_base_url),
+        "--root-dir",
+        str(ctx.working_dir),
+    ]
+    if args.model:
+        command.extend(["--model", str(args.model)])
+
+    bridge_store = _build_bridge_store(args=args, ctx=ctx)
+    if bridge_store is None:
+        raise RuntimeError("Bridge store must exist before starting the IM worker")
+    bridge_store.initialize()
+    worker_log_path = bridge_store.logs_dir / "worker.log"
+    worker_log_file = worker_log_path.open("a", encoding="utf-8", buffering=1)
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(_SCRIPT_DIR),
+        stdout=worker_log_file,
+        stderr=worker_log_file,
+    )
+    return WorkerProcessHandle(process=process, log_file=worker_log_file)
+
+
+async def _stop_im_worker_process(handle: WorkerProcessHandle | None) -> None:
+    """Terminate the worker subprocess if it is running."""
+    if handle is None:
+        return
+
+    process = handle.process
+    if process.returncode is not None:
+        handle.log_file.close()
+        return
+
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5.0)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+    finally:
+        handle.log_file.close()
+
+
+async def _mark_worker_offline(
+    *,
+    worker_id: str | None,
+    gateway_base_url: str | None,
+) -> None:
+    """Best-effort offline notification sent by the parent CLI process."""
+    if not worker_id or not gateway_base_url:
+        return
+
+    client = WorkerGatewayClient(base_url=gateway_base_url)
+    try:
+        await client.offline(worker_id=worker_id)
+    except Exception:
+        pass
+    finally:
+        await client.aclose()
 
 
 def create_llm(model: str | None = None) -> ChatOpenAI:
@@ -330,6 +479,22 @@ async def main():
         model=args.model,
         root_dir=args.root_dir,
     )
+    bridge_store = _build_bridge_store(args=args, ctx=ctx)
+    worker_process = await _start_im_worker_process(args=args, ctx=ctx)
+    if bridge_store is not None:
+        console.print(
+            "[dim]Bridge:[/] "
+            f"[cyan]{bridge_store.session_binding_id}[/cyan] "
+            f"[dim]->[/dim] {bridge_store.bridge_dir}"
+        )
+    if args.im_enable:
+        console.print(
+            "[dim]IM Worker:[/] "
+            f"worker=[cyan]{args.im_worker_id}[/cyan] "
+            f"gateway=[cyan]{args.im_gateway_base_url}[/cyan]"
+        )
+        if bridge_store is not None:
+            console.print(f"[dim]Worker log:[/] {bridge_store.logs_dir / 'worker.log'}")
     cli = ClaudeCodeCLI(
         agent=agent,
         context=ctx,
@@ -342,12 +507,19 @@ async def main():
             skill_registry=runtime.skill_registry,
             agent_registry=runtime.agent_registry,
         ),
+        bridge_store=bridge_store,
     )
 
     try:
         await cli.run()
     except KeyboardInterrupt:
         console.print("\n[yellow]Goodbye![/yellow]")
+    finally:
+        await _mark_worker_offline(
+            worker_id=args.im_worker_id,
+            gateway_base_url=args.im_gateway_base_url,
+        )
+        await _stop_im_worker_process(worker_process)
 
 
 def cli_main():
