@@ -205,3 +205,56 @@ async def test_read_excel_reports_missing_sheet_name():
         assert result == "Error: Sheet '不存在' not found. Available sheets: Sheet1"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_treats_blank_sheet_name_as_all_sheets():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(
+        workbook_path,
+        [
+            ("主表", [["字段"], ["值"]]),
+            ("附1管理人高管介绍", [["姓名"], ["张三"]]),
+        ],
+    )
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func("demo.xlsx", ctx=ctx, sheet_name="   ")
+        payload = json.loads(result)
+
+        assert payload["selected_sheet"] is None
+        assert payload["sheet_names"] == ["主表", "附1管理人高管介绍"]
+        assert len(payload["sheets"]) == 2
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_matches_sheet_name_with_spacing_variants():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(
+        workbook_path,
+        [
+            ("主表", [["字段"], ["值"]]),
+            ("附1管理人高管介绍", [["姓名"], ["张三"]]),
+        ],
+    )
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func(
+            "demo.xlsx",
+            ctx=ctx,
+            sheet_name="附 1 管理人高管介绍",
+        )
+        payload = json.loads(result)
+
+        assert payload["selected_sheet"] == "附1管理人高管介绍"
+        assert len(payload["sheets"]) == 1
+        assert payload["sheets"][0]["name"] == "附1管理人高管介绍"
+        assert payload["sheets"][0]["preview_rows"][1]["values"] == ["张三"]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)

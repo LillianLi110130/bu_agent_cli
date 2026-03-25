@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import posixpath
 import re
+import unicodedata
 import zipfile
 from typing import Annotated
 from xml.etree import ElementTree as ET
@@ -24,6 +25,11 @@ _CELL_REF_RE = re.compile(r"([A-Z]+)")
 
 def _dump_payload(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _normalize_sheet_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip().lower()
+    return re.sub(r"\s+", "", normalized)
 
 
 def _normalize_archive_path(base_dir: str, target: str) -> str:
@@ -166,6 +172,36 @@ def _inspect_sheet(
     }
 
 
+def _resolve_sheet_selection(
+    requested_name: str | None,
+    sheets: list[tuple[str, str]],
+) -> tuple[str | None, list[tuple[str, str]] | str]:
+    if requested_name is None:
+        return None, sheets
+
+    exact = [(name, sheet_path) for name, sheet_path in sheets if name == requested_name]
+    if exact:
+        return exact[0][0], exact
+
+    normalized_query = _normalize_sheet_name(requested_name)
+    normalized_matches = [
+        (name, sheet_path)
+        for name, sheet_path in sheets
+        if _normalize_sheet_name(name) == normalized_query
+    ]
+    if len(normalized_matches) == 1:
+        return normalized_matches[0][0], normalized_matches
+    if len(normalized_matches) > 1:
+        candidates = ", ".join(name for name, _ in normalized_matches)
+        return (
+            f"Error: Sheet '{requested_name}' is ambiguous after normalization. "
+            f"Candidates: {candidates}"
+        )
+
+    available_sheet_names = ", ".join(name for name, _ in sheets)
+    return f"Error: Sheet '{requested_name}' not found. Available sheets: {available_sheet_names}"
+
+
 @tool("Read an Excel workbook from a resolved path and return sheet names plus preview rows")
 async def read_excel(
     file_path: str,
@@ -196,6 +232,10 @@ async def read_excel(
     if max_rows < 1 or max_cols < 1:
         return "Error: max_rows and max_cols must be positive integers."
 
+    requested_sheet_name = sheet_name.strip() if isinstance(sheet_name, str) else None
+    if requested_sheet_name == "":
+        requested_sheet_name = None
+
     try:
         with zipfile.ZipFile(path) as archive:
             shared_strings = _load_shared_strings(archive)
@@ -204,20 +244,20 @@ async def read_excel(
                 return "Error: Workbook does not contain readable worksheet definitions."
 
             available_sheet_names = [name for name, _ in sheets]
-            if sheet_name is not None:
-                selected = [(name, sheet_path) for name, sheet_path in sheets if name == sheet_name]
-                if not selected:
-                    return (
-                        f"Error: Sheet '{sheet_name}' not found. "
-                        f"Available sheets: {', '.join(available_sheet_names)}"
-                    )
-            else:
-                selected = sheets
+            selection_result = _resolve_sheet_selection(
+                requested_sheet_name,
+                sheets,
+            )
+            if isinstance(selection_result, str):
+                return selection_result
+
+            resolved_sheet_name, selected_or_error = selection_result
+            selected = selected_or_error
 
             payload = {
                 "resolved_path": str(path),
                 "sheet_names": available_sheet_names,
-                "selected_sheet": sheet_name,
+                "selected_sheet": resolved_sheet_name,
                 "preview_limits": {"max_rows": max_rows, "max_cols": max_cols},
                 "sheets": [
                     _inspect_sheet(
