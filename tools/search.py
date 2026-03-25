@@ -17,8 +17,13 @@ async def glob_search(
 ) -> str:
     """Find files matching a glob pattern like **/*.py"""
     try:
-        search_dir = ctx.resolve_path(path) if path else ctx.working_dir
+        if path:
+            search_dir = resolve_target_path(path, ctx, kind="dir")
+        else:
+            search_dir = ctx.working_dir
     except Exception as e:
+        if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
+            return str(e)
         return f"Security error: {e}"
 
     try:

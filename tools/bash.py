@@ -1,5 +1,6 @@
 """Bash command execution tool."""
 
+import json
 import locale
 import subprocess
 import sys
@@ -26,10 +27,23 @@ async def bash(
         )
         stdout = _decode_process_stream(result.stdout)
         stderr = _decode_process_stream(result.stderr)
-        output = stdout + stderr
-        return output.strip() or "(no output)"
+        return _format_bash_result(
+            command=command,
+            cwd=str(ctx.working_dir),
+            returncode=result.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=False,
+        )
     except subprocess.TimeoutExpired:
-        return f"Command timed out after {timeout}s"
+        return _format_bash_result(
+            command=command,
+            cwd=str(ctx.working_dir),
+            returncode=None,
+            stdout="",
+            stderr=f"Command timed out after {timeout}s",
+            timed_out=True,
+        )
     except Exception as e:
         return f"Error: {e}"
 
@@ -85,3 +99,24 @@ def _windows_console_encoding() -> str | None:
     if not codepage:
         return None
     return f"cp{codepage}"
+
+
+def _format_bash_result(
+    *,
+    command: str,
+    cwd: str,
+    returncode: int | None,
+    stdout: str,
+    stderr: str,
+    timed_out: bool,
+) -> str:
+    payload = {
+        "ok": returncode == 0 and not timed_out,
+        "command": command,
+        "cwd": cwd,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)

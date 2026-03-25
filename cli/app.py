@@ -588,7 +588,7 @@ class ClaudeCodeCLI:
         self._console.print()
         self._console.print(f"[dim]Working directory:[/] {self._ctx.working_dir}")
         self._console.print(f"[dim]Model:[/] {self._agent.llm.model}")
-        self._console.print(f"[dim]Tools:[/] bash, read, write, edit, glob, grep, todos")
+        self._console.print(f"[dim]Tools:[/] bash, resolve_path, read, write, edit, glob, grep, todos")
         self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
         self._console.print(f"[dim]Skill Commands:[/] Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see all")
         self._console.print(
@@ -614,6 +614,7 @@ class ClaudeCodeCLI:
 [bold cyan]Available Tools (for AI):[/bold cyan]
 
   [blue]bash <cmd>[/blue]    - Run shell commands
+  [blue]resolve_path <query>[/blue] - Resolve an approximate path
   [blue]read <file>[/blue]   - Read file contents
   [blue]write <file>[/blue]  - Write content to file
   [blue]edit <file>[/blue]   - Edit file (replace text)

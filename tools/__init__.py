@@ -2,6 +2,7 @@
 
 from tools.bash import bash
 from tools.files import edit, read, write
+from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, get_sandbox_context, SecurityError
 from tools.search import glob_search, grep
 from tools.todos import done, todo_read, todo_write
@@ -21,6 +22,7 @@ from tools.run_parallel_subagents import run_parallel_subagents
 
 ALL_TOOLS = [
     bash,
+    resolve_path,
     read,
     write,
     edit,
@@ -42,6 +44,7 @@ __all__ = [
     "SecurityError",
     "get_sandbox_context",
     "bash",
+    "resolve_path",
     "read",
     "write",
     "edit",
