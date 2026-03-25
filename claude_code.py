@@ -27,6 +27,7 @@ from bu_agent_sdk import Agent
 from bu_agent_sdk.agent import (
     AgentHook,
     AuditHook,
+    ExcelReadGuardHook,
     HumanApprovalHook,
     build_default_approval_policy,
 )
@@ -199,7 +200,9 @@ def _build_system_prompt(
 
     template_str = _load_prompt_template("system.md")
 
+
 console = Console()
+
 
 def parse_args():
     """Parse command line arguments."""
@@ -239,6 +242,7 @@ def build_agent_hooks(*, mode: str) -> list[AgentHook]:
     """
     hooks: list[AgentHook] = [
         HumanApprovalHook(policy=build_default_approval_policy(mode)),
+        ExcelReadGuardHook(),
         AuditHook(),
     ]
 

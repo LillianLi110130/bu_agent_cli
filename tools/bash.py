@@ -10,13 +10,17 @@ from typing import Annotated
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 
-@tool("Execute a shell command and return output")
+@tool(
+    "Execute a command in the current OS shell and return structured output. "
+    "On Windows, use cmd or PowerShell compatible syntax and avoid Unix-only "
+    "patterns such as heredoc, python3, or file."
+)
 async def bash(
     command: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     timeout: int = 30,
 ) -> str:
-    """Run a bash command in the sandbox working directory."""
+    """Run a command in the current OS shell within the sandbox working directory."""
     try:
         result = subprocess.run(
             command,

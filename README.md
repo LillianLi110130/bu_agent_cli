@@ -223,6 +223,7 @@ docs/spec/<spec_name>/
 
 - `bash`：执行 shell 命令
 - `read`：读取文件（带行号）
+- `read_excel`：读取 Excel 工作簿并预览 sheet 内容
 - `write`：写入文件
 - `edit`：按字符串替换编辑文件
 - `glob_search`：按 glob 查找文件
