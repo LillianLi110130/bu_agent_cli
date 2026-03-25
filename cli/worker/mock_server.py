@@ -29,7 +29,7 @@ class MockGatewayState:
     completions: list[dict[str, Any]] = field(default_factory=list)
     online_workers: dict[str, dict[str, Any]] = field(default_factory=dict)
     worker_ttl_seconds: float = 30.0
-    inflight_messages: dict[str, MockWorkerMessage] = field(default_factory=dict)
+    inflight_messages: dict[str, list[MockWorkerMessage]] = field(default_factory=dict)
 
     def enqueue_message(self, *, worker_id: str, content: str) -> MockWorkerMessage:
         if not self.is_online(worker_id):
@@ -95,7 +95,8 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
             if message.worker_id != request.worker_id:
                 continue
             queued = state.queued_messages.pop(index)
-            state.inflight_messages[request.worker_id] = queued
+            inflight_queue = state.inflight_messages.setdefault(request.worker_id, [])
+            inflight_queue.append(queued)
             return {"messages": [asdict(queued)]}
         return {"messages": []}
 
@@ -111,7 +112,10 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/api/worker/complete")
     async def complete(request: CompleteRequest) -> dict[str, bool]:
-        inflight = state.inflight_messages.pop(request.worker_id, None)
+        inflight_queue = state.inflight_messages.get(request.worker_id, [])
+        inflight = inflight_queue.pop(0) if inflight_queue else None
+        if not inflight_queue:
+            state.inflight_messages.pop(request.worker_id, None)
         state.completions.append(
             {
                 "worker_id": request.worker_id,

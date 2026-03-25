@@ -122,6 +122,59 @@ async def test_worker_runner_uses_local_request_id_for_remote_message(workspace_
 
 
 @pytest.mark.asyncio
+async def test_worker_runner_keeps_polling_while_previous_remote_request_is_processing(
+    workspace_root: Path,
+):
+    state = MockGatewayState()
+    app = create_mock_gateway_app(state)
+    transport = httpx.ASGITransport(app=app)
+
+    store = FileBridgeStore(
+        workspace_root,
+        session_binding_id=resolve_session_binding_id("worker-1"),
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        gateway_client = WorkerGatewayClient(base_url="http://testserver", client=http_client)
+        runner = WorkerRunner(
+            worker_id="worker-1",
+            gateway_client=gateway_client,
+            model=None,
+            root_dir=workspace_root,
+            result_poll_interval_seconds=0.01,
+        )
+        task = asyncio.create_task(runner.run_forever())
+
+        await _wait_until(lambda: state.is_online("worker-1"))
+        state.enqueue_message(worker_id="worker-1", content="remote first")
+        await _wait_until(lambda: store.pending_count() == 1)
+
+        first = store.claim_next_pending()
+        assert first is not None
+        assert first.content == "remote first"
+
+        state.enqueue_message(worker_id="worker-1", content="remote second")
+        await _wait_until(lambda: store.pending_count() == 1)
+
+        second = store.claim_next_pending()
+        assert second is not None
+        assert second.content == "remote second"
+
+        store.complete_request(first, final_content="done first")
+        await _wait_until(lambda: len(state.completions) == 1)
+        assert state.completions[0]["input_content"] == "remote first"
+        assert state.completions[0]["final_content"] == "done first"
+
+        store.complete_request(second, final_content="done second")
+        await _wait_until(lambda: len(state.completions) == 2)
+        runner.stop()
+        await asyncio.wait_for(task, timeout=1.0)
+
+        assert state.completions[1]["input_content"] == "remote second"
+        assert state.completions[1]["final_content"] == "done second"
+
+
+@pytest.mark.asyncio
 async def test_mock_gateway_rejects_messages_when_no_worker_is_online():
     state = MockGatewayState()
     app = create_mock_gateway_app(state)

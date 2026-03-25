@@ -38,6 +38,7 @@ class WorkerRunner:
         )
         self.bridge_store.initialize()
         self._stop_event = asyncio.Event()
+        self._completion_tasks: set[asyncio.Task[Any]] = set()
 
     def stop(self) -> None:
         """Request the worker loop to stop."""
@@ -63,9 +64,14 @@ class WorkerRunner:
                     await asyncio.sleep(self.empty_poll_sleep_seconds)
                     continue
 
-                message = messages[0]
-                await self._process_message(message)
+                for message in messages:
+                    task = asyncio.create_task(self._process_message(message))
+                    self._completion_tasks.add(task)
+                    task.add_done_callback(self._completion_tasks.discard)
         finally:
+            self._stop_event.set()
+            if self._completion_tasks:
+                await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
             await self.gateway_client.offline(worker_id=self.worker_id)
 
     async def _process_message(self, message: Any) -> None:

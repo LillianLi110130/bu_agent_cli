@@ -326,6 +326,14 @@ async def _start_im_worker_process(
         stdout=worker_log_file,
         stderr=worker_log_file,
     )
+    await asyncio.sleep(0.25)
+    if process.returncode is not None:
+        worker_log_file.flush()
+        worker_log_file.close()
+        raise RuntimeError(
+            "IM worker exited during startup. "
+            f"Check the worker log for details: {worker_log_path}"
+        )
     return WorkerProcessHandle(process=process, log_file=worker_log_file)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 
@@ -29,9 +30,11 @@ class WorkerGatewayClient:
         self.base_url = base_url.rstrip("/")
         self.authorization = authorization
         self._owns_client = client is None
+        trust_env = not _is_loopback_base_url(self.base_url)
         self._client = client or httpx.AsyncClient(
             base_url=self.base_url,
             timeout=httpx.Timeout(connect=5.0, read=35.0, write=10.0, pool=5.0),
+            trust_env=trust_env,
         )
 
     async def poll(self, worker_id: str) -> list[WorkerMessage]:
@@ -103,3 +106,9 @@ class WorkerGatewayClient:
         if not self._owns_client:
             return
         await self._client.aclose()
+
+
+def _is_loopback_base_url(base_url: str) -> bool:
+    """Return True when *base_url* targets the local machine."""
+    hostname = (urlparse(base_url).hostname or "").strip().lower()
+    return hostname in {"127.0.0.1", "localhost", "::1"}
