@@ -34,6 +34,7 @@ class AgentSession:
         self.user_id = user_id
         self.memory_service = memory_service
         self.history_loaded = False
+        self.memory_context_injected = False
         self.created_at = created_at or datetime.now(UTC)
         self.last_used_at = self.created_at
         self._lock = asyncio.Lock()
@@ -98,24 +99,16 @@ class AgentSession:
 
         return None
 
-    def _remove_temporary_message(self, message: BaseMessage | None) -> None:
-        if message is None:
+    async def _ensure_user_memory_context_injected(self) -> None:
+        if self.memory_context_injected:
+            return
+        if self.memory_service is None or self.user_id is None:
             return
 
-        context = getattr(self.agent, "_context", None)
-        if context is not None:
-            for index, existing in enumerate(context.get_messages()):
-                if existing is message:
-                    context.remove_message_at(index)
-                    return
-            return
-
-        agent_messages = getattr(self.agent, "messages", None)
-        if isinstance(agent_messages, list):
-            for index, existing in enumerate(agent_messages):
-                if existing is message:
-                    agent_messages.pop(index)
-                    return
+        memory_message = await self._load_user_memory_context()
+        if memory_message is not None:
+            self._inject_temporary_message(memory_message)
+        self.memory_context_injected = True
 
     async def _append_round(self, user_message: str, assistant_message: str) -> None:
         if self.memory_service is None or self.user_id is None:
@@ -136,12 +129,9 @@ class AgentSession:
         """Execute a query on this session's agent."""
         async with self._lock:
             await self._ensure_history_loaded()
-            temporary_message = self._inject_temporary_message(await self._load_user_memory_context())
-            try:
-                self.last_used_at = datetime.now(UTC)
-                response_text = await self.agent.query(message)
-            finally:
-                self._remove_temporary_message(temporary_message)
+            await self._ensure_user_memory_context_injected()
+            self.last_used_at = datetime.now(UTC)
+            response_text = await self.agent.query(message)
             await self._append_round(message, response_text)
             return response_text
 
@@ -149,29 +139,23 @@ class AgentSession:
         """Execute a streaming query on this session's agent."""
         async with self._lock:
             await self._ensure_history_loaded()
-            temporary_message = self._inject_temporary_message(await self._load_user_memory_context())
-            try:
-                self.last_used_at = datetime.now(UTC)
-                async for event in self.agent.query_stream(message):
-                    if isinstance(event, AgentFinalResponseEvent):
-                        await self._append_round(message, event.content)
-                    yield event
-            finally:
-                self._remove_temporary_message(temporary_message)
+            await self._ensure_user_memory_context_injected()
+            self.last_used_at = datetime.now(UTC)
+            async for event in self.agent.query_stream(message):
+                if isinstance(event, AgentFinalResponseEvent):
+                    await self._append_round(message, event.content)
+                yield event
 
     async def query_stream_delta(self, message: str):
         """Execute a token-level streaming query on this session's agent."""
         async with self._lock:
             await self._ensure_history_loaded()
-            temporary_message = self._inject_temporary_message(await self._load_user_memory_context())
-            try:
-                self.last_used_at = datetime.now(UTC)
-                async for event in self.agent.query_stream_delta(message):
-                    if isinstance(event, AgentFinalResponseEvent):
-                        await self._append_round(message, event.content)
-                    yield event
-            finally:
-                self._remove_temporary_message(temporary_message)
+            await self._ensure_user_memory_context_injected()
+            self.last_used_at = datetime.now(UTC)
+            async for event in self.agent.query_stream_delta(message):
+                if isinstance(event, AgentFinalResponseEvent):
+                    await self._append_round(message, event.content)
+                yield event
 
     async def get_usage(self):
         """Get usage statistics for this session."""
@@ -183,6 +167,7 @@ class AgentSession:
         async with self._lock:
             self.agent.clear_history()
             self.history_loaded = False
+            self.memory_context_injected = False
 
     @property
     def message_count(self) -> int:

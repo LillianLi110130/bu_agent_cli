@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from typing import AsyncIterator
 from types import SimpleNamespace
+from typing import AsyncIterator
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from bu_agent_sdk.llm.messages import AssistantMessage, BaseMessage, DeveloperMessage, UserMessage
+from bu_agent_sdk.llm.messages import (
+    AssistantMessage,
+    BaseMessage,
+    DeveloperMessage,
+    UserMessage,
+)
 from bu_agent_sdk.server.app import create_app
 from bu_agent_sdk.server.session import AgentSession, SessionManager
 from bu_agent_sdk.tokens.views import UsageSummary
@@ -210,7 +215,9 @@ async def test_session_manager_binds_user_id_and_rejects_mismatch() -> None:
         await manager.get_or_create_session(session_id="session-1", user_id="user-2")
 
 
-def test_tg_mem_memory_can_be_instantiated_in_mysql_only_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tg_mem_memory_can_be_instantiated_in_mysql_only_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from tg_mem.memory import main as tg_mem_main
 
     monkeypatch.setattr(tg_mem_main, "_create_mysql_manager", lambda config: object())
@@ -222,7 +229,7 @@ def test_tg_mem_memory_can_be_instantiated_in_mysql_only_mode(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_agent_session_loads_history_only_once_from_memory_service() -> None:
+async def test_agent_session_injects_user_memory_context_only_once_per_session() -> None:
     session = AgentSession(
         session_id="session-1",
         agent=DummyAgent(),
@@ -239,9 +246,10 @@ async def test_agent_session_loads_history_only_once_from_memory_service() -> No
     assert session.agent.loaded_history[1].content == "persisted user"
     assert session.agent.loaded_history[2].content == "persisted assistant"
     assert session.memory_service.load_calls == [("session-1", "user-1")]
-    assert session.memory_service.user_memory_calls == ["user-1", "user-1"]
+    assert session.memory_service.user_memory_calls == ["user-1"]
     assert any(role == "developer" for role, _ in session.agent.context_snapshots[0])
-    assert all(message.role != "developer" for message in session.agent.messages)
+    assert any(role == "developer" for role, _ in session.agent.context_snapshots[1])
+    assert any(message.role == "developer" for message in session.agent.messages)
 
 
 @pytest.mark.asyncio
@@ -286,7 +294,11 @@ async def test_tg_mem_memory_service_loads_all_user_memories_with_char_limit() -
 
     message = await service.load_user_memory_context(user_id="user-1")
 
-    memory.db.list_memory_records.assert_called_once_with(user_id="user-1", status="ACTE", limit=None)
+    memory.db.list_memory_records.assert_called_once_with(
+        user_id="user-1",
+        status="ACTE",
+        limit=None,
+    )
     assert message is not None
     assert message.role == "developer"
     assert "User memory context:" in message.content
@@ -360,7 +372,11 @@ def test_query_stream_persists_only_after_final_event() -> None:
 
 def test_query_stream_delta_persists_only_after_final_event() -> None:
     memory_service = DummyMemoryService()
-    app = create_app(agent_factory=StreamingDeltaDummyAgent, config=None, memory_service=memory_service)
+    app = create_app(
+        agent_factory=StreamingDeltaDummyAgent,
+        config=None,
+        memory_service=memory_service,
+    )
 
     with TestClient(app) as client:
         with client.stream(
@@ -381,7 +397,7 @@ def test_query_stream_delta_persists_only_after_final_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_clear_history_triggers_reload_on_next_query() -> None:
+async def test_clear_history_triggers_memory_reload_and_reinjection_on_next_query() -> None:
     memory_service = DummyMemoryService()
     session = AgentSession(
         session_id="session-1",
@@ -398,6 +414,7 @@ async def test_clear_history_triggers_reload_on_next_query() -> None:
         ("session-1", "user-1"),
         ("session-1", "user-1"),
     ]
+    assert memory_service.user_memory_calls == ["user-1", "user-1"]
 
 
 def test_build_memory_service_from_env_returns_none_without_db_uri(
