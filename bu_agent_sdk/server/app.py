@@ -237,6 +237,12 @@ async def lifespan(app: FastAPI):
     # 从 app.state 中获取配置和 Agent 工厂函数
     config: ServerConfig = app.state.config
     agent_factory: Callable = app.state.agent_factory
+    memory_service = getattr(app.state, "memory_service", None)
+    if memory_service is None:
+        from bu_agent_sdk.server.memory_service import build_memory_service_from_env
+
+        memory_service = build_memory_service_from_env()
+        app.state.memory_service = memory_service
 
     # 初始化技能系统（使用内置技能）
     try:
@@ -261,6 +267,7 @@ async def lifespan(app: FastAPI):
         agent_factory=agent_factory,  # 用于创建新 Agent 的函数
         session_timeout_minutes=config.session_timeout_minutes,  # 会话超时时间
         max_sessions=config.max_sessions,  # 最大会话数
+        memory_service=memory_service,
     )
 
     # 如果启用了自动清理，启动后台任务
@@ -288,6 +295,7 @@ async def lifespan(app: FastAPI):
 def create_app(
     agent_factory: AgentFactory,
     config: ServerConfig | None = None,
+    memory_service: object | None = None,
 ) -> FastAPI:
     """
     创建 FastAPI 应用
@@ -325,6 +333,7 @@ def create_app(
     # 将配置和工厂函数存储在 app.state 中，供后续使用
     app.state.config = config
     app.state.agent_factory = agent_factory
+    app.state.memory_service = memory_service
 
     # ================================
     # 健康检查端点
@@ -352,8 +361,7 @@ def create_app(
         创建一个新的 Agent 会话，每个会话有独立的对话历史。
         返回一个唯一的 session_id，后续请求需要携带此 ID。
         """
-        # 获取或创建会话（不传 session_id 会创建新的）
-        session = await _session_manager.get_or_create_session()
+        session = await _session_manager.get_or_create_session(user_id=request.user_id)
         return SessionCreateResponse(
             session_id=session.session_id,
             created_at=session.created_at,
@@ -378,6 +386,7 @@ def create_app(
         usage_summary = await session.get_usage()
         return SessionInfoResponse(
             session_id=session.session_id,
+            user_id=session.user_id,
             created_at=session.created_at,
             message_count=session.message_count,
             usage=UsageInfo.from_usage_summary(usage_summary),
@@ -427,6 +436,38 @@ def create_app(
     # Agent 查询端点
     # ================================
 
+    async def _resolve_query_session(request: QueryRequest):
+        if request.session_id is None:
+            if request.user_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="user_id is required when session_id is missing",
+                )
+            return await _session_manager.get_or_create_session(user_id=request.user_id)
+
+        existing_session = await _session_manager.get_session(request.session_id)
+        if existing_session is None and request.user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="user_id is required for a new or unbound session",
+            )
+        if existing_session is not None and existing_session.user_id is None and request.user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="user_id is required for a new or unbound session",
+            )
+
+        try:
+            return await _session_manager.get_or_create_session(
+                request.session_id,
+                request.user_id,
+            )
+        except ValueError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            ) from e
+
     @app.post("/agent/query", response_model=QueryResponse, tags=["Agent"])
     async def query(request: QueryRequest):
         """
@@ -449,8 +490,7 @@ def create_app(
                 "usage": {token使用统计}
             }
         """
-        # 获取或创建会话
-        session = await _session_manager.get_or_create_session(request.session_id)
+        session = await _resolve_query_session(request)
 
         try:
             # 应用技能注入（如果指定了 skill 参数）
@@ -515,7 +555,7 @@ def create_app(
         # 应用技能注入
         message, _ = await prepare_message_with_skill(request.message, request.skill)
 
-        session = await _session_manager.get_or_create_session(request.session_id)
+        session = await _resolve_query_session(request)
 
         async def event_generator():
             """内部生成器函数，产生 SSE 事件"""
@@ -608,9 +648,7 @@ def create_app(
         # 应用技能注入
         message, _ = await prepare_message_with_skill(request.message, request.skill)
 
-        print("message!!!!!", message)
-
-        session = await _session_manager.get_or_create_session(request.session_id)
+        session = await _resolve_query_session(request)
 
         async def event_generator():
             """内部生成器函数，产生 SSE 事件"""
@@ -834,7 +872,11 @@ def create_app(
 # ================================
 
 
-def create_server(agent_factory: AgentFactory, **config_kwargs) -> FastAPI:
+def create_server(
+    agent_factory: AgentFactory,
+    memory_service: object | None = None,
+    **config_kwargs,
+) -> FastAPI:
     """
     创建 FastAPI 服务器的便捷函数
 
@@ -868,4 +910,4 @@ def create_server(agent_factory: AgentFactory, **config_kwargs) -> FastAPI:
         # 运行: uvicorn example:app --reload
     """
     config = ServerConfig(**config_kwargs)
-    return create_app(agent_factory=agent_factory, config=config)
+    return create_app(agent_factory=agent_factory, config=config, memory_service=memory_service)

@@ -4,7 +4,7 @@ Request and response models for the HTTP API.
 These Pydantic models define the API contract for the server.
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Literal
 from pydantic import BaseModel, Field
 from bu_agent_sdk.tokens.views import UsageSummary, ModelUsageStats
@@ -22,6 +22,10 @@ class QueryRequest(BaseModel):
         default=None,
         description="Optional session ID for maintaining conversation state. "
         "If not provided, a new session will be created.",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID used to bind and restore persistent session memory.",
     )
     stream: bool = Field(
         default=False,
@@ -106,7 +110,7 @@ class StreamEventType(BaseModel):
     """Base class for stream event types."""
 
     type: str = Field(..., description="Event type name")
-    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Event timestamp")
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC), description="Event timestamp")
 
 
 class TextEvent(StreamEventType):
@@ -241,19 +245,24 @@ class SessionCreateRequest(BaseModel):
     system_prompt: str | None = Field(
         default=None, description="Optional system prompt for this session"
     )
+    user_id: str | None = Field(
+        default=None,
+        description="Optional user ID to bind to the created session.",
+    )
 
 
 class SessionCreateResponse(BaseModel):
     """Response model for session creation."""
 
     session_id: str = Field(..., description="The newly created session ID")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SessionInfoResponse(BaseModel):
     """Response model for session info."""
 
     session_id: str = Field(..., description="Session ID")
+    user_id: str | None = Field(default=None, description="Bound user ID for this session")
     created_at: datetime = Field(..., description="Session creation timestamp")
     message_count: int = Field(..., description="Number of messages in this session")
     usage: UsageInfo = Field(..., description="Token usage information")
