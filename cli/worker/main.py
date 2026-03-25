@@ -19,7 +19,6 @@ authenticate_if_enabled: Any = None
 def parse_args() -> argparse.Namespace:
     """Parse worker command line arguments."""
     parser = argparse.ArgumentParser(description="BU Agent worker")
-    parser.add_argument("--session-key", required=True, help="Bound session key")
     parser.add_argument("--worker-id", required=True, help="Stable worker identifier")
     parser.add_argument("--gateway-base-url", required=True, help="Gateway base URL")
     parser.add_argument("--model", default=None, help="Optional model override")
@@ -61,7 +60,6 @@ async def async_main() -> None:
 
     client = gateway_client_cls(**client_kwargs)
     runner = runner_cls(
-        session_key=args.session_key,
         worker_id=args.worker_id,
         gateway_client=client,
         model=args.model,
@@ -72,7 +70,9 @@ async def async_main() -> None:
 
 def cli_main() -> None:
     """Console script entrypoint."""
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     asyncio.run(async_main())
 
 

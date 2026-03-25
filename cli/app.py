@@ -5,11 +5,14 @@ Pure UI logic - receives pre-configured Agent and context.
 """
 
 import json
+import asyncio
+import io
 import os
 import sys
 import threading
 import time
 import hashlib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -73,6 +76,7 @@ from cli.image_input import (
     is_image_command,
     parse_image_command,
 )
+from cli.im_bridge import BridgeRequest, FileBridgeStore
 from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
@@ -81,6 +85,14 @@ from tools import SandboxContext, SecurityError
 
 ModelPreset = dict[str, str | bool]
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
+
+
+@dataclass
+class _ExecutionOutcome:
+    """Normalized outcome for one logical input execution."""
+
+    continue_running: bool = True
+    final_content: str = ""
 
 
 class _CLIHumanApprovalHandler:
@@ -147,6 +159,77 @@ class _LoadingIndicator:
         sys.stdout.flush()
 
 
+class _SafeLoadingIndicator:
+    """A loading indicator that avoids ANSI escapes and non-ASCII glyphs."""
+
+    def __init__(self, message: str = "Thinking"):
+        self.message = message
+        self._stop_event = threading.Event()
+        self._thread = None
+        self._frames = ["-", "\\", "|", "/"]
+
+    def _show_frame(self, frame: int):
+        """Show a single frame."""
+        sys.stdout.write(f"\r{self._frames[frame]} {self.message}...")
+        sys.stdout.flush()
+
+    def _clear(self):
+        """Clear the loading line."""
+        clear_width = len(self.message) + 6
+        sys.stdout.write("\r" + (" " * clear_width) + "\r")
+        sys.stdout.flush()
+
+    def start(self):
+        """Start the loading animation in a separate thread."""
+        self._stop_event.clear()
+        self._show_frame(0)
+
+        def _run():
+            frame = 1
+            while not self._stop_event.is_set():
+                self._show_frame(frame % len(self._frames))
+                frame += 1
+                time.sleep(0.08)
+            self._clear()
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Stop the loading animation."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=0.5)
+        self._clear()
+        self._clear()
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+
+class _ConsoleMirror:
+    """Mirror Rich output to the real console and a plain-text recorder."""
+
+    def __init__(self, primary: Console):
+        self._primary = primary
+        self._buffer = io.StringIO()
+        self._recorder = Console(
+            file=self._buffer,
+            force_terminal=False,
+            color_system=None,
+            width=120,
+        )
+
+    def print(self, *args, **kwargs):
+        self._primary.print(*args, **kwargs)
+        self._recorder.print(*args, **kwargs)
+
+    def export_text(self) -> str:
+        return self._buffer.getvalue().strip()
+
+    def __getattr__(self, name: str):
+        return getattr(self._primary, name)
+
+
 # =============================================================================
 # CLI Application
 # =============================================================================
@@ -166,6 +249,7 @@ class ClaudeCodeCLI:
     COLOR_FINAL = "bold green"
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
+    BRIDGE_POLL_INTERVAL_SECONDS = 0.1
 
     def __init__(
         self,
@@ -177,6 +261,7 @@ class ClaudeCodeCLI:
         agent_registry: AgentRegistry | None = None,
         plugin_manager: PluginManager | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
+        bridge_store: FileBridgeStore | None = None,
     ):
         """Initialize CLI with pre-configured agent and context.
 
@@ -188,7 +273,7 @@ class ClaudeCodeCLI:
         self._agent = agent
         self._ctx = context
         self._step_number = 0
-        self._loading: _LoadingIndicator | None = None
+        self._loading: _SafeLoadingIndicator | None = None
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
@@ -198,6 +283,7 @@ class ClaudeCodeCLI:
         self._plugin_manager = plugin_manager
         self._plugin_executor = PluginCommandExecutor()
         self._system_prompt_builder = system_prompt_builder
+        self._bridge_store = bridge_store
         self._model_presets_path = (
             Path(__file__).resolve().parent.parent / "config" / "model_presets.json"
         )
@@ -216,6 +302,7 @@ class ClaudeCodeCLI:
         self._model_auto_state = ModelAutoState(
             sticky_preset=self._model_switch_service.resolve_current_preset_name()
         )
+        self._last_command_final_content = ""
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
         self._agents_md_hash: str | None = None
@@ -231,6 +318,9 @@ class ClaudeCodeCLI:
             )
         )
         self._workspace_instruction_state = WorkspaceInstructionState()
+
+        if self._bridge_store is not None:
+            self._bridge_store.initialize()
 
         if context.subagent_manager:
             context.subagent_manager.set_result_callback(self._on_task_completed)
@@ -556,14 +646,55 @@ class ClaudeCodeCLI:
             auto_state=self._model_auto_state,
         )
 
-    def _start_loading(self, message: str = "Thinking") -> _LoadingIndicator:
+    def _store_command_final_content(self, content: str | None) -> None:
+        """Persist the latest non-agent command output for bridge results."""
+        self._last_command_final_content = (content or "").strip()
+
+    def _capture_console_output(self, callback: Callable[[], None]) -> str:
+        """Capture synchronous Rich console output as plain text."""
+        with self._console.capture() as capture:
+            callback()
+        return capture.get().strip()
+
+    async def _capture_console_output_async(self, callback: Callable[[], Any]) -> str:
+        """Capture async Rich console output as plain text."""
+        with self._console.capture() as capture:
+            await callback()
+        return capture.get().strip()
+
+    async def _capture_console_output_with_result_async(
+        self,
+        callback: Callable[[], Any],
+    ) -> tuple[Any, str]:
+        """Capture async Rich console output and return the callback result."""
+        with self._console.capture() as capture:
+            result = await callback()
+        return result, capture.get().strip()
+
+    async def _run_slash_command_with_live_capture(self, user_input: str) -> tuple[bool, str]:
+        """Execute one slash command with live colored output and plain-text recording."""
+        original_console = self._console
+        original_model_console = self._model_switch_service._console
+        mirror = _ConsoleMirror(original_console)
+        self._console = mirror
+        self._model_switch_service._console = mirror
+        self._store_command_final_content("")
+        try:
+            handled = await self._handle_slash_command(user_input)
+        finally:
+            self._console = original_console
+            self._model_switch_service._console = original_model_console
+        final_content = self._last_command_final_content or mirror.export_text()
+        return handled, final_content
+
+    def _start_loading(self, message: str = "Thinking") -> _SafeLoadingIndicator:
         """Start a loading animation."""
-        loading = _LoadingIndicator(message)
+        loading = _SafeLoadingIndicator(message)
         loading.start()
         time.sleep(0.02)
         return loading
 
-    def _stop_loading(self, loading: _LoadingIndicator | None):
+    def _stop_loading(self, loading: _SafeLoadingIndicator | None):
         """Stop the loading animation."""
         if loading:
             loading.stop()
@@ -1006,16 +1137,19 @@ class ClaudeCodeCLI:
 
     async def _handle_at_command(self, text: str) -> bool:
         """Handle an @ command for skill invocation."""
+        self._store_command_final_content("")
         skill_name, message = parse_at_command(text)
         if not skill_name:
             self._console.print("[yellow]Invalid @ command.[/yellow]")
             self._console.print("[dim]Type @ and press Tab to see available skills.[/dim]")
+            self._store_command_final_content("Invalid @ command.\nType @ and press Tab to see available skills.")
             return True
 
         skill = self._at_registry.get(skill_name)
         if not skill:
             self._console.print(f"[yellow]Skill not found: @{skill_name}[/yellow]")
             self._console.print("[dim]Use /skills to list available skills.[/dim]")
+            self._store_command_final_content(f"Skill not found: @{skill_name}\nUse /skills to list available skills.")
             return True
 
         self._console.print(f"[cyan]Using @{skill.name}...[/cyan]")
@@ -1023,15 +1157,19 @@ class ClaudeCodeCLI:
             expanded_message = expand_at_command(skill, message)
         except (IOError, ValueError) as e:
             self._console.print(f"[red]Failed to load skill: {e}[/red]")
+            self._store_command_final_content(f"Failed to load skill: {e}")
             return True
 
-        await self._run_agent(expanded_message, has_image=False)
+        self._store_command_final_content(
+            await self._run_agent(expanded_message, has_image=False)
+        )
         return True
 
-    async def _run_agent(self, user_input: UserInputPayload, has_image: bool = False):
+    async def _run_agent(self, user_input: UserInputPayload, has_image: bool = False) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
         self._console.print()
+        final_response: str | None = None
 
         # Inject AGENTS.md (if present) before each user query
         # self._maybe_inject_agents_md()
@@ -1160,6 +1298,7 @@ class ClaudeCodeCLI:
                 elif isinstance(event, FinalResponseEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
+                    final_response = event.content
                     # Check if this was a cancellation
                     if event.content == "[Cancelled by user]":
                         self._console.print()
@@ -1185,6 +1324,7 @@ class ClaudeCodeCLI:
         self._stop_loading(self._loading)
         self._loading = None
         self._console.print()
+        return final_response
 
     async def _on_task_completed(self, result: Any):
         """Handle background task completion notification.
@@ -1241,13 +1381,189 @@ class ClaudeCodeCLI:
                 )
             )
 
+    def _enqueue_local_bridge_input(self, user_input: str) -> BridgeRequest:
+        """Persist one local terminal input into the file-backed bridge."""
+        if self._bridge_store is None:
+            raise RuntimeError("Local bridge is not configured")
+        return self._bridge_store.enqueue_text(
+            user_input,
+            source="local",
+            source_meta={"sender_id": "local-user"},
+            remote_response_required=False,
+        )
+
+    @staticmethod
+    def _is_immediate_local_exit_input(user_input: str) -> bool:
+        """Return whether a terminal input should exit immediately instead of being enqueued."""
+        normalized = user_input.strip().lower()
+        return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
+
+    async def _execute_input_text(self, user_input: str) -> _ExecutionOutcome:
+        """Execute one normalized line of user input."""
+        user_input = user_input.strip()
+        if not user_input:
+            return _ExecutionOutcome()
+
+        # Handle numbered model picker mode
+        if self._model_pick_active:
+            if await self._handle_model_pick_input(user_input):
+                return _ExecutionOutcome()
+
+        # Handle quoted @ image command
+        if is_image_command(user_input):
+            try:
+                parsed = parse_image_command(user_input, self._ctx)
+            except ImageInputError as e:
+                self._console.print(f"[red]{e}[/red]")
+                self._console.print(f"[dim]{IMAGE_USAGE}[/dim]")
+                return _ExecutionOutcome()
+            final_content = await self._run_agent(parsed.content_parts, has_image=True)
+            return _ExecutionOutcome(final_content=final_content or "")
+
+        # Handle @ commands (skill invocation)
+        if is_at_command(user_input):
+            try:
+                handled = await self._handle_at_command(user_input)
+                if handled:
+                    return _ExecutionOutcome(final_content=self._last_command_final_content)
+            except EOFError:
+                return _ExecutionOutcome(continue_running=False, final_content="Goodbye!")
+            return _ExecutionOutcome()
+
+        # Handle slash commands
+        if is_slash_command(user_input):
+            try:
+                handled, final_content = await self._run_slash_command_with_live_capture(user_input)
+                if handled:
+                    return _ExecutionOutcome(final_content=final_content)
+            except EOFError:
+                return _ExecutionOutcome(continue_running=False, final_content="Goodbye!")
+            return _ExecutionOutcome()
+
+        # Handle legacy built-in commands (without slash)
+        if user_input.lower() in ["exit", "quit"]:
+            self._console.print("[yellow]Goodbye![/yellow]")
+            return _ExecutionOutcome(continue_running=False, final_content="Goodbye!")
+
+        if user_input.lower() == "help":
+            self._print_help()
+            return _ExecutionOutcome()
+
+        if user_input.lower() == "pwd":
+            current_dir = f"{self._ctx.working_dir}"
+            self._console.print(f"Current directory: {current_dir}")
+            return _ExecutionOutcome(final_content=current_dir)
+
+        # Run agent
+        final_content = await self._run_agent(user_input, has_image=False)
+        return _ExecutionOutcome(final_content=final_content or "")
+
+    async def _drain_bridge_queue(self) -> bool:
+        """Consume queued bridge requests until no pending work remains."""
+        if self._bridge_store is None:
+            return True
+
+        while True:
+            request = self._bridge_store.claim_next_pending()
+            if request is None:
+                return True
+
+            if request.source == "remote":
+                preview = request.content.strip().replace("\n", " ")
+                if len(preview) > 80:
+                    preview = preview[:77] + "..."
+                self._console.print(
+                    f"\n[bold cyan]Received Remote Task[/bold cyan] "
+                    f"[dim](seq={request.seq}, request_id={request.request_id})[/dim]"
+                )
+                if preview:
+                    self._console.print(f"[dim]{preview}[/dim]")
+
+            try:
+                outcome = await self._execute_input_text(request.content)
+            except Exception as exc:
+                self._bridge_store.fail_request(
+                    request,
+                    final_content=f"Execution failed: {exc}",
+                    error_code="LOCAL_BRIDGE_EXECUTION_ERROR",
+                    error_message=str(exc),
+                )
+                raise
+
+            self._bridge_store.complete_request(request, final_content=outcome.final_content)
+            if not outcome.continue_running:
+                return False
+
+    async def _run_with_bridge_session(self, session: Any) -> None:
+        """Run the interactive loop while continuously draining bridge requests."""
+        prompt_task: asyncio.Task | None = None
+
+        try:
+            while True:
+                if prompt_task is None:
+                    prompt_task = asyncio.create_task(session.prompt_async())
+
+                done, _ = await asyncio.wait(
+                    {prompt_task},
+                    timeout=self.BRIDGE_POLL_INTERVAL_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if prompt_task not in done:
+                    should_continue = await self._drain_bridge_queue()
+                    if not should_continue:
+                        prompt_task.cancel()
+                        try:
+                            await prompt_task
+                        except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                            pass
+                        break
+                    continue
+
+                try:
+                    user_input = await prompt_task
+                except EOFError:
+                    self._console.print("\n[yellow]Goodbye![/yellow]")
+                    break
+                except KeyboardInterrupt:
+                    prompt_task = None
+                    continue
+                finally:
+                    prompt_task = None
+
+                user_input = user_input.strip()
+                if not user_input:
+                    continue
+
+                if self._is_immediate_local_exit_input(user_input):
+                    self._console.print("[yellow]Goodbye![/yellow]")
+                    break
+
+                self._enqueue_local_bridge_input(user_input)
+                should_continue = await self._drain_bridge_queue()
+                if not should_continue:
+                    break
+        finally:
+            if prompt_task is not None and not prompt_task.done():
+                prompt_task.cancel()
+                try:
+                    await prompt_task
+                except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                    pass
+
     async def run(self):
         """Run the interactive CLI."""
         from prompt_toolkit import PromptSession
+        from prompt_toolkit.patch_stdout import patch_stdout
         from prompt_toolkit.styles import Style
 
         # Print welcome
         self._print_welcome()
+
+        if self._bridge_store is not None:
+            should_continue = await self._drain_bridge_queue()
+            if not should_continue:
+                return
 
         # Create key bindings
         kb = KeyBindings()
@@ -1312,6 +1628,11 @@ class ClaudeCodeCLI:
             enable_history_search=True,
         )
 
+        if self._bridge_store is not None:
+            with patch_stdout(raw=True):
+                await self._run_with_bridge_session(session)
+            return
+
         while True:
             try:
                 user_input = await session.prompt_async()
@@ -1325,52 +1646,6 @@ class ClaudeCodeCLI:
             if not user_input:
                 continue
 
-            # Handle numbered model picker mode
-            if self._model_pick_active:
-                if await self._handle_model_pick_input(user_input):
-                    continue
-
-            # Handle quoted @ image command
-            if is_image_command(user_input):
-                try:
-                    parsed = parse_image_command(user_input, self._ctx)
-                except ImageInputError as e:
-                    self._console.print(f"[red]{e}[/red]")
-                    self._console.print(f"[dim]{IMAGE_USAGE}[/dim]")
-                    continue
-                await self._run_agent(parsed.content_parts, has_image=True)
-                continue
-
-            # Handle @ commands (skill invocation)
-            if is_at_command(user_input):
-                try:
-                    if await self._handle_at_command(user_input):
-                        continue
-                except EOFError:
-                    break
-                continue
-
-            # Handle slash commands
-            if is_slash_command(user_input):
-                try:
-                    if await self._handle_slash_command(user_input):
-                        continue
-                except EOFError:
-                    break
-                continue
-
-            # Handle legacy built-in commands (without slash)
-            if user_input.lower() in ["exit", "quit"]:
-                self._console.print("[yellow]Goodbye![/yellow]")
+            outcome = await self._execute_input_text(user_input)
+            if not outcome.continue_running:
                 break
-
-            if user_input.lower() == "help":
-                self._print_help()
-                continue
-
-            if user_input.lower() == "pwd":
-                self._console.print(f"Current directory: {self._ctx.working_dir}")
-                continue
-
-            # Run agent
-            await self._run_agent(user_input, has_image=False)
