@@ -493,18 +493,18 @@ async def main():
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
     if bridge_store is not None:
         console.print(
-            "[dim]Bridge:[/] "
+            "[dim]桥接会话：[/] "
             f"[cyan]{bridge_store.session_binding_id}[/cyan] "
             f"[dim]->[/dim] {bridge_store.bridge_dir}"
         )
     if args.im_enable:
         console.print(
-            "[dim]IM Worker:[/] "
+            "[dim]IM 工作进程：[/] "
             f"worker=[cyan]{args.im_worker_id}[/cyan] "
             f"gateway=[cyan]{args.im_gateway_base_url}[/cyan]"
         )
         if bridge_store is not None:
-            console.print(f"[dim]Worker log:[/] {bridge_store.logs_dir / 'worker.log'}")
+            console.print(f"[dim]工作日志：[/] {bridge_store.logs_dir / 'worker.log'}")
     cli = ClaudeCodeCLI(
         agent=agent,
         context=ctx,
@@ -523,7 +523,7 @@ async def main():
     try:
         await cli.run()
     except KeyboardInterrupt:
-        console.print("\n[yellow]Goodbye![/yellow]")
+        console.print("\n[yellow]再见！[/yellow]")
     finally:
         await _mark_worker_offline(
             worker_id=args.im_worker_id,

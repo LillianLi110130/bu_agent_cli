@@ -118,9 +118,9 @@ def test_ralph_handler_run_requires_spec_name_or_plan_file():
 
         assert handled is True
         rendered = output.getvalue()
-        assert "/ralph run requires <spec_name> or --plan-file." in rendered
-        assert "Usage: /ralph run <spec_name> <optional flags>" in rendered
-        assert "/ralph run --plan-file <path> <optional flags>" in rendered
+        assert "/ralph run 需要提供 <spec_name> 或 --plan-file。" in rendered
+        assert "用法：/ralph run <spec_name> <可选参数>" in rendered
+        assert "/ralph run --plan-file <path> <可选参数>" in rendered
     finally:
         shutil.rmtree(workspace_root, ignore_errors=True)
 
@@ -141,9 +141,9 @@ def test_ralph_handler_dry_run_requires_spec_name_or_plan_file():
 
         assert handled is True
         rendered = output.getvalue()
-        assert "/ralph dry-run requires <spec_name> or --plan-file." in rendered
-        assert "Usage: /ralph dry-run <spec_name> <optional flags>" in rendered
-        assert "/ralph dry-run --plan-file <path> <optional flags>" in rendered
+        assert "/ralph dry-run 需要提供 <spec_name> 或 --plan-file。" in rendered
+        assert "用法：/ralph dry-run <spec_name> <可选参数>" in rendered
+        assert "/ralph dry-run --plan-file <path> <可选参数>" in rendered
     finally:
         shutil.rmtree(workspace_root, ignore_errors=True)
 

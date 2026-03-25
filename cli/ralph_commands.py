@@ -33,14 +33,14 @@ class RalphSlashHandler:
 
     async def handle(self, args: list[str]) -> bool:
         if not args:
-            self.console.print(self._parser.format_help().strip())
+            self.console.print(self._format_help())
             return True
 
         try:
             namespace = self._parser.parse_args(args)
         except RalphArgumentError as exc:
-            self.console.print(f"[red]{exc}[/red]")
-            self.console.print(self._parser.format_help().strip())
+            self.console.print(f"[red]参数错误：{exc}[/red]")
+            self.console.print(self._format_help())
             return True
 
         command = namespace.command
@@ -96,7 +96,7 @@ class RalphSlashHandler:
             result = await self.service.cancel(run_id=namespace.run_id)
             return self._print_result(result.success, result.message)
 
-        self.console.print(f"[red]Unknown Ralph subcommand: {command}[/red]")
+        self.console.print(f"[red]未知 Ralph 子命令：{command}[/red]")
         return True
 
     def _print_result(self, success: bool, message: str) -> bool:
@@ -113,10 +113,25 @@ class RalphSlashHandler:
         if spec_name or plan_file:
             return True
 
-        self.console.print(f"[red]/ralph {command} requires <spec_name> or --plan-file.[/red]")
-        self.console.print(f"[dim]Usage: /ralph {command} <spec_name> <optional flags>[/dim]")
-        self.console.print(f"[dim]   or: /ralph {command} --plan-file <path> <optional flags>[/dim]")
+        self.console.print(f"[red]/ralph {command} 需要提供 <spec_name> 或 --plan-file。[/red]")
+        self.console.print(f"[dim]用法：/ralph {command} <spec_name> <可选参数>[/dim]")
+        self.console.print(f"[dim]   或：/ralph {command} --plan-file <path> <可选参数>[/dim]")
         return False
+
+    def _format_help(self) -> str:
+        return "\n".join(
+            [
+                "Ralph 工作流命令",
+                "",
+                "用法：",
+                "  /ralph init-spec <spec_name> [--target-dir <path>] [--force]",
+                "  /ralph init-agent [--target-dir <path>]",
+                "  /ralph dry-run <spec_name> [--plan-file <path>] [--log-dir <path>] [--max-retry <n>] [--delay <秒>] [--enable-git] [--main-branch <name>] [--work-branch <name>] [--silent]",
+                "  /ralph run <spec_name> [--plan-file <path>] [--log-dir <path>] [--max-retry <n>] [--delay <秒>] [--enable-git] [--main-branch <name>] [--work-branch <name>] [--silent]",
+                "  /ralph status [run_id]",
+                "  /ralph cancel <run_id>",
+            ]
+        )
 
     def _build_parser(self) -> argparse.ArgumentParser:
         parser = RalphArgumentParser(

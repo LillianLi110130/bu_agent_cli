@@ -634,8 +634,8 @@ def test_plugin_slash_handler_can_copy_builtin_plugin_into_workspace():
         assert copy_result.handled is True
         assert reload_result.reloaded is True
         assert copied_plugin.exists()
-        assert "Copied plugin to workspace" in output
-        assert "Run /plugins reload after editing." in output
+        assert "已将插件复制到工作区" in output
+        assert "编辑完成后请运行 /plugins reload。" in output
 
         plugin = manager.get_plugin("review-kit")
         assert plugin is not None
@@ -706,7 +706,7 @@ def test_plugin_slash_handler_uninstall_removes_builtin_even_when_workspace_over
         assert result.reloaded is True
         assert not (builtin_root / "review-kit").exists()
         assert (workspace_plugin_root / "review-kit").exists()
-        assert "uninstalled successfully" in output
+        assert "卸载成功" in output
 
         plugin = manager.get_plugin("review-kit")
         assert plugin is not None
@@ -742,7 +742,7 @@ def test_plugin_slash_handler_uninstall_rejects_workspace_only_plugin():
 
         assert result.handled is True
         assert result.reloaded is False
-        assert "Built-in plugin not found: review-kit" in output
+        assert "未找到内置插件：review-kit" in output
         assert (workspace_plugin_root / "review-kit").exists()
 
         plugin = manager.get_plugin("review-kit")
@@ -752,7 +752,7 @@ def test_plugin_slash_handler_uninstall_rejects_workspace_only_plugin():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-def test_cli_runs_python_plugin_command_and_prints_output_without_agent():
+def test_cli_runs_python_plugin_command_and_prints_output_without_agent(monkeypatch):
     repo_root = Path(__file__).resolve().parent.parent
     temp_root = repo_root / ".pytest_tmp"
     temp_root.mkdir(exist_ok=True)
@@ -784,8 +784,10 @@ def test_cli_runs_python_plugin_command_and_prints_output_without_agent():
             messages=[],
             system_prompt="",
             clear_history=lambda: None,
+            register_hook=lambda hook: None,
         )
         context = SimpleNamespace(working_dir=workspace, subagent_manager=None)
+        monkeypatch.setattr("cli.interactive_input.PromptSession", lambda: SimpleNamespace())
 
         cli = ClaudeCodeCLI(
             agent=agent,

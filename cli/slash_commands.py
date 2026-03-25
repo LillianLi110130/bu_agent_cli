@@ -1,10 +1,4 @@
-"""Slash command system for Claude Code CLI.
-
-Provides autocomplete for slash commands starting with '/', including:
-- Automatic suggestion popup when '/' is pressed
-- Tab completion for commands
-- Command descriptions and metadata
-"""
+"""Slash command system for Claude Code CLI."""
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -13,11 +7,6 @@ from typing import Callable
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
-
-
-# =============================================================================
-# Command Metadata
-# =============================================================================
 
 
 @dataclass
@@ -29,17 +18,12 @@ class SlashCommand:
     usage: str = ""
     handler: Callable[[], str] | Callable[[str], str] | None = None
     is_builtin: bool = True
-    category: str = "General"
+    category: str = "通用"
     examples: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.usage:
             self.usage = f"/{self.name}"
-
-
-# =============================================================================
-# Command Registry
-# =============================================================================
 
 
 class SlashCommandRegistry:
@@ -54,42 +38,42 @@ class SlashCommandRegistry:
         default_commands = [
             SlashCommand(
                 name="help",
-                description="Show available commands and help information",
+                description="显示可用命令与帮助信息",
                 usage="/help",
                 examples=["/help"],
-                category="General",
+                category="通用",
             ),
             SlashCommand(
                 name="exit",
-                description="Exit the CLI application",
+                description="退出 CLI",
                 usage="/exit",
                 examples=["/exit", "/quit"],
-                category="General",
+                category="通用",
             ),
             SlashCommand(
                 name="quit",
-                description="Exit the CLI application (alias for /exit)",
+                description="退出 CLI（/exit 的别名）",
                 usage="/quit",
                 examples=["/quit"],
-                category="General",
+                category="通用",
             ),
             SlashCommand(
                 name="pwd",
-                description="Print current working directory",
+                description="显示当前工作目录",
                 usage="/pwd",
                 examples=["/pwd"],
-                category="File System",
+                category="文件系统",
             ),
             SlashCommand(
                 name="clear",
-                description="Clear the terminal screen",
+                description="清空终端屏幕",
                 usage="/clear",
                 examples=["/clear"],
-                category="General",
+                category="通用",
             ),
             SlashCommand(
                 name="model",
-                description="Open numbered picker or switch model using configured presets",
+                description="打开编号选择器，或切换到已配置的模型预设",
                 usage="/model [show|list|<preset>]",
                 examples=[
                     "/model",
@@ -97,7 +81,7 @@ class SlashCommandRegistry:
                     "/model list",
                     "/model glm",
                 ],
-                category="Settings",
+                category="设置",
             ),
             SlashCommand(
                 name="approval",
@@ -108,74 +92,74 @@ class SlashCommandRegistry:
                     "/approval off",
                     "/approval status",
                 ],
-                category="Settings",
+                category="设置",
             ),
             SlashCommand(
                 name="history",
-                description="Show command history",
+                description="显示命令历史",
                 usage="/history",
                 examples=["/history"],
-                category="General",
+                category="通用",
             ),
             SlashCommand(
                 name="skills",
-                description="List all available @ skills",
+                description="列出所有可用的 @ 技能",
                 usage="/skills",
                 examples=["/skills"],
-                category="Skills",
+                category="技能",
             ),
             SlashCommand(
                 name="reset",
-                description="Reset the conversation context",
+                description="重置会话上下文",
                 usage="/reset",
                 examples=["/reset"],
-                category="Session",
+                category="会话",
             ),
             SlashCommand(
                 name="init",
-                description="Generate AGENTS.md",
+                description="生成 AGENTS.md",
                 usage="/init",
                 examples=["/init"],
-                category="Session",
+                category="会话",
             ),
             SlashCommand(
                 name="tasks",
-                description="List all background tasks",
+                description="列出所有后台任务",
                 usage="/tasks",
                 examples=["/tasks"],
-                category="Background Tasks",
+                category="后台任务",
             ),
             SlashCommand(
                 name="task",
-                description="Get details for a specific background task",
+                description="查看指定后台任务的详情",
                 usage="/task <task_id>",
                 examples=["/task abc123"],
-                category="Background Tasks",
+                category="后台任务",
             ),
             SlashCommand(
                 name="task_cancel",
-                description="Cancel a running background task",
+                description="取消正在运行的后台任务",
                 usage="/task_cancel <task_id>",
                 examples=["/task_cancel abc123"],
-                category="Background Tasks",
+                category="后台任务",
             ),
             SlashCommand(
                 name="allow",
-                description="Add a directory to the sandbox allowed list",
+                description="将目录加入沙箱允许列表",
                 usage="/allow <path>",
                 examples=["/allow /path/to/project", "/allow .."],
-                category="File System",
+                category="文件系统",
             ),
             SlashCommand(
                 name="allowed",
-                description="List all allowed directories in the sandbox",
+                description="列出沙箱中所有已允许的目录",
                 usage="/allowed",
                 examples=["/allowed"],
-                category="File System",
+                category="文件系统",
             ),
             SlashCommand(
                 name="agents",
-                description="Manage agent configurations",
+                description="管理智能体配置",
                 usage="/agents [list|show|create|edit|delete|import|export|validate|reload|templates]",
                 examples=[
                     "/agents",
@@ -187,11 +171,11 @@ class SlashCommandRegistry:
                     "/agents delete old_agent",
                     "/agents templates",
                 ],
-                category="Agents",
+                category="智能体",
             ),
             SlashCommand(
                 name="ralph",
-                description="Run Ralph workflow commands",
+                description="运行 Ralph 工作流命令",
                 usage="/ralph <init-spec|init-agent|dry-run|run|status|cancel> ...",
                 examples=[
                     "/ralph init-spec my_spec",
@@ -205,7 +189,7 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="plugins",
-                description="List, show, copy, install, uninstall, reload built-in plugins",
+                description="列出、查看、复制、安装、卸载和重载内置插件",
                 usage="/plugins [list|show|copy|reload|install|uninstall]",
                 examples=[
                     "/plugins",
@@ -217,7 +201,7 @@ class SlashCommandRegistry:
                     "/plugins uninstall my-plugin",
                     "/plugins uninstall my-plugin --force",
                 ],
-                category="Plugins",
+                category="插件",
             ),
         ]
 
@@ -225,134 +209,56 @@ class SlashCommandRegistry:
             self.register(cmd)
 
     def register(self, command: SlashCommand) -> None:
-        """Register a new slash command.
-
-        Args:
-            command: SlashCommand instance to register
-        """
         self._commands[command.name] = command
 
     def unregister(self, name: str) -> None:
-        """Unregister a slash command.
-
-        Args:
-            name: Command name to unregister
-        """
         if name in self._commands:
             del self._commands[name]
 
     def get(self, name: str) -> SlashCommand | None:
-        """Get a command by name.
-
-        Args:
-            name: Command name to retrieve
-
-        Returns:
-            SlashCommand if found, None otherwise
-        """
         return self._commands.get(name)
 
     def get_all(self) -> list[SlashCommand]:
-        """Get all registered commands.
-
-        Returns:
-            List of all SlashCommand instances
-        """
         return list(self._commands.values())
 
     def get_by_category(self) -> dict[str, list[SlashCommand]]:
-        """Get commands grouped by category.
-
-        Returns:
-            Dictionary mapping category names to lists of commands
-        """
         categories: dict[str, list[SlashCommand]] = {}
         for cmd in self._commands.values():
-            if cmd.category not in categories:
-                categories[cmd.category] = []
-            categories[cmd.category].append(cmd)
+            categories.setdefault(cmd.category, []).append(cmd)
         return categories
 
     def match_prefix(self, prefix: str) -> list[SlashCommand]:
-        """Get all commands matching a prefix.
-
-        Args:
-            prefix: Prefix string to match (without leading /)
-
-        Returns:
-            List of matching SlashCommand instances
-        """
         prefix_lower = prefix.lower()
         return [cmd for cmd in self._commands.values() if cmd.name.lower().startswith(prefix_lower)]
 
 
-# =============================================================================
-# Slash Command Completer
-# =============================================================================
-
-
 class SlashCommandCompleter(Completer):
-    """Completer for slash commands.
-
-    Provides autocompletion for commands starting with '/'.
-    Shows command descriptions in the completion menu.
-    """
+    """Completer for slash commands."""
 
     def __init__(self, registry: SlashCommandRegistry):
         self._registry = registry
 
     def get_completions(self, document: Document, complete_event: CompleteEvent) -> iter:
-        """Get completions for the current document.
-
-        Args:
-            document: The current Document being edited
-            complete_event: The CompleteEvent that triggered this completion
-
-        Yields:
-            Completion objects for matching commands
-        """
         text = document.text_before_cursor
-
-        # Only trigger on '/' or when text starts with '/'
-        if not text or not text[0] == "/":
+        if not text or text[0] != "/":
             return
 
-        # Extract the command part (without arguments)
-        # Remove the leading '/' and get the first word
         command_part = text[1:].split()[0] if len(text) > 1 else ""
-
-        # Find matching commands
         matching_commands = self._registry.match_prefix(command_part)
 
-        # Create completions with rich display
         for cmd in matching_commands:
-            # Calculate the text to be inserted
-            # If the command is already fully typed, add a space
             if command_part == cmd.name:
                 insert_text = cmd.name + " "
             else:
-                # Insert the full command name to replace what user typed
                 insert_text = cmd.name
 
-            # Create display with description
             display = f"/{cmd.name}"
             display_meta = cmd.description
-
-            # Find the position of '/' in the current text
             slash_pos = text.find("/")
-
-            # Find where the command word starts (after '/' and any spaces)
             cmd_word_start = slash_pos + 1
             while cmd_word_start < len(text) and text[cmd_word_start] == " ":
                 cmd_word_start += 1
 
-            # Find the end of the command word (end of first word after spaces)
-            cmd_word_end = cmd_word_start
-            while cmd_word_end < len(text) and text[cmd_word_end] != " ":
-                cmd_word_end += 1
-
-            # Calculate start_position relative to cursor
-            # start_position is negative: how many chars before cursor to start replacing
             cursor_pos = len(text)
             start_position = cmd_word_start - cursor_pos
 
@@ -364,41 +270,18 @@ class SlashCommandCompleter(Completer):
             )
 
 
-# =============================================================================
-# Utilities
-# =============================================================================
-
-
 def is_slash_command(text: str) -> bool:
-    """Check if text is a slash command.
-
-    Args:
-        text: Text to check
-
-    Returns:
-        True if text starts with '/', False otherwise
-    """
     return text.strip().startswith("/")
 
 
 @dataclass(slots=True)
 class ParsedSlashCommand:
-    """Structured result for a slash command parse."""
-
     name: str
     args: list[str]
     args_text: str = ""
 
 
 def parse_slash_command(text: str) -> ParsedSlashCommand:
-    """Parse a slash command into name, arguments, and raw argument text.
-
-    Args:
-        text: Slash command text (e.g., "/model gpt-4o")
-
-    Returns:
-        ParsedSlashCommand with the command name and parsed arguments
-    """
     stripped = text.strip()
     if not stripped.startswith("/"):
         return ParsedSlashCommand(name="", args=[], args_text="")

@@ -103,7 +103,7 @@ class RalphService:
         if result.returncode != 0:
             return RalphCommandResult(
                 False,
-                f"Ralph dry-run failed.\nstderr: {self._tail_text(result.stderr or result.stdout)}",
+                f"Ralph dry-run 执行失败。\nstderr: {self._tail_text(result.stderr or result.stdout)}",
                 {
                     "stdout": result.stdout,
                     "stderr": result.stderr,
@@ -168,11 +168,11 @@ class RalphService:
         return RalphCommandResult(
             True,
             (
-                "Ralph run started.\n"
-                f"run_id: {record.run_id}\n"
-                f"spec: {record.spec_name}\n"
-                f"plan: {record.plan_file}\n"
-                f"log_dir: {record.log_dir}"
+                "Ralph 运行已启动。\n"
+                f"运行 ID：{record.run_id}\n"
+                f"规格：{record.spec_name}\n"
+                f"计划文件：{record.plan_file}\n"
+                f"日志目录：{record.log_dir}"
             ),
             {"run_id": record.run_id, "record": record},
         )
@@ -181,30 +181,30 @@ class RalphService:
         if run_id:
             record = await asyncio.to_thread(self._process_manager.get_status, run_id)
             if record is None:
-                return RalphCommandResult(False, f"Ralph run '{run_id}' not found.")
+                return RalphCommandResult(False, f"未找到 Ralph 运行：{run_id}")
             return RalphCommandResult(True, self._format_record(record), {"record": record})
 
         records = await asyncio.to_thread(self._process_manager.list_runs)
         if not records:
-            return RalphCommandResult(True, "No Ralph runs have been started in this workspace yet.")
+            return RalphCommandResult(True, "当前工作区还没有启动过 Ralph 运行。")
 
-        lines = ["Ralph runs:"]
+        lines = ["Ralph 运行列表："]
         for record in records:
             summary = self._summarize_plan(Path(record.plan_file))
             lines.append(
-                f"- {record.run_id} [{record.status}] spec={record.spec_name} "
-                f"pid={record.pid or '-'} done={summary['done']} failed={summary['failed']} "
-                f"todo={summary['todo']}"
+                f"- {record.run_id} [{self._status_label(record.status)}] "
+                f"规格={record.spec_name} pid={record.pid or '-'} "
+                f"完成={summary['done']} 失败={summary['failed']} 待处理={summary['todo']}"
             )
         return RalphCommandResult(True, "\n".join(lines), {"records": records})
 
     async def cancel(self, *, run_id: str) -> RalphCommandResult:
         record = await asyncio.to_thread(self._process_manager.cancel, run_id)
         if record is None:
-            return RalphCommandResult(False, f"Ralph run '{run_id}' not found.")
+            return RalphCommandResult(False, f"未找到 Ralph 运行：{run_id}")
         return RalphCommandResult(
             True,
-            f"Ralph run '{run_id}' cancelled.\nstatus: {record.status}\npid: {record.pid}",
+            f"Ralph 运行已取消：{run_id}\n状态：{self._status_label(record.status)}\npid：{record.pid}",
             {"record": record},
         )
 
@@ -232,10 +232,10 @@ class RalphService:
             else target_root / spec_name
         )
         if not success:
-            return RalphCommandResult(False, f"Failed to initialize Ralph spec '{spec_name}'.")
+            return RalphCommandResult(False, f"初始化 Ralph 规格失败：{spec_name}")
         return RalphCommandResult(
             True,
-            f"Ralph spec initialized at {target_spec_dir}",
+            f"Ralph 规格已初始化：{target_spec_dir}",
             {"spec_dir": str(target_spec_dir)},
         )
 
@@ -249,10 +249,10 @@ class RalphService:
         )
         target_root = Path(normalized_target_dir).resolve()
         if not success:
-            return RalphCommandResult(False, "Failed to initialize .devagent settings.")
+            return RalphCommandResult(False, ".devagent 配置初始化失败。")
         return RalphCommandResult(
             True,
-            f".devagent initialized at {target_root / '.devagent'}",
+            f".devagent 已初始化：{target_root / '.devagent'}",
             {"devagent_dir": str(target_root / '.devagent')},
         )
 
@@ -262,7 +262,7 @@ class RalphService:
             self._ralph_init_script,
         )
         if spec is None or spec.loader is None:
-            raise RuntimeError(f"Unable to load {self._ralph_init_script}")
+            raise RuntimeError(f"无法加载 {self._ralph_init_script}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module.RalphInitializer()
@@ -294,7 +294,7 @@ class RalphService:
             return paths
 
         if not plan_file:
-            raise ValueError("spec_name or plan_file is required")
+            raise ValueError("必须提供 spec_name 或 plan_file")
 
         plan_path = Path(plan_file).resolve()
         plan_dir_path = plan_path.parent
@@ -313,13 +313,13 @@ class RalphService:
 
     def _check_loop_ready(self, paths: RalphPaths) -> str | None:
         if not self._ralph_loop_script.exists():
-            return f"Ralph loop script not found: {self._ralph_loop_script}"
+            return f"未找到 Ralph 循环脚本：{self._ralph_loop_script}"
         if not paths.plan_file.exists():
-            return f"Plan file not found: {paths.plan_file}"
+            return f"未找到计划文件：{paths.plan_file}"
         if not self._implement_prompt.exists():
-            return f"Implement prompt not found: {self._implement_prompt}"
+            return f"未找到实现提示词：{self._implement_prompt}"
         if shutil.which("devagent") is None:
-            return "devagent command not found in PATH."
+            return "在 PATH 中未找到 devagent 命令。"
         return None
 
     def _build_loop_command(
@@ -389,25 +389,25 @@ class RalphService:
     def _format_record(self, record: RalphRunRecord) -> str:
         summary = self._summarize_plan(Path(record.plan_file))
         lines = [
-            f"run_id: {record.run_id}",
-            f"status: {record.status}",
-            f"spec: {record.spec_name}",
-            f"pid: {record.pid or '-'}",
-            f"started_at: {record.started_at}",
-            f"ended_at: {record.ended_at or '-'}",
-            f"exit_code: {record.exit_code if record.exit_code is not None else '-'}",
-            f"plan_file: {record.plan_file}",
-            f"log_dir: {record.log_dir}",
-            f"stdout_log: {record.stdout_log}",
-            f"stderr_log: {record.stderr_log}",
+            f"运行 ID：{record.run_id}",
+            f"状态：{self._status_label(record.status)}",
+            f"规格：{record.spec_name}",
+            f"pid：{record.pid or '-'}",
+            f"开始时间：{record.started_at}",
+            f"结束时间：{record.ended_at or '-'}",
+            f"退出码：{record.exit_code if record.exit_code is not None else '-'}",
+            f"计划文件：{record.plan_file}",
+            f"日志目录：{record.log_dir}",
+            f"stdout 日志：{record.stdout_log}",
+            f"stderr 日志：{record.stderr_log}",
             (
-                "plan_summary: "
-                f"done={summary['done']} failed={summary['failed']} todo={summary['todo']} "
-                f"other={summary['other']}"
+                "计划摘要："
+                f"完成={summary['done']} 失败={summary['failed']} 待处理={summary['todo']} "
+                f"其他={summary['other']}"
             ),
         ]
         if record.error:
-            lines.append(f"error: {record.error}")
+            lines.append(f"错误：{record.error}")
         return "\n".join(lines)
 
     def _summarize_plan(self, plan_file: Path) -> dict[str, int]:
@@ -462,10 +462,21 @@ class RalphService:
     def _tail_text(self, text: str, max_chars: int = 1600) -> str:
         normalized = (text or "").strip()
         if not normalized:
-            return "(no output)"
+            return "（无输出）"
         if len(normalized) <= max_chars:
             return normalized
         return "..." + normalized[-max_chars:]
+
+    @staticmethod
+    def _status_label(status: str) -> str:
+        return {
+            "running": "运行中",
+            "completed": "已完成",
+            "failed": "失败",
+            "cancelled": "已取消",
+            "finished": "已结束",
+            "unknown": "未知",
+        }.get(status, status)
 
     def _normalize_target_dir(self, target_dir: str, *, keep_dot: bool = True) -> str:
         target_dir = (target_dir or ".").strip()

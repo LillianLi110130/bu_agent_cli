@@ -30,7 +30,7 @@ _QUOTED_IMAGE_RE = re.compile(
     r"^@\s*(?P<quote>['\"])(?P<path>.+?)(?P=quote)(?P<message>.*)$",
     flags=re.DOTALL,
 )
-IMAGE_USAGE = "Usage: @\"<image_path>\"<message> or @'<image_path>'<message>"
+IMAGE_USAGE = "用法：@\"<图片路径>\"<消息> 或 @'<图片路径>'<消息>"
 
 
 class ImageInputError(ValueError):
@@ -61,8 +61,8 @@ def parse_image_command(
     stripped = text.strip()
     if _LEGACY_IMG_RE.match(stripped):
         raise ImageInputError(
-            "Legacy @img syntax was removed. "
-            "Use @\"<image_path>\"<message> or @'<image_path>'<message>."
+            "旧版 @img 语法已移除。"
+            "请使用 @\"<图片路径>\"<消息> 或 @'<图片路径>'<消息>。"
         )
 
     match = _QUOTED_IMAGE_RE.match(stripped)
@@ -72,32 +72,30 @@ def parse_image_command(
     path_part = match.group("path").strip()
     user_text = match.group("message")
     if not path_part:
-        raise ImageInputError("Image path is empty.")
+        raise ImageInputError("图片路径不能为空。")
 
     try:
         resolved = ctx.resolve_path(path_part)
     except Exception as e:
-        raise ImageInputError(f"Invalid path: {e}") from e
+        raise ImageInputError(f"路径无效：{e}") from e
 
     if not resolved.exists():
-        raise ImageInputError(f"Image not found: {resolved}")
+        raise ImageInputError(f"未找到图片：{resolved}")
     if not resolved.is_file():
-        raise ImageInputError(f"Path is not a file: {resolved}")
+        raise ImageInputError(f"路径不是文件：{resolved}")
 
     mime_type = _detect_supported_mime_type(resolved)
     if mime_type is None:
         supported = ", ".join(sorted(SUPPORTED_IMAGE_MIME_TYPES))
-        raise ImageInputError(
-            f"Unsupported image type for '{resolved.name}'. Supported: {supported}"
-        )
+        raise ImageInputError(f"不支持图片类型“{resolved.name}”。支持的类型：{supported}")
 
     try:
         raw_bytes = resolved.read_bytes()
     except OSError as e:
-        raise ImageInputError(f"Failed to read image: {resolved} ({e})") from e
+        raise ImageInputError(f"读取图片失败：{resolved}（{e}）") from e
     if len(raw_bytes) > MAX_IMAGE_BYTES:
         raise ImageInputError(
-            f"Image is too large: {len(raw_bytes)} bytes (max {MAX_IMAGE_BYTES} bytes)"
+            f"图片过大：{len(raw_bytes)} 字节（最大 {MAX_IMAGE_BYTES} 字节）"
         )
 
     prompt = user_text.strip() or default_prompt

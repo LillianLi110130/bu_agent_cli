@@ -116,7 +116,7 @@ class _CLIHumanApprovalHandler:
 class _LoadingIndicator:
     """A simple loading indicator using direct stdout with ANSI codes."""
 
-    def __init__(self, message: str = "Thinking"):
+    def __init__(self, message: str = "思考中"):
         self.message = message
         self._stop_event = threading.Event()
         self._thread = None
@@ -162,7 +162,7 @@ class _LoadingIndicator:
 class _SafeLoadingIndicator:
     """A loading indicator that avoids ANSI escapes and non-ASCII glyphs."""
 
-    def __init__(self, message: str = "Thinking"):
+    def __init__(self, message: str = "思考中"):
         self.message = message
         self._stop_event = threading.Event()
         self._thread = None
@@ -335,13 +335,13 @@ class ClaudeCodeCLI:
             data = json.loads(raw)
         except Exception as e:
             self._console.print(
-                f"[yellow]Failed to load model presets: {e}[/yellow]"
+                f"[yellow]加载模型预设失败：{e}[/yellow]"
             )
             return {}
 
         if not isinstance(data, dict):
             self._console.print(
-                "[yellow]model_presets.json must be a JSON object.[/yellow]"
+                "[yellow]model_presets.json 必须是一个 JSON 对象。[/yellow]"
             )
             return {}
 
@@ -524,39 +524,39 @@ class ClaudeCodeCLI:
         """Print the current model configuration."""
         model = str(self._agent.llm.model)
         base_url = getattr(self._agent.llm, "base_url", None)
-        base_url_display = str(base_url) if base_url else "(default)"
+        base_url_display = str(base_url) if base_url else "(默认)"
         preset_name = self._resolve_current_preset_name()
-        preset_line = preset_name or "(unmatched)"
+        preset_line = preset_name or "(未匹配预设)"
         if preset_name and self._preset_supports_vision(preset_name):
-            preset_line += " [vision]"
-        self._console.print(f"Current model: [cyan]{model}[/cyan]")
-        self._console.print(f"Preset: [dim]{preset_line}[/dim]")
-        self._console.print(f"Base URL: [dim]{base_url_display}[/dim]")
-        self._console.print(f"Context messages: [dim]{len(self._agent.messages)}[/dim]")
+            preset_line += " [视觉]"
+        self._console.print(f"当前模型： [cyan]{model}[/cyan]")
+        self._console.print(f"预设： [dim]{preset_line}[/dim]")
+        self._console.print(f"接口地址： [dim]{base_url_display}[/dim]")
+        self._console.print(f"上下文消息数： [dim]{len(self._agent.messages)}[/dim]")
 
     def _print_model_presets(self):
         """Print configured model presets."""
         if not self._model_presets:
             self._console.print(
-                f"[yellow]No model presets found at {self._model_presets_path}[/yellow]"
+                f"[yellow]未在 {self._model_presets_path} 找到模型预设[/yellow]"
             )
             return
 
-        self._console.print("[bold cyan]Model presets:[/bold cyan]")
+        self._console.print("[bold cyan]模型预设：[/bold cyan]")
         for name, preset in self._model_presets.items():
             model = str(preset["model"])
-            base_url = str(preset.get("base_url", "(inherit current)"))
+            base_url = str(preset.get("base_url", "(继承当前配置)"))
             api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
-            vision_marker = " vision" if self._preset_supports_vision(name) else ""
+            vision_marker = " 视觉" if self._preset_supports_vision(name) else ""
             marker = (
-                " [green](default)[/green]"
+                " [green](默认)[/green]"
                 if name == self._default_model_preset
                 else ""
             )
             if name == self._auto_vision_preset:
-                marker += " [magenta](auto-vision)[/magenta]"
+                marker += " [magenta](自动视觉)[/magenta]"
             if name == self._image_summary_preset:
-                marker += " [blue](image-summary)[/blue]"
+                marker += " [blue](图像摘要)[/blue]"
             self._console.print(
                 f"  [cyan]{name}[/cyan]{marker} -> {model} "
                 f"[dim]{vision_marker}[/dim] "
@@ -574,7 +574,7 @@ class ClaudeCodeCLI:
     def _start_model_pick_mode(self):
         """Show numbered model presets and enter pick mode."""
         if not self._model_presets:
-            self._console.print("[yellow]No model presets configured.[/yellow]")
+            self._console.print("[yellow]未配置模型预设。[/yellow]")
             self._model_pick_active = False
             self._model_pick_order = []
             return
@@ -584,25 +584,25 @@ class ClaudeCodeCLI:
         current_preset = self._resolve_current_preset_name()
 
         self._console.print()
-        self._console.print("[bold cyan]Select a model preset:[/bold cyan]")
+        self._console.print("[bold cyan]请选择模型预设：[/bold cyan]")
         for idx, name in enumerate(self._model_pick_order, 1):
             preset = self._model_presets[name]
             model = str(preset["model"])
             markers: list[str] = []
             if name == current_preset:
-                markers.append("current")
+                markers.append("当前")
             if name == self._default_model_preset:
-                markers.append("default")
+                markers.append("默认")
             if self._preset_supports_vision(name):
-                markers.append("vision")
+                markers.append("视觉")
             if name == self._auto_vision_preset:
-                markers.append("auto-vision")
+                markers.append("自动视觉")
             if name == self._image_summary_preset:
-                markers.append("image-summary")
+                markers.append("图像摘要")
             marker_text = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
             self._console.print(f"  {idx}. [cyan]{name}[/cyan] -> {model}{marker_text}")
         self._console.print(
-            "[dim]Type the number and press Enter to switch, or 'q' to cancel.[/dim]"
+            "[dim]输入编号后回车即可切换，输入 q 可取消。[/dim]"
         )
 
     async def _handle_model_pick_input(self, user_input: str) -> bool:
@@ -612,23 +612,23 @@ class ClaudeCodeCLI:
 
         value = user_input.strip()
         if not value:
-            self._console.print("[dim]Enter a number, or 'q' to cancel.[/dim]")
+            self._console.print("[dim]请输入编号，或输入 q 取消。[/dim]")
             return True
 
         if value.lower() in {"q", "quit", "cancel", "exit"}:
             self._model_pick_active = False
             self._model_pick_order = []
-            self._console.print("[yellow]Model selection cancelled.[/yellow]")
+            self._console.print("[yellow]已取消模型选择。[/yellow]")
             return True
 
         if not value.isdigit():
-            self._console.print("[red]Invalid selection. Please enter a number.[/red]")
+            self._console.print("[red]选择无效，请输入编号。[/red]")
             return True
 
         index = int(value)
         if index < 1 or index > len(self._model_pick_order):
             self._console.print(
-                f"[red]Selection out of range. Choose 1-{len(self._model_pick_order)}.[/red]"
+                f"[red]选择超出范围，请输入 1-{len(self._model_pick_order)}。[/red]"
             )
             return True
 
@@ -687,7 +687,7 @@ class ClaudeCodeCLI:
         final_content = self._last_command_final_content or mirror.export_text()
         return handled, final_content
 
-    def _start_loading(self, message: str = "Thinking") -> _SafeLoadingIndicator:
+    def _start_loading(self, message: str = "思考中") -> _SafeLoadingIndicator:
         """Start a loading animation."""
         loading = _SafeLoadingIndicator(message)
         loading.start()
@@ -704,60 +704,66 @@ class ClaudeCodeCLI:
         self._console.print(
             Panel(
                 f"[bold cyan]Claude Code CLI[/bold cyan]\n\n"
-                f"Type your message and press Enter to send.\n"
-                f"Press [cyan]/[/cyan] to see available commands.\n"
-                f"Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see available skills.\n"
-                f"Use [cyan]@\"<path>\"<message>[/cyan] or "
-                f"[cyan]@'<path>'<message>[/cyan] for image input.\n"
-                f"Press Ctrl+D or type [cyan]/exit[/cyan] to quit.\n",
-                title="[bold blue]Welcome[/bold blue]",
+                f"输入消息后按 Enter 发送。\n"
+                f"按 [cyan]/[/cyan] 可查看可用命令。\n"
+                f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
+                f"可使用 [cyan]@\"<path>\"<message>[/cyan] 或 "
+                f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
+                f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
+                title="[bold blue]欢迎[/bold blue]",
                 border_style="bright_blue",
             )
         )
 
         # Show sandbox info
         self._console.print()
-        self._console.print(f"[dim]Working directory:[/] {self._ctx.working_dir}")
-        self._console.print(f"[dim]Model:[/] {self._agent.llm.model}")
-        self._console.print(f"[dim]Tools:[/] bash, resolve_path, read, write, edit, glob, grep, todos")
-        self._console.print(f"[dim]Slash Commands:[/] Press [cyan]/[/cyan] + [cyan]Tab[/cyan] to see all")
-        self._console.print(f"[dim]Skill Commands:[/] Press [cyan]@[/cyan] + [cyan]Tab[/cyan] to see all")
+        self._console.print(f"[dim]工作目录：[/] {self._ctx.working_dir}")
+        self._console.print(f"[dim]模型：[/] {self._agent.llm.model}")
+        self._console.print(
+            f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
+        )
+        self._console.print(
+            f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部"
+        )
+        self._console.print(
+            f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部"
+        )
         self._console.print(
             "[dim]审批模式：[/]已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
         )
         if self._model_presets:
             self._console.print(
-                f"[dim]Model presets:[/] {', '.join(self._model_presets.keys())}"
+                f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}"
             )
         self._console.print()
 
     def _print_help(self):
         """Print help information."""
         help_text = """
-[bold cyan]Available Commands:[/bold cyan]
+[bold cyan]可用命令：[/bold cyan]
 
-  [blue]help[/blue]          - Show this help message
-  [blue]exit[/blue]          - Exit the CLI
-  [blue]pwd[/blue]           - Print current working directory
-  [blue]ls [path][/blue]     - List files in directory (AI can do this too)
+  [blue]help[/blue]          - 显示帮助信息
+  [blue]exit[/blue]          - 退出 CLI
+  [blue]pwd[/blue]           - 显示当前工作目录
+  [blue]ls [path][/blue]     - 列出目录中的文件（AI 也可以完成）
   [blue]/approval on|off|status[/blue] - 控制高风险工具的人类审批开关
 
-[bold cyan]Available Tools (for AI):[/bold cyan]
+[bold cyan]可用工具（供 AI 使用）：[/bold cyan]
 
-  [blue]bash <cmd>[/blue]    - Run shell commands
-  [blue]resolve_path <query>[/blue] - Resolve an approximate path
-  [blue]read <file>[/blue]   - Read file contents
-  [blue]write <file>[/blue]  - Write content to file
-  [blue]edit <file>[/blue]   - Edit file (replace text)
-  [blue]glob <pattern>[/blue]- Find files by pattern
-  [blue]grep <pattern>[/blue] - Search file contents
-  [blue]todos[/blue]         - Manage todo list
+  [blue]bash <cmd>[/blue]    - 执行 shell 命令
+  [blue]resolve_path <query>[/blue] - 解析近似路径
+  [blue]read <file>[/blue]   - 读取文件内容
+  [blue]write <file>[/blue]  - 写入文件内容
+  [blue]edit <file>[/blue]   - 编辑文件（替换文本）
+  [blue]glob <pattern>[/blue]- 按模式查找文件
+  [blue]grep <pattern>[/blue] - 搜索文件内容
+  [blue]todos[/blue]         - 管理待办事项
 
-[bold cyan]Tips:[/boldcyan]
+[bold cyan]提示：[/boldcyan]
 
-  - Just type your request naturally, e.g., "List all Python files"
-  - Send image input with [blue]@"<path>"<message>[/blue] or [blue]@'<path>'<message>[/blue]
-  - The AI will use tools automatically to help you
+  - 直接自然地输入你的需求，例如“列出所有 Python 文件”
+  - 可使用 [blue]@"<path>"<message>[/blue] 或 [blue]@'<path>'<message>[/blue] 发送图片输入
+  - AI 会自动使用工具帮助你
 """
         self._console.print(Panel(help_text, border_style="dim"))
 
@@ -815,12 +821,12 @@ class ClaudeCodeCLI:
     def _print_slash_help(self):
         """Print slash command help information."""
         self._console.print()
-        self._console.print("[bold cyan]Slash Commands:[/bold cyan]")
-        self._console.print("[dim]Press / to see available commands, Tab to autocomplete[/dim]")
-        self._console.print("[bold cyan]Skill Commands (@):[/bold cyan]")
-        self._console.print("[dim]Use @<skill-name> to invoke skills, Tab to autocomplete[/dim]")
+        self._console.print("[bold cyan]Slash 命令：[/bold cyan]")
+        self._console.print("[dim]输入 / 可查看可用命令，按 Tab 可自动补全[/dim]")
+        self._console.print("[bold cyan]技能命令（@）：[/bold cyan]")
+        self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
         self._console.print(
-            "[dim]Use @\"<path>\"<message> or @'<path>'<message> for image input[/dim]"
+            "[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]"
         )
         self._console.print()
 
@@ -839,16 +845,16 @@ class ClaudeCodeCLI:
         """
         cmd = self._slash_registry.get(command_name)
         if not cmd:
-            self._console.print(f"[red]Unknown command: /{command_name}[/red]")
+            self._console.print(f"[red]未知命令：/{command_name}[/red]")
             return
 
         self._console.print()
         self._console.print(Panel(
             f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
             f"[dim]{cmd.description}[/dim]\n\n"
-            f"[bold]Usage:[/bold] {cmd.usage}\n\n"
-            + (f"[bold]Examples:[/bold]\n" + "\n".join(f"  • {ex}" for ex in cmd.examples) if cmd.examples else ""),
-            title="[bold blue]Command Details[/bold blue]",
+            f"[bold]用法：[/bold] {cmd.usage}\n\n"
+            + (f"[bold]示例：[/bold]\n" + "\n".join(f"  - {ex}" for ex in cmd.examples) if cmd.examples else ""),
+            title="[bold blue]命令详情[/bold blue]",
             border_style="bright_blue",
         ))
         self._console.print()
@@ -880,7 +886,7 @@ class ClaudeCodeCLI:
 
         # Handle exit/quit commands
         if command_name in ("exit", "quit", "q"):
-            self._console.print("[yellow]Goodbye![/yellow]")
+            self._console.print("[yellow]再见！[/yellow]")
             raise EOFError()
 
         # Handle pwd command
@@ -900,7 +906,7 @@ class ClaudeCodeCLI:
                 return True
 
             if len(args) > 1:
-                self._console.print("[red]Usage: /model [show|list|<preset>][/red]")
+                self._console.print("[red]用法：/model [show|list|<preset>][/red]")
                 return True
 
             subcommand = args[0].lower()
@@ -931,7 +937,7 @@ class ClaudeCodeCLI:
         # Handle reset command
         if command_name == "reset":
             self._agent.clear_history()
-            self._console.print("[yellow]Conversation context reset.[/yellow]")
+            self._console.print("[yellow]会话上下文已重置。[/yellow]")
             return True
 
         if command_name == "init":
@@ -968,40 +974,40 @@ class ClaudeCodeCLI:
                 content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
                 content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE)
             out_path.write_text(content, encoding="utf-8")
-            self._console.print("[yellow]Generated AGENTS.md[/yellow]")
+            self._console.print("[yellow]已生成 AGENTS.md[/yellow]")
             return True
 
         if command_name == "tasks":
             if not self._ctx.subagent_manager:
-                self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
+                self._console.print("[yellow]子智能体管理器未初始化。[/yellow]")
                 return True
             tasks_info = self._ctx.subagent_manager.list_all_tasks()
-            self._console.print("[bold cyan]Background Tasks:[/bold cyan]")
+            self._console.print("[bold cyan]后台任务：[/bold cyan]")
             self._console.print(tasks_info)
             return True
 
         if command_name == "task":
             if not self._ctx.subagent_manager:
-                self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
+                self._console.print("[yellow]子智能体管理器未初始化。[/yellow]")
                 return True
             if not args:
-                self._console.print("[red]Usage: /task <task_id>[/red]")
+                self._console.print("[red]用法：/task <task_id>[/red]")
                 return True
             task_id = args[0]
             task_info = self._ctx.subagent_manager.get_task_status(task_id)
             if task_info is None:
-                self._console.print(f"[red]Task '{task_id}' not found.[/red]")
+                self._console.print(f"[red]未找到任务“{task_id}”。[/red]")
                 return True
-            self._console.print("[bold cyan]Task Details:[/bold cyan]")
+            self._console.print("[bold cyan]任务详情：[/bold cyan]")
             self._console.print(task_info)
             return True
 
         if command_name == "task_cancel":
             if not self._ctx.subagent_manager:
-                self._console.print("[yellow]Subagent manager not initialized.[/yellow]")
+                self._console.print("[yellow]子智能体管理器未初始化。[/yellow]")
                 return True
             if not args:
-                self._console.print("[red]Usage: /task_cancel <task_id>[/red]")
+                self._console.print("[red]用法：/task_cancel <task_id>[/red]")
                 return True
             task_id = args[0]
             result = await self._ctx.subagent_manager.cancel_task(task_id)
@@ -1010,7 +1016,7 @@ class ClaudeCodeCLI:
 
         # Handle history command
         if command_name == "history":
-            self._console.print("[dim]Command history not implemented yet.[/dim]")
+            self._console.print("[dim]命令历史尚未实现。[/dim]")
             return True
 
         # Handle skills command - list available @ skills
@@ -1021,13 +1027,13 @@ class ClaudeCodeCLI:
         # Handle allow command - add directory to sandbox
         if command_name == "allow":
             if not args:
-                self._console.print("[red]Usage: /allow <path>[/red]")
-                self._console.print("[dim]Example: /allow /path/to/project[/dim]")
+                self._console.print("[red]用法：/allow <path>[/red]")
+                self._console.print("[dim]示例：/allow /path/to/project[/dim]")
             else:
                 path_str = " ".join(args)
                 try:
                     added_path = self._ctx.add_allowed_dir(path_str)
-                    self._console.print(f"[green]Added to allowed directories:[/] {added_path}")
+                    self._console.print(f"[green]已加入允许目录：[/] {added_path}")
                 except SecurityError as e:
                     self._console.print(f"[red]{e}[/red]")
             return True
@@ -1035,7 +1041,7 @@ class ClaudeCodeCLI:
         # Handle allowed command - list allowed directories
         if command_name == "allowed":
             self._console.print()
-            self._console.print("[bold cyan]Allowed Directories:[/bold cyan]")
+            self._console.print("[bold cyan]允许目录：[/bold cyan]")
             for i, allowed_dir in enumerate(self._ctx.allowed_dirs, 1):
                 # 标记当前工作目录
                 marker = " [dim](current)[/]" if str(allowed_dir.resolve()) == str(self._ctx.working_dir.resolve()) else ""
@@ -1055,7 +1061,7 @@ class ClaudeCodeCLI:
 
         if command_name == "plugins":
             if self._plugin_manager is None:
-                self._console.print("[yellow]Plugin manager not configured.[/yellow]")
+                self._console.print("[yellow]插件管理器未配置。[/yellow]")
                 return True
 
             handler = PluginSlashHandler(
@@ -1099,8 +1105,8 @@ class ClaudeCodeCLI:
                 return True
 
         # Unknown command
-        self._console.print(f"[red]Unknown command: /{command_name}[/red]")
-        self._console.print(f"[dim]Type /help for available commands.[/dim]")
+        self._console.print(f"[red]未知命令：/{command_name}[/red]")
+        self._console.print(f"[dim]输入 /help 查看可用命令。[/dim]")
         return True
 
     def _refresh_system_prompt(self) -> None:
@@ -1109,14 +1115,14 @@ class ClaudeCodeCLI:
             return
         self._agent.system_prompt = self._system_prompt_builder()
         self._agent.clear_history()
-        self._console.print("[yellow]Conversation context reset after plugin reload.[/yellow]")
+        self._console.print("[yellow]插件重载后会话上下文已重置。[/yellow]")
 
     def _print_available_skills(self):
         """Print all available @ skills grouped by category."""
         self._console.print()
-        self._console.print("[bold cyan]Available Skills (@):[/bold cyan]")
+        self._console.print("[bold cyan]可用技能（@）：[/bold cyan]")
         self._console.print(
-            "[dim]Use @<skill-name> to load a skill before your message[/dim]"
+            "[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]"
         )
         self._console.print(
             "[dim]Image input: @\"<path>\"<message> or @'<path>'<message>[/dim]"
@@ -1125,7 +1131,7 @@ class ClaudeCodeCLI:
 
         categories = self._at_registry.get_by_category()
         if not categories:
-            self._console.print("[yellow]No skills found.[/yellow]")
+            self._console.print("[yellow]未找到技能。[/yellow]")
             self._console.print()
             return
 
@@ -1140,24 +1146,24 @@ class ClaudeCodeCLI:
         self._store_command_final_content("")
         skill_name, message = parse_at_command(text)
         if not skill_name:
-            self._console.print("[yellow]Invalid @ command.[/yellow]")
-            self._console.print("[dim]Type @ and press Tab to see available skills.[/dim]")
-            self._store_command_final_content("Invalid @ command.\nType @ and press Tab to see available skills.")
+            self._console.print("[yellow]无效的 @ 命令。[/yellow]")
+            self._console.print("[dim]输入 @ 后按 Tab 可查看可用技能。[/dim]")
+            self._store_command_final_content("无效的 @ 命令。\n输入 @ 后按 Tab 可查看可用技能。")
             return True
 
         skill = self._at_registry.get(skill_name)
         if not skill:
-            self._console.print(f"[yellow]Skill not found: @{skill_name}[/yellow]")
-            self._console.print("[dim]Use /skills to list available skills.[/dim]")
-            self._store_command_final_content(f"Skill not found: @{skill_name}\nUse /skills to list available skills.")
+            self._console.print(f"[yellow]未找到技能：@{skill_name}[/yellow]")
+            self._console.print("[dim]使用 /skills 查看可用技能列表。[/dim]")
+            self._store_command_final_content(f"未找到技能：@{skill_name}\n使用 /skills 查看可用技能列表。")
             return True
 
-        self._console.print(f"[cyan]Using @{skill.name}...[/cyan]")
+        self._console.print(f"[cyan]正在使用 @{skill.name}...[/cyan]")
         try:
             expanded_message = expand_at_command(skill, message)
         except (IOError, ValueError) as e:
-            self._console.print(f"[red]Failed to load skill: {e}[/red]")
-            self._store_command_final_content(f"Failed to load skill: {e}")
+            self._console.print(f"[red]加载技能失败：{e}[/red]")
+            self._store_command_final_content(f"加载技能失败：{e}")
             return True
 
         self._store_command_final_content(
@@ -1175,10 +1181,10 @@ class ClaudeCodeCLI:
         # self._maybe_inject_agents_md()
 
         # Start loading animation
-        self._loading = self._start_loading("Thinking")
+        self._loading = self._start_loading("思考中")
 
         # Show cancel hint
-        self._console.print("[dim]Press 'q' to cancel this run[/dim]")
+        self._console.print("[dim]按 q 可取消本次运行[/dim]")
 
         # Create cancellation event for 'q' key
         import asyncio
@@ -1245,7 +1251,7 @@ class ClaudeCodeCLI:
                 # This check is for final confirmation
                 if cancel_event.is_set():
                     self._console.print()
-                    self._console.print("[yellow]Agent run cancelled by user (q key)[/yellow]")
+                    self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     break
 
                 if isinstance(event, ToolCallEvent):
@@ -1258,14 +1264,14 @@ class ClaudeCodeCLI:
                         args_str += "..."
                     self._console.print()
                     self._console.print(
-                        f"[{self.COLOR_TOOL_CALL}]Step {self._step_number}:[/] "
+                        f"[{self.COLOR_TOOL_CALL}]步骤 {self._step_number}：[/] "
                         f"[bold]{event.tool}[/]"
                     )
-                    self._console.print(f"  [dim]Args: {args_str}[/]")
-                    self._console.print("  [dim](Press 'q' to cancel)[/dim]")
+                    self._console.print(f"  [dim]参数：{args_str}[/]")
+                    self._console.print("  [dim]（按 q 可取消）[/dim]")
 
-                    # Start "Executing" loading while tool runs
-                    self._loading = self._start_loading("Executing")
+                    # Start loading while the tool runs.
+                    self._loading = self._start_loading("执行中")
 
                 elif isinstance(event, ToolResultEvent):
                     self._stop_loading(self._loading)
@@ -1273,22 +1279,22 @@ class ClaudeCodeCLI:
 
                     result = str(event.result)
                     if event.is_error:
-                        self._console.print(f"  [{self.COLOR_ERROR}]Error: {result[:200]}[/]")
+                        self._console.print(f"  [{self.COLOR_ERROR}]错误：{result[:200]}[/]")
                     else:
                         if len(result) > 300:
                             self._console.print(
-                                f"  [{self.COLOR_TOOL_RESULT}]Result: {result[:300]}...[/]"
+                                f"  [{self.COLOR_TOOL_RESULT}]结果：{result[:300]}...[/]"
                             )
                         else:
-                            self._console.print(f"  [{self.COLOR_TOOL_RESULT}]Result: {result}[/]")
+                            self._console.print(f"  [{self.COLOR_TOOL_RESULT}]结果：{result}[/]")
 
-                    # Restart "Thinking" loading for next LLM call
-                    self._loading = self._start_loading("Thinking")
+                    # Restart loading for the next LLM call.
+                    self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    self._console.print(f"[{self.COLOR_THINKING}]Thinking: {event.content}[/]")
+                    self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, TextEvent):
                     self._stop_loading(self._loading)
@@ -1302,7 +1308,7 @@ class ClaudeCodeCLI:
                     # Check if this was a cancellation
                     if event.content == "[Cancelled by user]":
                         self._console.print()
-                        self._console.print("[yellow]Agent run cancelled by user (q key)[/yellow]")
+                        self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     else:
                         self._console.print()
                         self._console.print()
@@ -1310,7 +1316,7 @@ class ClaudeCodeCLI:
         except Exception as e:
             self._stop_loading(self._loading)
             self._loading = None
-            self._console.print(f"[{self.COLOR_ERROR}]Error: {e}[/]")
+            self._console.print(f"[{self.COLOR_ERROR}]错误：{e}[/]")
         finally:
             # Cancel the listener task
             cancel_event.set()
@@ -1346,14 +1352,14 @@ class ClaudeCodeCLI:
             self._console.print()
             self._console.print(
                 Panel(
-                    f"[{status_color}]{status_emoji} Task Completed:[/{status_color}]\n"
-                    f"[bold]Subagent:[/] {result.subagent_name}\n"
-                    f"[bold]Task ID:[/] {result.task_id}\n"
-                    f"[bold]Execution Time:[/] {result.execution_time_ms:.0f}ms\n"
-                    f"[bold]Tools Used:[/] {', '.join(result.tools_used) if result.tools_used else 'None'}\n"
-                    f"[bold]Result:[/] {result.final_response[:500]}..."
+                    f"[{status_color}]{status_emoji} 任务已完成：[/{status_color}]\n"
+                    f"[bold]子智能体：[/] {result.subagent_name}\n"
+                    f"[bold]任务 ID：[/] {result.task_id}\n"
+                    f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
+                    f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
+                    f"[bold]结果：[/] {result.final_response[:500]}..."
                     if len(result.final_response) > 500 else "...",
-                    title="[bold blue]Background Task Notification[/bold blue]",
+                    title="[bold blue]后台任务通知[/bold blue]",
                     border_style=status_color,
                 )
             )
@@ -1361,11 +1367,11 @@ class ClaudeCodeCLI:
             self._console.print()
             self._console.print(
                 Panel(
-                    f"[{status_color}]{status_emoji} Task Failed:[/{status_color}]\n"
-                    f"[bold]Subagent:[/] {result.subagent_name}\n"
-                    f"[bold]Task ID:[/] {result.task_id}\n"
-                    f"[bold]Error:[/] {result.error}",
-                    title="[bold blue]Background Task Notification[/bold blue]",
+                    f"[{status_color}]{status_emoji} 任务失败：[/{status_color}]\n"
+                    f"[bold]子智能体：[/] {result.subagent_name}\n"
+                    f"[bold]任务 ID：[/] {result.task_id}\n"
+                    f"[bold]错误：[/] {result.error}",
+                    title="[bold blue]后台任务通知[/bold blue]",
                     border_style=status_color,
                 )
             )
@@ -1373,10 +1379,10 @@ class ClaudeCodeCLI:
             self._console.print()
             self._console.print(
                 Panel(
-                    f"[yellow]⏹️  Task Cancelled:[/yellow]\n"
-                    f"[bold]Subagent:[/] {result.subagent_name}\n"
-                    f"[bold]Task ID:[/] {result.task_id}",
-                    title="[bold blue]Background Task Notification[/bold blue]",
+                    f"[yellow]⏹️  任务已取消：[/yellow]\n"
+                    f"[bold]子智能体：[/] {result.subagent_name}\n"
+                    f"[bold]任务 ID：[/] {result.task_id}",
+                    title="[bold blue]后台任务通知[/bold blue]",
                     border_style="yellow",
                 )
             )
@@ -1427,7 +1433,7 @@ class ClaudeCodeCLI:
                 if handled:
                     return _ExecutionOutcome(final_content=self._last_command_final_content)
             except EOFError:
-                return _ExecutionOutcome(continue_running=False, final_content="Goodbye!")
+                return _ExecutionOutcome(continue_running=False, final_content="再见！")
             return _ExecutionOutcome()
 
         # Handle slash commands
@@ -1437,13 +1443,13 @@ class ClaudeCodeCLI:
                 if handled:
                     return _ExecutionOutcome(final_content=final_content)
             except EOFError:
-                return _ExecutionOutcome(continue_running=False, final_content="Goodbye!")
+                return _ExecutionOutcome(continue_running=False, final_content="再见！")
             return _ExecutionOutcome()
 
         # Handle legacy built-in commands (without slash)
         if user_input.lower() in ["exit", "quit"]:
-            self._console.print("[yellow]Goodbye![/yellow]")
-            return _ExecutionOutcome(continue_running=False, final_content="Goodbye!")
+            self._console.print("[yellow]再见！[/yellow]")
+            return _ExecutionOutcome(continue_running=False, final_content="再见！")
 
         if user_input.lower() == "help":
             self._print_help()
@@ -1451,7 +1457,7 @@ class ClaudeCodeCLI:
 
         if user_input.lower() == "pwd":
             current_dir = f"{self._ctx.working_dir}"
-            self._console.print(f"Current directory: {current_dir}")
+            self._console.print(f"当前目录：{current_dir}")
             return _ExecutionOutcome(final_content=current_dir)
 
         # Run agent
@@ -1473,7 +1479,7 @@ class ClaudeCodeCLI:
                 if len(preview) > 80:
                     preview = preview[:77] + "..."
                 self._console.print(
-                    f"\n[bold cyan]Received Remote Task[/bold cyan] "
+                    f"\n[bold cyan]收到远程任务[/bold cyan] "
                     f"[dim](seq={request.seq}, request_id={request.request_id})[/dim]"
                 )
                 if preview:
@@ -1484,7 +1490,7 @@ class ClaudeCodeCLI:
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
-                    final_content=f"Execution failed: {exc}",
+                    final_content=f"执行失败：{exc}",
                     error_code="LOCAL_BRIDGE_EXECUTION_ERROR",
                     error_message=str(exc),
                 )
@@ -1523,7 +1529,7 @@ class ClaudeCodeCLI:
                 try:
                     user_input = await prompt_task
                 except EOFError:
-                    self._console.print("\n[yellow]Goodbye![/yellow]")
+                    self._console.print("\n[yellow]再见！[/yellow]")
                     break
                 except KeyboardInterrupt:
                     prompt_task = None
@@ -1536,7 +1542,7 @@ class ClaudeCodeCLI:
                     continue
 
                 if self._is_immediate_local_exit_input(user_input):
-                    self._console.print("[yellow]Goodbye![/yellow]")
+                    self._console.print("[yellow]再见！[/yellow]")
                     break
 
                 self._enqueue_local_bridge_input(user_input)
@@ -1637,7 +1643,7 @@ class ClaudeCodeCLI:
             try:
                 user_input = await session.prompt_async()
             except EOFError:
-                self._console.print("\n[yellow]Goodbye![/yellow]")
+                self._console.print("\n[yellow]再见！[/yellow]")
                 break
             except KeyboardInterrupt:
                 continue
@@ -1649,3 +1655,238 @@ class ClaudeCodeCLI:
             outcome = await self._execute_input_text(user_input)
             if not outcome.continue_running:
                 break
+
+    def _print_welcome(self):
+        """Print welcome message."""
+        self._console.print(
+            Panel(
+                f"[bold cyan]Claude Code CLI[/bold cyan]\n\n"
+                f"输入消息后按 Enter 发送。\n"
+                f"按 [cyan]/[/cyan] 可查看可用命令。\n"
+                f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
+                f"可使用 [cyan]@\"<path>\"<message>[/cyan] 或 "
+                f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
+                f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
+                title="[bold blue]欢迎[/bold blue]",
+                border_style="bright_blue",
+            )
+        )
+
+        self._console.print()
+        self._console.print(f"[dim]工作目录：[/] {self._ctx.working_dir}")
+        self._console.print(f"[dim]模型：[/] {self._agent.llm.model}")
+        self._console.print(
+            f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
+        )
+        self._console.print(
+            f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部"
+        )
+        self._console.print(
+            f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部"
+        )
+        self._console.print(
+            "[dim]审批模式：[/] 已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
+        )
+        if self._model_presets:
+            self._console.print(f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}")
+        self._console.print()
+
+    def _print_help(self):
+        """Print help information."""
+        help_text = """
+[bold cyan]可用命令：[/bold cyan]
+
+  [blue]help[/blue]          - 显示帮助信息
+  [blue]exit[/blue]          - 退出 CLI
+  [blue]pwd[/blue]           - 显示当前工作目录
+  [blue]ls [path][/blue]     - 列出目录中的文件（AI 也可以完成）
+  [blue]/approval on|off|status[/blue] - 控制高风险工具的人类审批开关
+
+[bold cyan]可用工具（供 AI 使用）：[/bold cyan]
+
+  [blue]bash <cmd>[/blue]    - 执行 shell 命令
+  [blue]resolve_path <query>[/blue] - 解析近似路径
+  [blue]read <file>[/blue]   - 读取文件内容
+  [blue]write <file>[/blue]  - 写入文件内容
+  [blue]edit <file>[/blue]   - 编辑文件（替换文本）
+  [blue]glob <pattern>[/blue]- 按模式查找文件
+  [blue]grep <pattern>[/blue] - 搜索文件内容
+  [blue]todos[/blue]         - 管理待办事项
+
+[bold cyan]提示：[/boldcyan]
+
+  - 直接自然地输入你的需求，例如“列出所有 Python 文件”
+  - 可使用 [blue]@"<path>"<message>[/blue] 或 [blue]@'<path>'<message>[/blue] 发送图片输入
+  - AI 会自动使用工具帮助你
+"""
+        self._console.print(Panel(help_text, border_style="dim"))
+
+    def _print_approval_status(self) -> None:
+        status = "已开启" if self._agent.human_in_loop_config.enabled else "已关闭"
+        style = "green" if self._agent.human_in_loop_config.enabled else "yellow"
+        self._console.print(f"[{style}]审批模式：{status}[/{style}]")
+
+    async def _request_human_approval(
+        self,
+        request: HumanApprovalRequest,
+    ) -> HumanApprovalDecision:
+        self._stop_loading(self._loading)
+        self._loading = None
+
+        args_preview = json.dumps(request.arguments, ensure_ascii=False, default=str)
+        if len(args_preview) > 240:
+            args_preview = args_preview[:237].rstrip() + "..."
+
+        command_preview_line = (
+            f"[bold]命令预览：[/bold] {request.command_preview}\n"
+            if request.command_preview
+            else ""
+        )
+        panel = Panel(
+            f"[bold]工具：[/bold] {request.tool_name}\n"
+            f"[bold]风险级别：[/bold] {request.risk_level}\n"
+            f"[bold]审批原因：[/bold] {request.reason}\n"
+            f"{command_preview_line}"
+            f"[bold]参数：[/bold] {args_preview}\n"
+            "[dim]提示：如果后续想关闭审批，可在本轮结束后输入 /approval off。[/dim]",
+            title="[bold yellow]需要审批[/bold yellow]",
+            border_style="yellow",
+        )
+        self._console.print()
+        self._console.print(panel)
+
+        approved = await self._prompter.prompt_yes_no(
+            "是否批准这次工具调用？如需后续关闭审批，可在本轮结束后使用 /approval off",
+            default=False,
+        )
+        if approved:
+            self._console.print("[green]已批准。[/green]")
+            self._console.print()
+            return HumanApprovalDecision(approved=True)
+
+        reason = await self._prompter.prompt_text("拒绝原因", optional=True)
+        self._console.print("[yellow]已拒绝。[/yellow]")
+        self._console.print()
+        return HumanApprovalDecision(approved=False, reason=reason or None)
+
+    def _print_slash_help(self):
+        """Print slash command help information."""
+        self._console.print()
+        self._console.print("[bold cyan]Slash 命令：[/bold cyan]")
+        self._console.print("[dim]输入 / 可查看可用命令，按 Tab 可自动补全[/dim]")
+        self._console.print("[bold cyan]技能命令（@）：[/bold cyan]")
+        self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
+        self._console.print(
+            "[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]"
+        )
+        self._console.print()
+
+        categories = self._slash_registry.get_by_category()
+        for category, commands in sorted(categories.items()):
+            self._console.print(f"[bold blue]{category}:[/bold blue]")
+            for cmd in commands:
+                self._console.print(f"  [cyan]/{cmd.name}[/cyan] - {cmd.description}")
+        self._console.print()
+
+    def _print_slash_command_detail(self, command_name: str):
+        """Print detailed help for a specific slash command."""
+        cmd = self._slash_registry.get(command_name)
+        if not cmd:
+            self._console.print(f"[red]未知命令：/{command_name}[/red]")
+            return
+
+        self._console.print()
+        self._console.print(
+            Panel(
+                f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
+                f"[dim]{cmd.description}[/dim]\n\n"
+                f"[bold]用法：[/bold] {cmd.usage}\n\n"
+                + (
+                    f"[bold]示例：[/bold]\n" + "\n".join(f"  - {ex}" for ex in cmd.examples)
+                    if cmd.examples
+                    else ""
+                ),
+                title="[bold blue]命令详情[/bold blue]",
+                border_style="bright_blue",
+            )
+        )
+        self._console.print()
+
+    def _print_available_skills(self):
+        """Print all available @ skills grouped by category."""
+        self._console.print()
+        self._console.print("[bold cyan]可用技能（@）：[/bold cyan]")
+        self._console.print("[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]")
+        self._console.print(
+            "[dim]图片输入：@\"<path>\"<message> 或 @'<path>'<message>[/dim]"
+        )
+        self._console.print()
+
+        categories = self._at_registry.get_by_category()
+        if not categories:
+            self._console.print("[yellow]未找到技能。[/yellow]")
+            self._console.print()
+            return
+
+        for category, commands in sorted(categories.items()):
+            self._console.print(f"[bold blue]{category}:[/bold blue]")
+            for cmd in commands:
+                self._console.print(f"  [cyan]@{cmd.name}[/cyan] - {cmd.description}")
+        self._console.print()
+
+    async def _on_task_completed(self, result: Any):
+        """Handle background task completion notification."""
+        from bu_agent_sdk.agent.subagent_manager import TaskResult
+        from rich.panel import Panel
+
+        if not isinstance(result, TaskResult):
+            return
+
+        if result.status == "completed":
+            status_symbol = "✓"
+            status_color = "green"
+            result_preview = (
+                f"{result.final_response[:500]}..."
+                if len(result.final_response) > 500
+                else result.final_response
+            )
+            self._console.print()
+            self._console.print(
+                Panel(
+                    f"[{status_color}]{status_symbol} 任务已完成：[/{status_color}]\n"
+                    f"[bold]子智能体：[/] {result.subagent_name}\n"
+                    f"[bold]任务 ID：[/] {result.task_id}\n"
+                    f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
+                    f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
+                    f"[bold]结果：[/] {result_preview}",
+                    title="[bold blue]后台任务通知[/bold blue]",
+                    border_style=status_color,
+                )
+            )
+            return
+
+        if result.status == "failed":
+            self._console.print()
+            self._console.print(
+                Panel(
+                    f"[red]✗ 任务失败：[/red]\n"
+                    f"[bold]子智能体：[/] {result.subagent_name}\n"
+                    f"[bold]任务 ID：[/] {result.task_id}\n"
+                    f"[bold]错误：[/] {result.error}",
+                    title="[bold blue]后台任务通知[/bold blue]",
+                    border_style="red",
+                )
+            )
+            return
+
+        if result.status == "cancelled":
+            self._console.print()
+            self._console.print(
+                Panel(
+                    f"[yellow]! 任务已取消：[/yellow]\n"
+                    f"[bold]子智能体：[/] {result.subagent_name}\n"
+                    f"[bold]任务 ID：[/] {result.task_id}",
+                    title="[bold blue]后台任务通知[/bold blue]",
+                    border_style="yellow",
+                )
+            )

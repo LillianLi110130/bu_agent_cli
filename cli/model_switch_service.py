@@ -130,16 +130,16 @@ class ModelSwitchService:
             target_preset = self.resolve_vision_preset_name()
 
         if not target_preset:
-            return None, None, "No vision preset configured."
+            return None, None, "未配置视觉预设。"
 
         preset = self._model_presets.get(target_preset)
         if not preset:
-            return None, None, f"Vision preset '{target_preset}' not found."
+            return None, None, f"未找到视觉预设：{target_preset}"
 
         api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
         api_key = os.getenv(api_key_env)
         if not api_key:
-            return None, None, f"Missing API key env var: {api_key_env}"
+            return None, None, f"缺少 API Key 环境变量：{api_key_env}"
 
         model = str(preset["model"])
         base_url_raw = preset.get("base_url")
@@ -152,7 +152,7 @@ class ModelSwitchService:
                 None,
             )
         except Exception as e:
-            return None, None, f"Failed to initialize vision summarizer: {e}"
+            return None, None, f"初始化视觉摘要器失败：{e}"
 
     def _normalize_image_summary(self, text: str, max_chars: int) -> str:
         normalized = " ".join(text.split())
@@ -238,11 +238,11 @@ class ModelSwitchService:
         summary_llm, summary_label, summary_error = self._resolve_image_summary_llm()
         if summary_llm is not None and summary_label is not None:
             self._print(
-                f"[dim]Converting {total_images} historical image(s) into text memory via {summary_label}...[/dim]"
+                f"[dim]正在通过 {summary_label} 将 {total_images} 张历史图片转换为文本记忆...[/dim]"
             )
         else:
             self._print(
-                f"[yellow]Vision summarizer unavailable ({summary_error}); using fallback image memory.[/yellow]"
+                f"[yellow]视觉摘要器不可用（{summary_error}）；将使用回退图片记忆。[/yellow]"
             )
 
         summarized_count = 0
@@ -307,16 +307,16 @@ class ModelSwitchService:
         stripped = self._agent._context.strip_user_image_inputs()
         if stripped:
             self._print(
-                f"[yellow]Removed {stripped} residual image part(s) after memory conversion.[/yellow]"
+                f"[yellow]记忆转换后已移除 {stripped} 个残留图片片段。[/yellow]"
             )
 
         status_style = "yellow" if manual else "dim"
         self._print(
-            f"[{status_style}]Converted {summarized_count}/{total_images} image(s) into text memory.[/{status_style}]"
+            f"[{status_style}]已将 {summarized_count}/{total_images} 张图片转换为文本记忆。[/{status_style}]"
         )
         if fallback_count:
             self._print(
-                f"[{status_style}]Fallback memory used for {fallback_count} image(s).[/"
+                f"[{status_style}]其中 {fallback_count} 张图片使用了回退记忆。[/"
                 f"{status_style}]"
             )
 
@@ -329,8 +329,8 @@ class ModelSwitchService:
     ) -> bool:
         preset = self._model_presets.get(preset_name)
         if not preset:
-            self._print(f"[red]Unknown preset: {preset_name}[/red]")
-            self._print("[dim]Use /model list to see available presets.[/dim]")
+            self._print(f"[red]未知预设：{preset_name}[/red]")
+            self._print("[dim]使用 /model list 查看可用预设。[/dim]")
             return False
 
         current_preset = self.resolve_exact_current_preset_name()
@@ -341,14 +341,14 @@ class ModelSwitchService:
             if manual and auto_state is not None:
                 auto_state.sticky_preset = preset_name
                 self.clear_auto_switch_state(auto_state)
-            self._print(f"[dim]Already using preset [cyan]{preset_name}[/cyan].[/dim]")
+            self._print(f"[dim]当前已在使用预设 [cyan]{preset_name}[/cyan]。[/dim]")
             return True
 
         model = str(preset["model"])
         api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
         api_key = os.getenv(api_key_env)
         if not api_key:
-            self._print(f"[red]Missing API key env var: {api_key_env}. Switch aborted.[/red]")
+            self._print(f"[red]缺少 API Key 环境变量：{api_key_env}。已中止切换。[/red]")
             return False
 
         context_snapshot: list[Any] | None = None
@@ -362,7 +362,7 @@ class ModelSwitchService:
             except Exception as e:
                 self._agent._context.replace_messages(context_snapshot)
                 self._print(
-                    f"[red]Failed to prepare image memory before switch: {e}[/red]"
+                    f"[red]切换前准备图片记忆失败：{e}[/red]"
                 )
                 return False
 
@@ -371,19 +371,19 @@ class ModelSwitchService:
         except Exception as e:
             if context_snapshot is not None:
                 self._agent._context.replace_messages(context_snapshot)
-            self._print(f"[red]Model switch preflight failed: {e}[/red]")
+            self._print(f"[red]模型切换预检查失败：{e}[/red]")
             return False
 
         if not preflight.ok:
             if context_snapshot is not None:
                 self._agent._context.replace_messages(context_snapshot)
             self._print(
-                f"[red]Model switch preflight failed: {preflight.reason or 'context is too large'}[/red]"
+                f"[red]模型切换预检查失败：{preflight.reason or '上下文过大'}[/red]"
             )
             self._print(
-                f"[dim]Estimated tokens: {preflight.estimated_tokens}, "
-                f"threshold: {preflight.threshold}, "
-                f"utilization: {preflight.threshold_utilization:.0%}[/dim]"
+                f"[dim]预估 tokens：{preflight.estimated_tokens}，"
+                f"阈值：{preflight.threshold}，"
+                f"使用率：{preflight.threshold_utilization:.0%}[/dim]"
             )
             return False
 
@@ -405,19 +405,19 @@ class ModelSwitchService:
             self._agent.llm = old_llm
             if context_snapshot is not None:
                 self._agent._context.replace_messages(context_snapshot)
-            self._print(f"[red]Failed to switch model: {e}[/red]")
+            self._print(f"[red]切换模型失败：{e}[/red]")
             return False
 
         if preflight.compacted:
             self._print(
-                "[yellow]Context was compacted before switching to fit target model.[/yellow]"
+                "[yellow]为适配目标模型，已在切换前压缩上下文。[/yellow]"
             )
 
         self._print(
-            f"[green]Model switched:[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
+            f"[green]模型已切换：[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
         )
         self._print(
-            f"[dim]Context preserved ({len(self._agent.messages)} messages).[/dim]"
+            f"[dim]已保留上下文（{len(self._agent.messages)} 条消息）。[/dim]"
         )
         if manual and auto_state is not None:
             auto_state.sticky_preset = preset_name
@@ -452,11 +452,11 @@ class ModelSwitchService:
             vision_preset = self.resolve_vision_preset_name()
             if not vision_preset:
                 self._print(
-                    "[red]Image input requires a vision preset. Configure `vision: true` and `auto_vision_preset` in config/model_presets.json.[/red]"
+                    "[red]图片输入需要视觉预设。请在 config/model_presets.json 中配置 `vision: true` 和 `auto_vision_preset`。[/red]"
                 )
                 return False
 
-            self._print(f"[dim]Auto switch to vision preset: {vision_preset}[/dim]")
+            self._print(f"[dim]自动切换到视觉预设：{vision_preset}[/dim]")
             switched = await self.switch_model_preset(
                 vision_preset,
                 manual=False,
@@ -464,7 +464,7 @@ class ModelSwitchService:
             )
             if not switched:
                 self._print(
-                    "[red]Failed to switch to vision model. Image request aborted.[/red]"
+                    "[red]切换到视觉模型失败，图片请求已中止。[/red]"
                 )
                 return False
 
@@ -482,7 +482,7 @@ class ModelSwitchService:
             self.clear_auto_switch_state(auto_state)
             return True
 
-        self._print(f"[dim]Auto switch back to text preset: {target_preset}[/dim]")
+        self._print(f"[dim]自动切回文本预设：{target_preset}[/dim]")
         switched = await self.switch_model_preset(
             target_preset,
             manual=False,
@@ -492,6 +492,6 @@ class ModelSwitchService:
             self.clear_auto_switch_state(auto_state)
         else:
             self._print(
-                "[yellow]Auto switch-back failed; continue with current model.[/yellow]"
+                "[yellow]自动切回失败，将继续使用当前模型。[/yellow]"
             )
         return True

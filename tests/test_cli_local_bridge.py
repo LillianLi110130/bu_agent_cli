@@ -94,7 +94,7 @@ async def test_local_bridge_exit_request_stops_loop_and_records_result(workspace
     result = store.find_result(request.request_id)
     assert result is not None
     assert result.final_status == "completed"
-    assert result.final_content == "Goodbye!"
+    assert result.final_content == "再见！"
 
 
 @pytest.mark.asyncio
@@ -183,7 +183,7 @@ async def test_local_exit_is_not_enqueued_in_bridge_mode(workspace_root, monkeyp
     async def fake_bridge_session(session):
         user_input = "/exit"
         assert cli._is_immediate_local_exit_input(user_input) is True
-        cli._console.print("[yellow]Goodbye![/yellow]")
+        cli._console.print("[yellow]再见！[/yellow]")
 
     monkeypatch.setattr(cli, "_run_with_bridge_session", fake_bridge_session)
 
@@ -222,7 +222,7 @@ def test_safe_loading_and_console_output_do_not_emit_ansi(workspace_root, monkey
 
     try:
         sys.stdout = output
-        indicator = _SafeLoadingIndicator("Thinking")
+        indicator = _SafeLoadingIndicator("思考中")
         indicator._show_frame(0)
         indicator._clear()
     finally:
@@ -230,9 +230,9 @@ def test_safe_loading_and_console_output_do_not_emit_ansi(workspace_root, monkey
 
     rendered = output.getvalue()
     assert "\x1b" not in rendered
-    assert "- Thinking..." in rendered
+    assert "- 思考中..." in rendered
 
     with cli._console.capture() as capture:
-        cli._console.print("[yellow]Goodbye![/yellow]")
+        cli._console.print("[yellow]再见！[/yellow]")
 
-    assert capture.get() == "Goodbye!\n"
+    assert capture.get() == "再见！\n"

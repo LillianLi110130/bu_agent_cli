@@ -33,9 +33,9 @@ def test_parse_args_can_disable_im_and_local_bridge(monkeypatch):
 
 def test_top_level_console_outputs_plain_text():
     with claude_code.console.capture() as capture:
-        claude_code.console.print("[yellow]Goodbye![/yellow]")
+        claude_code.console.print("[yellow]再见！[/yellow]")
 
-    assert capture.get() == "Goodbye!\n"
+    assert capture.get() == "再见！\n"
 
 
 @pytest.mark.asyncio

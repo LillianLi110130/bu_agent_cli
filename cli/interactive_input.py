@@ -52,7 +52,7 @@ class InteractivePrompter:
         if default:
             prompt_display = f"{prompt} [{default}]: "
         elif optional:
-            prompt_display = f"{prompt} (optional): "
+            prompt_display = f"{prompt}（可选）: "
         else:
             prompt_display = f"{prompt}: "
 
@@ -94,7 +94,7 @@ class InteractivePrompter:
         completer = WordCompleter(choices)
 
         for i, choice in enumerate(choices, 1):
-            marker = " (default)" if choice == default else ""
+            marker = "（默认）" if choice == default else ""
             self.console.print(f"  {i}. {choice}{marker}")
 
         self.console.print()
@@ -103,7 +103,7 @@ class InteractivePrompter:
             try:
                 # Allow typing choice directly
                 result = await self._session.prompt_async(
-                    HTML("<ansiblue>Choice:</ansiblue> "),
+                    HTML("<ansiblue>请选择：</ansiblue> "),
                     completer=completer,
                 )
 
@@ -120,7 +120,7 @@ class InteractivePrompter:
                         return choice
 
                 self.console.print(
-                    f"[red]Invalid choice. Enter 1-{len(choices)} or type the choice name.[/red]"
+                    f"[red]无效选项。请输入 1-{len(choices)}，或直接输入选项名称。[/red]"
                 )
 
             except (EOFError, KeyboardInterrupt):
@@ -140,8 +140,8 @@ class InteractivePrompter:
         Returns:
             True for yes, False for no
         """
-        default_str = "Y/n" if default else "y/N"
-        prompt_display = f"{prompt} [{default_str}]: "
+        default_str = "回车默认是" if default else "回车默认否"
+        prompt_display = f"{prompt} [{default_str}，输入 y/n 或 是/否]: "
 
         while True:
             try:
@@ -153,12 +153,12 @@ class InteractivePrompter:
                     return default
 
                 result_lower = result.lower()
-                if result_lower in ("y", "yes"):
+                if result_lower in ("y", "yes", "是"):
                     return True
-                elif result_lower in ("n", "no"):
+                elif result_lower in ("n", "no", "否"):
                     return False
 
-                self.console.print("[red]Please enter 'y' or 'n'.[/red]")
+                self.console.print("[red]请输入 y/n 或 是/否。[/red]")
 
             except (EOFError, KeyboardInterrupt):
                 return default
@@ -182,7 +182,9 @@ class InteractivePrompter:
         default = default or []
 
         self.console.print(f"\n{prompt}")
-        self.console.print("[dim]Enter choices separated by commas, or 'all' for everything[/dim]")
+        self.console.print(
+            "[dim]请输入多个选项编号或名称，用逗号分隔；输入 all 表示全选，输入 none 表示不选[/dim]"
+        )
 
         for i, choice in enumerate(choices, 1):
             marker = "[green]+[/green]" if choice in default else "[dim]-[/dim]"
@@ -192,7 +194,7 @@ class InteractivePrompter:
 
         try:
             result = await self._session.prompt_async(
-                HTML("<ansiblue>Selections:</ansiblue> "),
+                HTML("<ansiblue>已选：</ansiblue> "),
                 completer=WordCompleter(choices + ["all", "none"]),
             )
 
@@ -252,7 +254,7 @@ class InteractivePrompter:
             event.app.exit(result=event.app.current_buffer.text)
 
         self.console.print(f"\n{prompt}")
-        self.console.print("[dim]Enter your text (press Ctrl+Q or Esc then Enter to finish):[/dim]\n")
+        self.console.print("[dim]请输入内容（按 Ctrl+Q，或按 Esc 后回车结束）：[/dim]\n")
 
         try:
             result = await self._session.prompt_async(
@@ -280,11 +282,11 @@ class InteractivePrompter:
             File content or None
         """
         self.console.print(f"\n{prompt}")
-        self.console.print("[dim]Enter file path or leave empty to cancel[/dim]")
+        self.console.print("[dim]请输入文件路径，留空可取消[/dim]")
 
         try:
             file_path = await self._session.prompt_async(
-                HTML("<ansiblue>File path:</ansiblue> ")
+                HTML("<ansiblue>文件路径：</ansiblue> ")
             )
 
             if not file_path:
@@ -293,7 +295,7 @@ class InteractivePrompter:
             path = Path(file_path.strip())
 
             if not path.exists():
-                self.console.print(f"[red]File not found: {path}[/red]")
+                self.console.print(f"[red]未找到文件：{path}[/red]")
                 return None
 
             content, _ = read_text_with_fallback(path)
@@ -317,14 +319,14 @@ class InteractivePrompter:
             Edited value
         """
         self.console.print(f"\n{prompt}")
-        self.console.print("[dim]Current value:[/dim]")
+        self.console.print("[dim]当前值：[/dim]")
         self.console.print(current_value[:200] + "..." if len(current_value) > 200 else current_value)
         self.console.print()
-        self.console.print("[dim]Enter new value or press Enter to keep current[/dim]")
+        self.console.print("[dim]输入新值，或直接回车保留当前值[/dim]")
 
         try:
             result = await self._session.prompt_async(
-                HTML("<ansiblue>New value:</ansiblue> "),
+                HTML("<ansiblue>新值：</ansiblue> "),
                 default=current_value,
             )
 
@@ -374,16 +376,16 @@ class InteractivePrompter:
                     value = float(result)
 
                     if min_value is not None and value < min_value:
-                        self.console.print(f"[red]Value must be >= {min_value}[/red]")
+                        self.console.print(f"[red]数值必须 >= {min_value}[/red]")
                         continue
                     if max_value is not None and value > max_value:
-                        self.console.print(f"[red]Value must be <= {max_value}[/red]")
+                        self.console.print(f"[red]数值必须 <= {max_value}[/red]")
                         continue
 
                     return value
 
                 except ValueError:
-                    self.console.print("[red]Please enter a valid number[/red]")
+                    self.console.print("[red]请输入有效数字[/red]")
 
             except (EOFError, KeyboardInterrupt):
                 return default
