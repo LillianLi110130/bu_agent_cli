@@ -9,7 +9,7 @@ from xml.sax.saxutils import escape
 
 import pytest
 
-from tools.sandbox import SandboxContext
+from tools.sandbox import SandboxContext, get_sandbox_context
 from tools.xlsx import read_excel
 
 
@@ -256,5 +256,203 @@ async def test_read_excel_matches_sheet_name_with_spacing_variants():
         assert len(payload["sheets"]) == 1
         assert payload["sheets"][0]["name"] == "附1管理人高管介绍"
         assert payload["sheets"][0]["preview_rows"][1]["values"] == ["张三"]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_supports_offset_row_preview():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(
+        workbook_path,
+        [
+            (
+                "主表",
+                [
+                    ["标题", "值"],
+                    ["第2行", "A"],
+                    ["第3行", "B"],
+                    ["第4行", "C"],
+                ],
+            ),
+        ],
+    )
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func(
+            "demo.xlsx",
+            ctx=ctx,
+            sheet_name="主表",
+            offset_row=3,
+            max_rows=2,
+        )
+        payload = json.loads(result)
+
+        assert payload["preview_limits"]["offset_row"] == 3
+        assert payload["sheets"][0]["row_count"] == 4
+        assert payload["sheets"][0]["preview_rows"] == [
+            {"row": 3, "values": ["第3行", "B"]},
+            {"row": 4, "values": ["第4行", "C"]},
+        ]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_find_text_returns_match_context():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(
+        workbook_path,
+        [
+            (
+                "主表",
+                [
+                    ["模块", "产品", "时间"],
+                    ["合作储备", "天弘价值共享混合型证券投资基金", "2025/12/8"],
+                    ["合作储备", "天弘稳益优选混合型证券投资基金", "2025/12/1"],
+                ],
+            ),
+            ("附表", [["说明"], ["其他内容"]]),
+        ],
+    )
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func(
+            "demo.xlsx",
+            ctx=ctx,
+            sheet_name="主表",
+            find_text="天弘价值共享混合型证券投资基金",
+            context_rows=1,
+            max_rows=5,
+            max_cols=5,
+        )
+        payload = json.loads(result)
+
+        assert payload["preview_limits"]["find_text"] == "天弘价值共享混合型证券投资基金"
+        assert len(payload["matches"]) == 1
+        assert payload["matches"][0]["sheet"] == "主表"
+        assert payload["matches"][0]["row"] == 2
+        assert payload["matches"][0]["matched_columns"] == [2]
+        assert payload["matches"][0]["preview_rows"] == [
+            {"row": 1, "values": ["模块", "产品", "时间"]},
+            {"row": 2, "values": ["合作储备", "天弘价值共享混合型证券投资基金", "2025/12/8"]},
+            {"row": 3, "values": ["合作储备", "天弘稳益优选混合型证券投资基金", "2025/12/1"]},
+        ]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_find_text_respects_offset_row():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(
+        workbook_path,
+        [
+            (
+                "主表",
+                [
+                    ["模块", "产品"],
+                    ["历史项目", "天弘价值共享混合型证券投资基金"],
+                    ["合作储备", "其他产品"],
+                    ["合作储备", "天弘价值共享混合型证券投资基金"],
+                ],
+            ),
+        ],
+    )
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func(
+            "demo.xlsx",
+            ctx=ctx,
+            sheet_name="主表",
+            find_text="天弘价值共享混合型证券投资基金",
+            offset_row=3,
+            context_rows=0,
+            max_matches=5,
+            max_rows=5,
+            max_cols=5,
+        )
+        payload = json.loads(result)
+
+        assert len(payload["matches"]) == 1
+        assert payload["matches"][0]["row"] == 4
+        assert payload["matches"][0]["preview_rows"] == [
+            {"row": 4, "values": ["合作储备", "天弘价值共享混合型证券投资基金"]},
+        ]
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_execute_normalizes_none_and_blank_arguments():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(workbook_path, [("Sheet1", [["hello", "world"]])])
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.execute(
+            _overrides={get_sandbox_context: lambda: ctx},
+            file_path="demo.xlsx",
+            sheet_name="   ",
+            find_text="",
+            offset_row=None,
+            context_rows=None,
+            max_matches=None,
+            max_rows=None,
+            max_cols=None,
+        )
+        payload = json.loads(result)
+
+        assert payload["selected_sheet"] is None
+        assert payload["preview_limits"] == {
+            "find_text": None,
+            "offset_row": 1,
+            "context_rows": 2,
+            "max_matches": 10,
+            "max_rows": 10,
+            "max_cols": 20,
+        }
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_execute_normalizes_string_numeric_arguments():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(
+        workbook_path,
+        [("主表", [["标题"], ["第2行"], ["第3行"], ["第4行"]])],
+    )
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.execute(
+            _overrides={get_sandbox_context: lambda: ctx},
+            file_path="demo.xlsx",
+            sheet_name="主表",
+            find_text=None,
+            offset_row="3",
+            context_rows="0",
+            max_matches="5",
+            max_rows="2",
+            max_cols="5",
+        )
+        payload = json.loads(result)
+
+        assert payload["preview_limits"]["offset_row"] == 3
+        assert payload["preview_limits"]["context_rows"] == 0
+        assert payload["preview_limits"]["max_matches"] == 5
+        assert payload["sheets"][0]["preview_rows"] == [
+            {"row": 3, "values": ["第3行"]},
+            {"row": 4, "values": ["第4行"]},
+        ]
     finally:
         shutil.rmtree(workspace, ignore_errors=True)

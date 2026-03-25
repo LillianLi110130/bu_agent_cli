@@ -10,6 +10,8 @@ import zipfile
 from typing import Annotated
 from xml.etree import ElementTree as ET
 
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
+
 from bu_agent_sdk.tools import Depends, tool
 
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
@@ -23,6 +25,79 @@ _SUPPORTED_SUFFIXES = {".xlsx", ".xlsm", ".xltx", ".xltm"}
 _CELL_REF_RE = re.compile(r"([A-Z]+)")
 
 
+class ReadExcelParams(BaseModel):
+    file_path: str = Field(description="Excel workbook path, supports fuzzy path resolution.")
+    sheet_name: str | None = Field(default=None, description="Optional sheet name to inspect.")
+    find_text: str | None = Field(
+        default=None,
+        description="Optional text to search for within the selected sheet(s).",
+    )
+    offset_row: int = Field(default=1, description="1-based row number to start previewing from.")
+    context_rows: int = Field(default=2, description="Context rows to include around each match.")
+    max_matches: int = Field(default=10, description="Maximum number of search matches to return.")
+    max_rows: int = Field(default=10, description="Maximum preview rows per sheet.")
+    max_cols: int = Field(default=20, description="Maximum preview columns per row.")
+
+    @field_validator("sheet_name", "find_text", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            return stripped or None
+        return value
+
+    @field_validator(
+        "offset_row",
+        "context_rows",
+        "max_matches",
+        "max_rows",
+        "max_cols",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_integer_like(cls, value: object, info: ValidationInfo) -> int:
+        defaults = {
+            "offset_row": 1,
+            "context_rows": 2,
+            "max_matches": 10,
+            "max_rows": 10,
+            "max_cols": 20,
+        }
+        default = defaults[info.field_name]
+
+        if value is None or isinstance(value, bool):
+            return default
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value) if value.is_integer() else default
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped or stripped.lower() in {"none", "null"}:
+                return default
+            try:
+                return int(stripped)
+            except ValueError:
+                try:
+                    float_value = float(stripped)
+                except ValueError:
+                    return default
+                return int(float_value) if float_value.is_integer() else default
+        return default
+
+    @field_validator("offset_row", "max_matches", "max_rows", "max_cols")
+    @classmethod
+    def _clamp_positive(cls, value: int) -> int:
+        return max(1, value)
+
+    @field_validator("context_rows")
+    @classmethod
+    def _clamp_nonnegative(cls, value: int) -> int:
+        return max(0, value)
+
+
 def _dump_payload(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -30,6 +105,11 @@ def _dump_payload(payload: dict) -> str:
 def _normalize_sheet_name(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value).strip().lower()
     return re.sub(r"\s+", "", normalized)
+
+
+def _normalize_search_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value).strip().lower()
+    return re.sub(r"\s+", " ", normalized)
 
 
 def _normalize_archive_path(base_dir: str, target: str) -> str:
@@ -118,29 +198,25 @@ def _read_cell_value(cell: ET.Element, shared_strings: list[str]) -> str:
     return f"={formula}" if formula else ""
 
 
-def _inspect_sheet(
+def _materialize_row(values_by_col: dict[int, str], max_cols: int) -> list[str]:
+    row_width = min(max(values_by_col.keys(), default=0), max_cols)
+    return [values_by_col.get(index, "") for index in range(1, row_width + 1)]
+
+
+def _parse_sheet(
     archive: zipfile.ZipFile,
-    sheet_name: str,
     sheet_path: str,
     shared_strings: list[str],
-    *,
-    max_rows: int,
-    max_cols: int,
-) -> dict:
+) -> tuple[int, int, list[tuple[int, dict[int, str]]]]:
     root = ET.fromstring(archive.read(sheet_path))
     sheet_data = root.find("main:sheetData", _NS)
 
     row_count = 0
     column_count = 0
-    preview_rows: list[dict[str, object]] = []
+    rows: list[tuple[int, dict[int, str]]] = []
 
     if sheet_data is None:
-        return {
-            "name": sheet_name,
-            "row_count": row_count,
-            "column_count": column_count,
-            "preview_rows": preview_rows,
-        }
+        return row_count, column_count, rows
 
     for row_position, row in enumerate(sheet_data.findall("main:row", _NS), start=1):
         row_number = int(row.attrib.get("r", row_position))
@@ -153,15 +229,29 @@ def _inspect_sheet(
             values_by_col[col_index] = _read_cell_value(cell, shared_strings)
             column_count = max(column_count, col_index)
 
+        rows.append((row_number, values_by_col))
+
+    return row_count, column_count, rows
+
+
+def _inspect_sheet(
+    sheet_name: str,
+    parsed_rows: list[tuple[int, dict[int, str]]],
+    *,
+    row_count: int,
+    column_count: int,
+    offset_row: int,
+    max_rows: int,
+    max_cols: int,
+) -> dict:
+    preview_rows: list[dict[str, object]] = []
+    for row_number, values_by_col in parsed_rows:
+        if row_number < offset_row:
+            continue
         if len(preview_rows) >= max_rows:
             continue
-
-        row_width = min(max(values_by_col.keys(), default=0), max_cols)
         preview_rows.append(
-            {
-                "row": row_number,
-                "values": [values_by_col.get(index, "") for index in range(1, row_width + 1)],
-            }
+            {"row": row_number, "values": _materialize_row(values_by_col, max_cols)}
         )
 
     return {
@@ -170,6 +260,57 @@ def _inspect_sheet(
         "column_count": column_count,
         "preview_rows": preview_rows,
     }
+
+
+def _find_matches(
+    *,
+    sheet_name: str,
+    parsed_rows: list[tuple[int, dict[int, str]]],
+    find_text: str,
+    offset_row: int,
+    max_cols: int,
+    context_rows: int,
+    remaining_matches: int,
+) -> list[dict[str, object]]:
+    normalized_query = _normalize_search_text(find_text)
+    compact_query = normalized_query.replace(" ", "")
+    if not normalized_query:
+        return []
+
+    matches: list[dict[str, object]] = []
+    filtered_rows = [
+        (row_number, values_by_col)
+        for row_number, values_by_col in parsed_rows
+        if row_number >= offset_row
+    ]
+    for index, (row_number, values_by_col) in enumerate(filtered_rows):
+        matched_columns = [
+            column_index
+            for column_index, value in sorted(values_by_col.items())
+            if normalized_query in _normalize_search_text(value)
+            or compact_query in _normalize_search_text(value).replace(" ", "")
+        ]
+        if not matched_columns:
+            continue
+
+        start = max(0, index - context_rows)
+        end = min(len(filtered_rows), index + context_rows + 1)
+        preview_rows = [
+            {"row": ctx_row_number, "values": _materialize_row(ctx_values, max_cols)}
+            for ctx_row_number, ctx_values in filtered_rows[start:end]
+        ]
+        matches.append(
+            {
+                "sheet": sheet_name,
+                "row": row_number,
+                "matched_columns": matched_columns,
+                "preview_rows": preview_rows,
+            }
+        )
+        if len(matches) >= remaining_matches:
+            break
+
+    return matches
 
 
 def _resolve_sheet_selection(
@@ -202,11 +343,19 @@ def _resolve_sheet_selection(
     return f"Error: Sheet '{requested_name}' not found. Available sheets: {available_sheet_names}"
 
 
-@tool("Read an Excel workbook from a resolved path and return sheet names plus preview rows")
+@tool(
+    "Read an Excel workbook from a resolved path and return sheet names, preview rows, "
+    "and optional text matches.",
+    args_schema=ReadExcelParams,
+)
 async def read_excel(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     sheet_name: str | None = None,
+    find_text: str | None = None,
+    offset_row: int = 1,
+    context_rows: int = 2,
+    max_matches: int = 10,
     max_rows: int = 10,
     max_cols: int = 20,
 ) -> str:
@@ -215,6 +364,10 @@ async def read_excel(
     Args:
         file_path: Excel workbook path, supports fuzzy path resolution.
         sheet_name: Optional exact sheet name to inspect. Defaults to all sheets.
+        find_text: Optional text to search for within the selected sheet(s).
+        offset_row: 1-based row number to start previewing from. Defaults to 1.
+        context_rows: Number of surrounding rows to include around each match.
+        max_matches: Maximum number of search matches to return.
         max_rows: Maximum preview rows per sheet.
         max_cols: Maximum preview columns per row.
     """
@@ -229,12 +382,18 @@ async def read_excel(
         supported = ", ".join(sorted(_SUPPORTED_SUFFIXES))
         return f"Error: Unsupported Excel format '{path.suffix}'. Supported formats: {supported}"
 
-    if max_rows < 1 or max_cols < 1:
-        return "Error: max_rows and max_cols must be positive integers."
+    if offset_row < 1 or context_rows < 0 or max_matches < 1 or max_rows < 1 or max_cols < 1:
+        return (
+            "Error: offset_row, context_rows, max_matches, max_rows, and max_cols "
+            "must be valid positive integers (context_rows may be zero)."
+        )
 
     requested_sheet_name = sheet_name.strip() if isinstance(sheet_name, str) else None
     if requested_sheet_name == "":
         requested_sheet_name = None
+    requested_find_text = find_text.strip() if isinstance(find_text, str) else None
+    if requested_find_text == "":
+        requested_find_text = None
 
     try:
         with zipfile.ZipFile(path) as archive:
@@ -254,22 +413,54 @@ async def read_excel(
             resolved_sheet_name, selected_or_error = selection_result
             selected = selected_or_error
 
+            remaining_matches = max_matches
+            matches: list[dict[str, object]] = []
+            sheets_payload: list[dict[str, object]] = []
+            for name, sheet_path in selected:
+                row_count, column_count, parsed_rows = _parse_sheet(
+                    archive, sheet_path, shared_strings
+                )
+                sheets_payload.append(
+                    _inspect_sheet(
+                        name,
+                        parsed_rows,
+                        row_count=row_count,
+                        column_count=column_count,
+                        offset_row=offset_row,
+                        max_rows=max_rows,
+                        max_cols=max_cols,
+                    )
+                )
+
+                if requested_find_text is None or remaining_matches <= 0:
+                    continue
+
+                sheet_matches = _find_matches(
+                    sheet_name=name,
+                    parsed_rows=parsed_rows,
+                    find_text=requested_find_text,
+                    offset_row=offset_row,
+                    max_cols=max_cols,
+                    context_rows=context_rows,
+                    remaining_matches=remaining_matches,
+                )
+                matches.extend(sheet_matches)
+                remaining_matches -= len(sheet_matches)
+
             payload = {
                 "resolved_path": str(path),
                 "sheet_names": available_sheet_names,
                 "selected_sheet": resolved_sheet_name,
-                "preview_limits": {"max_rows": max_rows, "max_cols": max_cols},
-                "sheets": [
-                    _inspect_sheet(
-                        archive,
-                        name,
-                        sheet_path,
-                        shared_strings,
-                        max_rows=max_rows,
-                        max_cols=max_cols,
-                    )
-                    for name, sheet_path in selected
-                ],
+                "preview_limits": {
+                    "find_text": requested_find_text,
+                    "offset_row": offset_row,
+                    "context_rows": context_rows,
+                    "max_matches": max_matches,
+                    "max_rows": max_rows,
+                    "max_cols": max_cols,
+                },
+                "matches": matches,
+                "sheets": sheets_payload,
             }
             return _dump_payload(payload)
     except zipfile.BadZipFile:

@@ -235,7 +235,7 @@ class ExcelReadGuardHook(BaseAgentHook):
                     "Do not use `bash` to reopen or enumerate Excel workbooks. "
                     "Answer from the existing `read_excel` result, or call `read_excel` "
                     "again on the same resolved path with a different `sheet_name`, "
-                    "`max_rows`, or `max_cols` if you need more detail."
+                    "`find_text`, `offset_row`, `max_rows`, or `max_cols` if you need more detail."
                 ),
                 is_error=True,
             ),
