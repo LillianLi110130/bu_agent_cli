@@ -104,7 +104,7 @@ class _ExecutionOutcome:
 class _CLIHumanApprovalHandler:
     """CLI-backed approval handler used by runtime hooks."""
 
-    def __init__(self, cli: "ClaudeCodeCLI"):
+    def __init__(self, cli: "TGAgentCLI"):
         self._cli = cli
 
     async def request_approval(
