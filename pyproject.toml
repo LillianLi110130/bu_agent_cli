@@ -19,7 +19,9 @@ dependencies = [
     "python-telegram-bot>=22.6",
     "fastapi>=0.135.1",
     "uvicorn>=0.41.0",
-
+    "sqlalchemy>=2.0,<3",
+    "pymysql[rsa]>=1.1,<2",
+    "pytz>=2024.1,<2027",
 ]
 
 [project.optional-dependencies]
@@ -45,6 +47,7 @@ build-backend = "hatchling.build"
 "bu_agent_sdk" = "tg_agent_cli/bu_agent_sdk"
 "cli" = "tg_agent_cli/cli"
 "tools" = "tg_agent_cli/tools"
+"tg_mem" = "tg_agent_cli/tg_mem"
 "claude_code.py" = "tg_agent_cli/claude_code.py"
 "config" = "tg_agent_cli/config"
 "ralph_init.py" = "tg_agent_cli/ralph_init.py"
@@ -61,6 +64,7 @@ include = [
     "bu_agent_sdk/**",
     "cli/**",
     "tools/**",
+    "tg_mem/**",
     "claude_code.py",
     "config/**",
     "ralph_init.py",

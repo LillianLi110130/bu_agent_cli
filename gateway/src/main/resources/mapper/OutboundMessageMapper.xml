@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.buagent.gateway.store.mapper.OutboundMessageMapper">
+
+    <resultMap id="OutboundMessageResultMap" type="com.buagent.gateway.store.entity.OutboundMessageEntity">
+        <id property="id" column="id"/>
+        <result property="sessionKey" column="session_key"/>
+        <result property="epoch" column="epoch"/>
+        <result property="inboundMessageId" column="inbound_message_id"/>
+        <result property="content" column="content"/>
+        <result property="status" column="status"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.buagent.gateway.store.entity.OutboundMessageEntity" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO outbound_message (
+            session_key,
+            epoch,
+            inbound_message_id,
+            content,
+            status,
+            created_at
+        ) VALUES (
+            #{sessionKey},
+            #{epoch},
+            #{inboundMessageId},
+            #{content},
+            #{status},
+            #{createdAt}
+        )
+    </insert>
+
+    <update id="updateStatus">
+        UPDATE outbound_message
+        SET status = #{status}
+        WHERE id = #{id}
+    </update>
+</mapper>

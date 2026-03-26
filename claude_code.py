@@ -205,6 +205,16 @@ def _build_system_prompt(
 
     template_str = _load_prompt_template("system.md")
 
+    template = Template(template_str)
+    prompt = template.substitute(
+        SKILLS=skills_text,
+        WORKING_DIR=str(working_dir),
+        SUBAGENTS=agents_text,
+        SYSTEM_INFO=system_info_text,
+    )
+
+    return prompt
+
 
 console = Console()
 

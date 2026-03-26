@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.buagent.gateway.store.mapper.SessionStateMapper">
+
+    <resultMap id="SessionStateResultMap" type="com.buagent.gateway.store.entity.SessionStateEntity">
+        <id property="sessionKey" column="session_key"/>
+        <result property="currentEpoch" column="current_epoch"/>
+    </resultMap>
+
+    <select id="findBySessionKey" resultMap="SessionStateResultMap">
+        SELECT session_key, current_epoch
+        FROM session_state
+        WHERE session_key = #{sessionKey}
+    </select>
+
+    <insert id="insert" parameterType="com.buagent.gateway.store.entity.SessionStateEntity">
+        INSERT INTO session_state (session_key, current_epoch)
+        VALUES (#{sessionKey}, #{currentEpoch})
+    </insert>
+
+    <update id="updateCurrentEpoch">
+        UPDATE session_state
+        SET current_epoch = #{currentEpoch}
+        WHERE session_key = #{sessionKey}
+    </update>
+</mapper>

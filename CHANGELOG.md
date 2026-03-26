@@ -2,6 +2,17 @@
 
 本文件参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 风格编写。
 
+## [Unreleased]
+
+### Added
+- 新增顶层 vendored 包 `tg_mem/`，裁剪集成 mem0 的 MySQL-only 和记忆提炼能力，用于当前 Agent server 的会话历史恢复与轮次记忆写入。
+- 新增 `bu_agent_sdk.server.memory_service`，支持从环境变量构建 tg_mem 适配器、按 `session_id` 恢复 `user/assistant` 历史、每轮注入当前 `user_id` 的全部 memory（带 20,000 字符安全上限），并在每轮对话后增量写入记忆。
+- 新增覆盖 server 记忆接入与 server client `user_id` 行为的测试用例。
+
+### Changed
+- `bu_agent_sdk.server` 现支持 `user_id` 显式绑定 session；新建或未绑定 session 的 query/query-stream/query-stream-delta 请求必须提供 `user_id`。
+- `SessionManager` 与 `AgentSession` 现支持首次历史恢复、清空后重新恢复，以及在非流式/流式最终响应后自动持久化本轮对话。
+- `bu_agent_sdk.server.client.AgentClient` 与 `SimpleAgentClient` 现支持 `user_id`，避免生成匿名随机 session 破坏记忆绑定语义。
 
 ## [Gateway] - 2026-03-14
 

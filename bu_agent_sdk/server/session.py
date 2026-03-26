@@ -7,11 +7,13 @@ agent instances with unique session IDs.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
+from typing import Callable
 from uuid import uuid4
 
 from bu_agent_sdk.agent import Agent
+from bu_agent_sdk.agent.events import FinalResponseEvent as AgentFinalResponseEvent
+from bu_agent_sdk.llm.messages import BaseMessage, DeveloperMessage, SystemMessage
 
 logger = logging.getLogger("bu_agent_sdk.server.session")
 
@@ -19,31 +21,140 @@ logger = logging.getLogger("bu_agent_sdk.server.session")
 class AgentSession:
     """A single agent session with its own agent instance."""
 
-    def __init__(self, session_id: str, agent: Agent, created_at: datetime | None = None):
+    def __init__(
+        self,
+        session_id: str,
+        agent: Agent,
+        created_at: datetime | None = None,
+        user_id: str | None = None,
+        memory_service: object | None = None,
+    ):
         self.session_id = session_id
         self.agent = agent
-        self.created_at = created_at or datetime.utcnow()
+        self.user_id = user_id
+        self.memory_service = memory_service
+        self.history_loaded = False
+        self.memory_context_injected = False
+        self.created_at = created_at or datetime.now(UTC)
         self.last_used_at = self.created_at
         self._lock = asyncio.Lock()
+
+    def bind_user(self, user_id: str | None) -> None:
+        """Bind a user ID to the session or validate an existing binding."""
+        if user_id is None:
+            return
+        if self.user_id is None:
+            self.user_id = user_id
+            return
+        if self.user_id != user_id:
+            raise ValueError("session user_id mismatch")
+
+    def _build_loaded_history(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+        loaded_messages: list[BaseMessage] = []
+        if getattr(self.agent, "system_prompt", None):
+            loaded_messages.append(SystemMessage(content=self.agent.system_prompt, cache=True))
+        loaded_messages.extend(messages)
+        return loaded_messages
+
+    async def _ensure_history_loaded(self) -> None:
+        if self.history_loaded or self.memory_service is None or self.user_id is None:
+            return
+
+        loader = getattr(self.memory_service, "load_history", None)
+        if loader is None:
+            self.history_loaded = True
+            return
+
+        messages = await loader(self.session_id, self.user_id)
+        self.agent.load_history(self._build_loaded_history(messages))
+        self.history_loaded = True
+
+    async def _load_user_memory_context(self) -> DeveloperMessage | None:
+        if self.memory_service is None or self.user_id is None:
+            return None
+
+        loader = getattr(self.memory_service, "load_user_memory_context", None)
+        if loader is None:
+            return None
+
+        return await loader(self.user_id)
+
+    def _inject_temporary_message(self, message: BaseMessage | None) -> BaseMessage | None:
+        if message is None:
+            return None
+
+        context = getattr(self.agent, "_context", None)
+        if context is not None:
+            context.inject_message(message, pinned=True, after_roles=("system", "developer"))
+            return message
+
+        agent_messages = getattr(self.agent, "messages", None)
+        if isinstance(agent_messages, list):
+            insert_at = 0
+            for i, existing in enumerate(agent_messages):
+                if existing.role in {"system", "developer"}:
+                    insert_at = i + 1
+            agent_messages.insert(insert_at, message)
+            return message
+
+        return None
+
+    async def _ensure_user_memory_context_injected(self) -> None:
+        if self.memory_context_injected:
+            return
+        if self.memory_service is None or self.user_id is None:
+            return
+
+        memory_message = await self._load_user_memory_context()
+        if memory_message is not None:
+            self._inject_temporary_message(memory_message)
+        self.memory_context_injected = True
+
+    async def _append_round(self, user_message: str, assistant_message: str) -> None:
+        if self.memory_service is None or self.user_id is None:
+            return
+
+        appender = getattr(self.memory_service, "append_round", None)
+        if appender is None:
+            return
+
+        await appender(
+            self.session_id,
+            self.user_id,
+            user_message,
+            assistant_message,
+        )
 
     async def query(self, message: str) -> str:
         """Execute a query on this session's agent."""
         async with self._lock:
-            self.last_used_at = datetime.utcnow()
-            return await self.agent.query(message)
+            await self._ensure_history_loaded()
+            await self._ensure_user_memory_context_injected()
+            self.last_used_at = datetime.now(UTC)
+            response_text = await self.agent.query(message)
+            await self._append_round(message, response_text)
+            return response_text
 
     async def query_stream(self, message: str):
         """Execute a streaming query on this session's agent."""
         async with self._lock:
-            self.last_used_at = datetime.utcnow()
+            await self._ensure_history_loaded()
+            await self._ensure_user_memory_context_injected()
+            self.last_used_at = datetime.now(UTC)
             async for event in self.agent.query_stream(message):
+                if isinstance(event, AgentFinalResponseEvent):
+                    await self._append_round(message, event.content)
                 yield event
 
     async def query_stream_delta(self, message: str):
         """Execute a token-level streaming query on this session's agent."""
         async with self._lock:
-            self.last_used_at = datetime.utcnow()
+            await self._ensure_history_loaded()
+            await self._ensure_user_memory_context_injected()
+            self.last_used_at = datetime.now(UTC)
             async for event in self.agent.query_stream_delta(message):
+                if isinstance(event, AgentFinalResponseEvent):
+                    await self._append_round(message, event.content)
                 yield event
 
     async def get_usage(self):
@@ -55,6 +166,8 @@ class AgentSession:
         """Clear the conversation history for this session."""
         async with self._lock:
             self.agent.clear_history()
+            self.history_loaded = False
+            self.memory_context_injected = False
 
     @property
     def message_count(self) -> int:
@@ -80,6 +193,7 @@ class SessionManager:
         agent_factory: AgentFactory,
         session_timeout_minutes: int = 60,
         max_sessions: int = 1000,
+        memory_service: object | None = None,
     ):
         """
         Initialize the session manager.
@@ -92,32 +206,41 @@ class SessionManager:
         self._agent_factory = agent_factory
         self._session_timeout = timedelta(minutes=session_timeout_minutes)
         self._max_sessions = max_sessions
+        self._memory_service = memory_service
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
 
-    async def get_or_create_session(self, session_id: str | None = None) -> AgentSession:
+    async def get_or_create_session(
+        self,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> AgentSession:
         """
         Get an existing session or create a new one.
 
         Args:
             session_id: Optional session ID. If None, a new session is created.
+            user_id: Optional user ID to bind to the session.
 
         Returns:
             The agent session.
         """
         async with self._lock:
-            # If session_id is provided and exists, return it
             if session_id and session_id in self._sessions:
                 session = self._sessions[session_id]
+                session.bind_user(user_id)
                 logger.debug(f"Reusing existing session: {session_id}")
                 return session
 
-            # Create new session
             new_session_id = session_id or str(uuid4())
             agent = self._agent_factory()
-            session = AgentSession(session_id=new_session_id, agent=agent)
+            session = AgentSession(
+                session_id=new_session_id,
+                agent=agent,
+                user_id=user_id,
+                memory_service=self._memory_service,
+            )
 
-            # Check if we need to clean up old sessions
             if len(self._sessions) >= self._max_sessions:
                 await self._cleanup_sessions()
 
@@ -162,7 +285,7 @@ class SessionManager:
         Returns:
             The number of sessions cleaned up.
         """
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         to_delete = []
 
         for session_id, session in self._sessions.items():
@@ -205,6 +328,7 @@ class SessionManager:
         return [
             {
                 "session_id": s.session_id,
+                "user_id": s.user_id,
                 "created_at": s.created_at.isoformat(),
                 "last_used_at": s.last_used_at.isoformat(),
                 "message_count": s.message_count,

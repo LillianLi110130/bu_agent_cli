@@ -45,7 +45,9 @@ class ReadExcelParams(BaseModel):
             return None
         if isinstance(value, str):
             stripped = value.strip()
-            return stripped or None
+            if not stripped or stripped.lower() in {"none", "null"}:
+                return None
+            return stripped
         return value
 
     @field_validator(

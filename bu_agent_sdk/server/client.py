@@ -7,7 +7,6 @@ making it easy to integrate with external applications.
 
 import logging
 from typing import AsyncIterator, Literal
-from uuid import uuid4
 
 import httpx
 
@@ -46,6 +45,7 @@ class AgentClient:
         self,
         base_url: str = "http://localhost:8000",
         session_id: str | None = None,
+        user_id: str | None = None,
         timeout: float = 300.0,
     ):
         """
@@ -58,6 +58,7 @@ class AgentClient:
         """
         self.base_url = base_url.rstrip("/")
         self._session_id = session_id
+        self._user_id = user_id
         self._client = httpx.AsyncClient(timeout=timeout)
         self._initialized = False
 
@@ -79,14 +80,19 @@ class AgentClient:
             raise RuntimeError("Session not initialized. Call create_session() first.")
         return self._session_id
 
-    async def create_session(self) -> str:
+    async def create_session(self, user_id: str | None = None) -> str:
         """
         Create a new session.
 
         Returns:
             The new session ID.
         """
-        response = await self._client.post(f"{self.base_url}/sessions", json={})
+        resolved_user_id = user_id or self._user_id
+        payload = {}
+        if resolved_user_id is not None:
+            payload["user_id"] = resolved_user_id
+
+        response = await self._client.post(f"{self.base_url}/sessions", json=payload)
         response.raise_for_status()
         data = response.json()
         self._session_id = data["session_id"]
@@ -94,7 +100,12 @@ class AgentClient:
         logger.info(f"Created session: {self._session_id}")
         return self._session_id
 
-    async def query(self, message: str, session_id: str | None = None) -> QueryResponse:
+    async def query(
+        self,
+        message: str,
+        session_id: str | None = None,
+        user_id: str | None = None,
+    ) -> QueryResponse:
         """
         Send a non-streaming query to the agent.
 
@@ -105,19 +116,31 @@ class AgentClient:
         Returns:
             QueryResponse with the agent's response and usage info.
         """
-        sid = session_id or self._ensure_session()
+        sid = session_id or self._session_id
+        resolved_user_id = user_id or self._user_id
+        if sid is None and resolved_user_id is None:
+            raise RuntimeError("user_id is required before creating a new session")
 
         response = await self._client.post(
             f"{self.base_url}/agent/query",
-            json=QueryRequest(message=message, session_id=sid).model_dump(),
+            json=QueryRequest(
+                message=message,
+                session_id=sid,
+                user_id=resolved_user_id,
+            ).model_dump(),
         )
         response.raise_for_status()
-        return QueryResponse(**response.json())
+        result = QueryResponse(**response.json())
+        self._session_id = result.session_id
+        if resolved_user_id is not None:
+            self._user_id = resolved_user_id
+        return result
 
     async def query_stream(
         self,
         message: str,
         session_id: str | None = None,
+        user_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """
         Send a streaming query to the agent.
@@ -129,12 +152,15 @@ class AgentClient:
         Yields:
             StreamEvent objects as they arrive from the server.
         """
-        sid = session_id or self._ensure_session()
+        sid = session_id or self._session_id
+        resolved_user_id = user_id or self._user_id
+        if sid is None and resolved_user_id is None:
+            raise RuntimeError("user_id is required before creating a new session")
 
         async with self._client.stream(
             "POST",
             f"{self.base_url}/agent/query-stream",
-            json={"message": message, "session_id": sid},
+            json={"message": message, "session_id": sid, "user_id": resolved_user_id},
             timeout=None,
         ) as response:
             response.raise_for_status()
@@ -263,11 +289,9 @@ class AgentClient:
         return response.json()
 
     def _ensure_session(self) -> str:
-        """Ensure a session exists, creating one if necessary."""
+        """Ensure a session exists before calling session-scoped endpoints."""
         if self._session_id is None:
-            # For sync contexts, create a random session ID
-            # The server will auto-create it
-            self._session_id = str(uuid4())
+            raise RuntimeError("Session not initialized. Call query() with user_id or create_session() first.")
         return self._session_id
 
 
@@ -283,6 +307,7 @@ class SimpleAgentClient:
         self,
         base_url: str = "http://localhost:8000",
         auto_create_session: bool = True,
+        user_id: str | None = None,
     ):
         """
         Initialize the simple client.
@@ -291,7 +316,7 @@ class SimpleAgentClient:
             base_url: Base URL of the server.
             auto_create_session: Whether to auto-create a session on first query.
         """
-        self._client = AgentClient(base_url=base_url)
+        self._client = AgentClient(base_url=base_url, user_id=user_id)
         self._auto_create = auto_create_session
 
     async def __aenter__(self):
