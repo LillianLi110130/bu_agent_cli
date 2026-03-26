@@ -7,19 +7,25 @@
       "model": "GLM-4.7",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
       "api_key_env": "OPENAI_API_KEY",
-      "vision": false
+      "vision": false,
+      "max_input_tokens": 200000,
+      "max_output_tokens": 4096
     },
     "GLM-4.6": {
       "model": "GLM-4.6",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
       "api_key_env": "OPENAI_API_KEY",
-      "vision": false
+      "vision": false,
+      "max_input_tokens": 200000,
+      "max_output_tokens": 4096
     },
     "GLM-4.6V": {
       "model": "GLM-4.6V",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
       "api_key_env": "OPENAI_API_KEY",
-      "vision": true
+      "vision": true,
+      "max_input_tokens": 128000,
+      "max_output_tokens": 4096
     }
   }
 }

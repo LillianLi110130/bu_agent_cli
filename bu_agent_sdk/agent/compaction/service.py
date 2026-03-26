@@ -22,6 +22,7 @@ from bu_agent_sdk.llm.messages import (
     BaseMessage,
     UserMessage,
 )
+from config.model_config import get_model_limits
 
 if TYPE_CHECKING:
     from bu_agent_sdk.llm.base import BaseChatModel
@@ -123,8 +124,11 @@ class CompactionService:
             return self._context_limit_cache[model]
 
         context_limit = DEFAULT_CONTEXT_WINDOW
+        preset_max_input_tokens, _ = get_model_limits(model)
+        if preset_max_input_tokens is not None:
+            context_limit = preset_max_input_tokens
 
-        if self.token_cost is not None:
+        if context_limit == DEFAULT_CONTEXT_WINDOW and self.token_cost is not None:
             try:
                 pricing = await self.token_cost.get_model_pricing(model)
                 if pricing:

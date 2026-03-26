@@ -81,9 +81,15 @@ from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
+from config.model_config import (
+    ModelPreset,
+    get_auto_vision_preset,
+    get_default_preset,
+    get_image_summary_preset,
+    load_model_presets,
+)
 from tools import SandboxContext, SecurityError
 
-ModelPreset = dict[str, str | bool]
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
 
 
@@ -331,59 +337,16 @@ class ClaudeCodeCLI:
             return {}
 
         try:
-            raw = self._model_presets_path.read_text(encoding="utf-8")
-            data = json.loads(raw)
+            presets = load_model_presets()
         except Exception as e:
             self._console.print(
                 f"[yellow]加载模型预设失败：{e}[/yellow]"
             )
             return {}
 
-        if not isinstance(data, dict):
-            self._console.print(
-                "[yellow]model_presets.json 必须是一个 JSON 对象。[/yellow]"
-            )
-            return {}
-
-        default_name = data.get("default")
-        if isinstance(default_name, str) and default_name.strip():
-            self._default_model_preset = default_name.strip()
-
-        auto_vision_name = data.get("auto_vision_preset")
-        if isinstance(auto_vision_name, str) and auto_vision_name.strip():
-            self._auto_vision_preset = auto_vision_name.strip()
-
-        image_summary_name = data.get("image_summary_preset")
-        if isinstance(image_summary_name, str) and image_summary_name.strip():
-            self._image_summary_preset = image_summary_name.strip()
-
-        preset_data = data.get("presets")
-        if not isinstance(preset_data, dict):
-            return {}
-
-        presets: dict[str, ModelPreset] = {}
-        for name, config in preset_data.items():
-            if not isinstance(name, str) or not isinstance(config, dict):
-                continue
-
-            model = config.get("model")
-            if not isinstance(model, str) or not model.strip():
-                continue
-
-            cleaned: ModelPreset = {"model": model.strip()}
-
-            base_url = config.get("base_url")
-            if isinstance(base_url, str) and base_url.strip():
-                cleaned["base_url"] = base_url.strip()
-
-            api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
-            if isinstance(api_key_env, str) and api_key_env.strip():
-                cleaned["api_key_env"] = api_key_env.strip()
-            else:
-                cleaned["api_key_env"] = "OPENAI_API_KEY"
-
-            cleaned["vision"] = bool(config.get("vision", False))
-            presets[name.strip()] = cleaned
+        self._default_model_preset = get_default_preset(presets)
+        self._auto_vision_preset = get_auto_vision_preset(presets)
+        self._image_summary_preset = get_image_summary_preset(presets)
 
         return presets
 

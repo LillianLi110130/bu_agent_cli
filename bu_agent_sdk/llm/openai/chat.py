@@ -19,6 +19,7 @@ from bu_agent_sdk.llm.exceptions import ModelProviderError, ModelRateLimitError
 from bu_agent_sdk.llm.messages import BaseMessage, Function, ToolCall
 from bu_agent_sdk.llm.openai.serializer import OpenAIMessageSerializer
 from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
+from config.model_config import get_model_limits
 
 
 @dataclass
@@ -89,7 +90,8 @@ class ChatOpenAI(BaseChatModel):
     default_query: Mapping[str, object] | None = None
     http_client: httpx.AsyncClient | None = None
     _strict_response_validation: bool = False
-    max_completion_tokens: int | None = 4096
+    max_input_tokens: int | None = None
+    max_completion_tokens: int | None = None
     reasoning_models: list[ChatModel | str] | None = field(
         default_factory=lambda: [
             "o4-mini",
@@ -103,6 +105,15 @@ class ChatOpenAI(BaseChatModel):
             "gpt-5-nano",
         ]
     )
+
+    def __post_init__(self) -> None:
+        resolved_max_input, resolved_max_output = get_model_limits(str(self.model))
+
+        if self.max_input_tokens is None:
+            self.max_input_tokens = resolved_max_input
+
+        if self.max_completion_tokens is None:
+            self.max_completion_tokens = resolved_max_output or 4096
 
     # Static
     @property

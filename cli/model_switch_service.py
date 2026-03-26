@@ -15,8 +15,7 @@ from bu_agent_sdk.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-
-ModelPreset = dict[str, str | bool]
+from config.model_config import ModelPreset
 
 
 @dataclass
