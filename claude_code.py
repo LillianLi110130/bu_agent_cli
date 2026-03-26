@@ -243,7 +243,7 @@ def parse_args():
     parser.add_argument(
         "--root-dir",
         "-r",
-        help="Root directory for sandbox (default: current working directory)",
+        help="Workspace root for sandbox (default: current working directory)",
     )
     parser.add_argument(
         "--local-bridge",
@@ -263,7 +263,8 @@ def parse_args():
         help="Gateway base URL for the worker (default: from tg_crab_worker.json)",
     )
     args = parser.parse_args()
-    auth_config = load_auth_config(base_dir=Path(args.root_dir or Path.cwd()).resolve())
+    args.config_dir = Path.cwd().resolve()
+    auth_config = load_auth_config(base_dir=args.config_dir)
     if args.im_enable:
         args.local_bridge = True
         args.im_worker_id = _DEFAULT_IM_WORKER_ID
@@ -313,6 +314,8 @@ async def _start_im_worker_process(
         str(args.im_worker_id),
         "--gateway-base-url",
         str(args.im_gateway_base_url),
+        "--config-dir",
+        str(Path(getattr(args, "config_dir", Path.cwd())).resolve()),
         "--root-dir",
         str(ctx.working_dir),
     ]
@@ -383,7 +386,7 @@ async def _mark_worker_offline(
 
 async def _authenticate_worker_startup(args: argparse.Namespace) -> None:
     """Authenticate before starting the CLI and worker when auth is enabled."""
-    base_dir = Path(args.root_dir or Path.cwd()).resolve()
+    base_dir = Path(getattr(args, "config_dir", Path.cwd())).resolve()
     auth_config = load_auth_config(base_dir=base_dir)
     if not auth_config.enable_auth:
         return

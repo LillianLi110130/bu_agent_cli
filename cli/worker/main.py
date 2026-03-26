@@ -22,6 +22,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--worker-id", required=True, help="Stable worker identifier")
     parser.add_argument("--gateway-base-url", required=True, help="Gateway base URL")
     parser.add_argument("--model", default=None, help="Optional model override")
+    parser.add_argument(
+        "--config-dir",
+        default=None,
+        help="Optional startup config directory (default: current working directory)",
+    )
     parser.add_argument("--root-dir", default=None, help="Optional workspace root directory")
     return parser.parse_args()
 
@@ -45,7 +50,7 @@ async def async_main() -> None:
         from cli.worker.auth import load_auth_config as load_auth_config_fn
         from cli.worker.auth import load_persisted_auth_result as load_persisted_auth_result_fn
 
-    base_dir = Path(args.root_dir or Path.cwd()).resolve()
+    base_dir = Path(args.config_dir or Path.cwd()).resolve()
     auth_config = load_auth_config_fn(base_dir=base_dir)
     authorization: str | None = None
     if auth_config.enable_auth:

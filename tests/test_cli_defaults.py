@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sys
+import shutil
+import uuid
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +32,41 @@ def test_parse_args_can_disable_im_and_local_bridge(monkeypatch):
 
     assert args.im_enable is False
     assert args.local_bridge is False
+
+
+def test_parse_args_root_dir_does_not_change_startup_config_dir(monkeypatch):
+    root = Path(".pytest_tmp") / f"cli-defaults-{uuid.uuid4().hex}"
+    if root.exists():
+        shutil.rmtree(root)
+    startup_dir = root / "startup"
+    startup_dir.mkdir(parents=True)
+    startup_dir_resolved = startup_dir.resolve()
+    (startup_dir / "tg_crab_worker.json").write_text(
+        (
+            "{\n"
+            '  "enable_auth": false,\n'
+            '  "gateway_base_url": "http://127.0.0.1:9765"\n'
+            "}\n"
+        ),
+        encoding="utf-8",
+    )
+    workspace_root = root / "workspace"
+
+    try:
+        monkeypatch.chdir(startup_dir)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["claude_code.py", "--root-dir", str(workspace_root)],
+        )
+
+        args = claude_code.parse_args()
+
+        assert args.config_dir == startup_dir_resolved
+        assert args.im_gateway_base_url == "http://127.0.0.1:9765"
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
 
 
 def test_top_level_console_outputs_plain_text():

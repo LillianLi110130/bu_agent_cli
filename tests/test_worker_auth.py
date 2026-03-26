@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 from pathlib import Path
 import shutil
@@ -134,11 +135,12 @@ def test_load_auth_config_reads_gateway_base_url(workspace_root: Path):
     assert config.gateway_base_url == "http://127.0.0.1:9765"
 
 
-@pytest.mark.asyncio
-async def test_claude_code_authentication_overrides_worker_id(
+def test_claude_code_authentication_overrides_worker_id(
     workspace_root: Path,
     monkeypatch,
 ):
+    config_root = workspace_root / "config"
+    config_root.mkdir(parents=True, exist_ok=True)
     config = auth.WorkerAuthConfig(enable_auth=True)
     calls: list[Path] = []
 
@@ -148,7 +150,7 @@ async def test_claude_code_authentication_overrides_worker_id(
 
     async def fake_authenticate_startup(*, config, base_dir, client=None):
         assert config.enable_auth is True
-        assert Path(base_dir) == workspace_root
+        assert Path(base_dir) == config_root
         return auth.AuthBootstrapResult(
             authorization="Bearer mock-token",
             user_id="mock-user-123",
@@ -159,12 +161,13 @@ async def test_claude_code_authentication_overrides_worker_id(
 
     args = argparse.Namespace(
         root_dir=str(workspace_root),
+        config_dir=config_root,
         im_worker_id="worker-old",
     )
 
-    await claude_code._authenticate_worker_startup(args)
+    asyncio.run(claude_code._authenticate_worker_startup(args))
 
-    assert calls == [workspace_root]
+    assert calls == [config_root]
     assert args.im_worker_id == "mock-user-123"
 
 
