@@ -7,6 +7,7 @@ import pytest
 
 from agent_core.agent import (
     Agent,
+    AgentRunState,
     AuditHook,
     ExcelReadGuardHook,
     HumanApprovalDecision,
@@ -15,7 +16,9 @@ from agent_core.agent import (
     ToolPolicyHook,
     build_default_approval_policy,
 )
-from agent_core.agent.events import FinalResponseEvent, HiddenUserMessageEvent
+from agent_core.agent.events import FinalResponseEvent, HiddenUserMessageEvent, ToolCallEvent
+from agent_core.agent.runtime_events import ToolCallRequested
+from agent_core.agent.runtime_loop import AgentRuntimeLoop
 from agent_core.llm.messages import BaseMessage, Function, ToolCall
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 from agent_core.tools.decorator import tool
@@ -86,6 +89,33 @@ async def test_query_uses_runtime_loop_for_basic_completion():
     assert result == "done"
     assert len(llm.invocations) == 1
     assert [message.role for message in agent.messages] == ["system", "user", "assistant"]
+
+
+@pytest.mark.anyio
+async def test_runtime_loop_handle_tool_call_requested_uses_override_result():
+    @tool("Echo payload")
+    async def echo(payload: str) -> str:
+        return payload
+
+    agent = Agent(llm=FakeLLM([]), tools=[echo])
+    state = AgentRunState(query_mode="query", max_iterations=5, iterations=1)
+    runtime_loop = AgentRuntimeLoop(agent=agent, state=state)
+    event = ToolCallRequested(
+        tool_call=ToolCall(
+            id="call-1",
+            function=Function(name="echo", arguments='{"payload":"hello"}'),
+        ),
+        iteration=1,
+    )
+
+    emitted_events, ui_events = await runtime_loop._handle_event(event, "hook override")
+
+    assert len(emitted_events) == 1
+    assert emitted_events[0].tool_result.text == "hook override"
+    assert emitted_events[0].tool_result.is_error is False
+    assert len(ui_events) == 2
+    assert isinstance(ui_events[1], ToolCallEvent)
+    assert ui_events[1].args["payload"] == "hello"
 
 
 @pytest.mark.anyio

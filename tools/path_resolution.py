@@ -38,6 +38,24 @@ class _Match:
     score: int
 
 
+@dataclass(frozen=True)
+class _QuerySignature:
+    strict_path: str
+    relaxed_path: str
+    strict_name: str
+    relaxed_name: str
+    suffix: str
+    parts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CandidateSignature:
+    strict_path: str
+    relaxed_path: str
+    strict_name: str
+    relaxed_name: str
+
+
 _SEPARATOR_TRANSLATION = str.maketrans(
     {
         "（": "(",
@@ -119,17 +137,35 @@ def _candidate_query_paths(query: str) -> list[str]:
     return candidates
 
 
-def _search_matches(query: str, ctx: SandboxContext, *, kind: TargetKind) -> list[_Match]:
-    roots = _search_roots(query, ctx)
-    results: list[_Match] = []
-    seen: set[Path] = set()
-    strict_query = _normalize_strict(query)
-    relaxed_query = _normalize_relaxed(query)
+def _build_query_signature(query: str) -> _QuerySignature:
     query_name = Path(query).name or query
-    strict_name = _normalize_strict(query_name)
-    relaxed_name = _normalize_relaxed(query_name)
-    query_suffix = Path(query_name).suffix.lower()
-    query_parts = [part for part in _split_query_parts(query) if part]
+    return _QuerySignature(
+        strict_path=_normalize_strict(query),
+        relaxed_path=_normalize_relaxed(query),
+        strict_name=_normalize_strict(query_name),
+        relaxed_name=_normalize_relaxed(query_name),
+        suffix=Path(query_name).suffix.lower(),
+        parts=tuple(part for part in _split_query_parts(query) if part),
+    )
+
+
+def _build_candidate_signature(candidate: Path) -> _CandidateSignature:
+    candidate_text = str(candidate)
+    return _CandidateSignature(
+        strict_path=_normalize_strict(candidate_text),
+        relaxed_path=_normalize_relaxed(candidate_text),
+        strict_name=_normalize_strict(candidate.name),
+        relaxed_name=_normalize_relaxed(candidate.name),
+    )
+
+
+def _iter_unique_search_candidates(
+    roots: list[Path],
+    *,
+    kind: TargetKind,
+) -> list[Path]:
+    candidates: list[Path] = []
+    seen: set[Path] = set()
 
     for root in roots:
         try:
@@ -140,41 +176,74 @@ def _search_matches(query: str, ctx: SandboxContext, *, kind: TargetKind) -> lis
             if candidate in seen:
                 continue
             seen.add(candidate)
-            if not _matches_kind(candidate, kind):
-                continue
+            if _matches_kind(candidate, kind):
+                candidates.append(candidate)
 
-            candidate_text = str(candidate)
-            strict_candidate = _normalize_strict(candidate_text)
-            relaxed_candidate = _normalize_relaxed(candidate_text)
-            strict_candidate_name = _normalize_strict(candidate.name)
-            relaxed_candidate_name = _normalize_relaxed(candidate.name)
+    return candidates
 
-            score = 0
-            if strict_candidate_name == strict_name:
-                score += 240
-            elif relaxed_candidate_name == relaxed_name:
-                score += 220
-            elif relaxed_name and relaxed_name in relaxed_candidate_name:
-                score += 170
-            elif relaxed_candidate_name and relaxed_candidate_name in relaxed_name:
-                score += 150
 
-            if strict_candidate == strict_query:
-                score += 260
-            elif relaxed_query and relaxed_query == relaxed_candidate:
-                score += 240
-            elif relaxed_query and relaxed_query in relaxed_candidate:
-                score += 120
+def _score_candidate_name_match(
+    query_signature: _QuerySignature,
+    candidate_signature: _CandidateSignature,
+) -> int:
+    if candidate_signature.strict_name == query_signature.strict_name:
+        return 240
+    if candidate_signature.relaxed_name == query_signature.relaxed_name:
+        return 220
+    if query_signature.relaxed_name and query_signature.relaxed_name in candidate_signature.relaxed_name:
+        return 170
+    if (
+        candidate_signature.relaxed_name
+        and candidate_signature.relaxed_name in query_signature.relaxed_name
+    ):
+        return 150
+    return 0
 
-            if query_suffix and candidate.suffix.lower() == query_suffix:
-                score += 25
 
-            for part in query_parts:
-                if part and part in relaxed_candidate:
-                    score += 15
+def _score_candidate_path_match(
+    query_signature: _QuerySignature,
+    candidate_signature: _CandidateSignature,
+) -> int:
+    if candidate_signature.strict_path == query_signature.strict_path:
+        return 260
+    if query_signature.relaxed_path and query_signature.relaxed_path == candidate_signature.relaxed_path:
+        return 240
+    if query_signature.relaxed_path and query_signature.relaxed_path in candidate_signature.relaxed_path:
+        return 120
+    return 0
 
-            if score >= 80:
-                results.append(_Match(path=candidate, score=score))
+
+def _score_candidate_suffix_match(query_signature: _QuerySignature, candidate: Path) -> int:
+    if query_signature.suffix and candidate.suffix.lower() == query_signature.suffix:
+        return 25
+    return 0
+
+
+def _score_candidate_part_matches(
+    query_signature: _QuerySignature,
+    candidate_signature: _CandidateSignature,
+) -> int:
+    return sum(15 for part in query_signature.parts if part in candidate_signature.relaxed_path)
+
+
+def _score_candidate(query_signature: _QuerySignature, candidate: Path) -> int:
+    candidate_signature = _build_candidate_signature(candidate)
+    return (
+        _score_candidate_name_match(query_signature, candidate_signature)
+        + _score_candidate_path_match(query_signature, candidate_signature)
+        + _score_candidate_suffix_match(query_signature, candidate)
+        + _score_candidate_part_matches(query_signature, candidate_signature)
+    )
+
+
+def _search_matches(query: str, ctx: SandboxContext, *, kind: TargetKind) -> list[_Match]:
+    roots = _search_roots(query, ctx)
+    query_signature = _build_query_signature(query)
+    results: list[_Match] = []
+    for candidate in _iter_unique_search_candidates(roots, kind=kind):
+        score = _score_candidate(query_signature, candidate)
+        if score >= 80:
+            results.append(_Match(path=candidate, score=score))
 
     results.sort(key=lambda item: (-item.score, len(str(item.path)), str(item.path).lower()))
     return results

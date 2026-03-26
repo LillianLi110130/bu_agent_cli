@@ -7,6 +7,7 @@ import posixpath
 import re
 import unicodedata
 import zipfile
+from pathlib import Path
 from typing import Annotated
 from xml.etree import ElementTree as ET
 
@@ -345,6 +346,180 @@ def _resolve_sheet_selection(
     return f"Error: Sheet '{requested_name}' not found. Available sheets: {available_sheet_names}"
 
 
+def _resolve_excel_path(
+    file_path: str,
+    ctx: SandboxContext,
+) -> tuple[str | None, Path | None]:
+    try:
+        path = resolve_target_path(file_path, ctx, kind="file")
+    except Exception as e:
+        if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
+            return str(e), None
+        return f"Security error: {e}", None
+
+    if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
+        supported = ", ".join(sorted(_SUPPORTED_SUFFIXES))
+        return (
+            f"Error: Unsupported Excel format '{path.suffix}'. Supported formats: {supported}",
+            None,
+        )
+
+    return None, path
+
+
+def _validate_preview_limits(
+    *,
+    offset_row: int,
+    context_rows: int,
+    max_matches: int,
+    max_rows: int,
+    max_cols: int,
+) -> str | None:
+    if offset_row < 1 or context_rows < 0 or max_matches < 1 or max_rows < 1 or max_cols < 1:
+        return (
+            "Error: offset_row, context_rows, max_matches, max_rows, and max_cols "
+            "must be valid positive integers (context_rows may be zero)."
+        )
+    return None
+
+
+def _normalize_optional_request_text(value: str | None) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    stripped = value.strip()
+    return stripped or None
+
+
+def _collect_sheet_payloads(
+    archive: zipfile.ZipFile,
+    selected_sheets: list[tuple[str, str]],
+    shared_strings: list[str],
+    *,
+    requested_find_text: str | None,
+    offset_row: int,
+    context_rows: int,
+    max_matches: int,
+    max_rows: int,
+    max_cols: int,
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    remaining_matches = max_matches
+    matches: list[dict[str, object]] = []
+    sheets_payload: list[dict[str, object]] = []
+
+    for name, sheet_path in selected_sheets:
+        row_count, column_count, parsed_rows = _parse_sheet(archive, sheet_path, shared_strings)
+        sheets_payload.append(
+            _inspect_sheet(
+                name,
+                parsed_rows,
+                row_count=row_count,
+                column_count=column_count,
+                offset_row=offset_row,
+                max_rows=max_rows,
+                max_cols=max_cols,
+            )
+        )
+
+        if requested_find_text is None or remaining_matches <= 0:
+            continue
+
+        sheet_matches = _find_matches(
+            sheet_name=name,
+            parsed_rows=parsed_rows,
+            find_text=requested_find_text,
+            offset_row=offset_row,
+            max_cols=max_cols,
+            context_rows=context_rows,
+            remaining_matches=remaining_matches,
+        )
+        matches.extend(sheet_matches)
+        remaining_matches -= len(sheet_matches)
+
+    return matches, sheets_payload
+
+
+def _build_preview_limits(
+    *,
+    requested_find_text: str | None,
+    offset_row: int,
+    context_rows: int,
+    max_matches: int,
+    max_rows: int,
+    max_cols: int,
+) -> dict[str, object]:
+    return {
+        "find_text": requested_find_text,
+        "offset_row": offset_row,
+        "context_rows": context_rows,
+        "max_matches": max_matches,
+        "max_rows": max_rows,
+        "max_cols": max_cols,
+    }
+
+
+def _inspect_workbook(
+    archive: zipfile.ZipFile,
+    *,
+    resolved_path: str,
+    requested_sheet_name: str | None,
+    requested_find_text: str | None,
+    offset_row: int,
+    context_rows: int,
+    max_matches: int,
+    max_rows: int,
+    max_cols: int,
+) -> tuple[str | None, dict[str, object] | None]:
+    shared_strings = _load_shared_strings(archive)
+    sheets = _load_sheet_targets(archive)
+    if not sheets:
+        return "Error: Workbook does not contain readable worksheet definitions.", None
+
+    available_sheet_names = [name for name, _ in sheets]
+    selection_result = _resolve_sheet_selection(requested_sheet_name, sheets)
+    if isinstance(selection_result, str):
+        return selection_result, None
+
+    resolved_sheet_name, selected_sheets = selection_result
+    matches, sheets_payload = _collect_sheet_payloads(
+        archive,
+        selected_sheets,
+        shared_strings,
+        requested_find_text=requested_find_text,
+        offset_row=offset_row,
+        context_rows=context_rows,
+        max_matches=max_matches,
+        max_rows=max_rows,
+        max_cols=max_cols,
+    )
+    payload = {
+        "resolved_path": resolved_path,
+        "sheet_names": available_sheet_names,
+        "selected_sheet": resolved_sheet_name,
+        "preview_limits": _build_preview_limits(
+            requested_find_text=requested_find_text,
+            offset_row=offset_row,
+            context_rows=context_rows,
+            max_matches=max_matches,
+            max_rows=max_rows,
+            max_cols=max_cols,
+        ),
+        "matches": matches,
+        "sheets": sheets_payload,
+    }
+    return None, payload
+
+
+def _format_workbook_error(path_name: str, error: Exception) -> str:
+    if isinstance(error, zipfile.BadZipFile):
+        return f"Error: '{path_name}' is not a valid OOXML Excel file."
+    if isinstance(error, KeyError):
+        return f"Error: Workbook is missing required OOXML part: {error}"
+    if isinstance(error, ET.ParseError):
+        return f"Error: Failed to parse workbook XML: {error}"
+    return f"Error reading Excel file: {error}"
+
+
 @tool(
     "Read an Excel workbook from a resolved path and return sheet names, preview rows, "
     "and optional text matches.",
@@ -373,103 +548,39 @@ async def read_excel(
         max_rows: Maximum preview rows per sheet.
         max_cols: Maximum preview columns per row.
     """
-    try:
-        path = resolve_target_path(file_path, ctx, kind="file")
-    except Exception as e:
-        if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
-            return str(e)
-        return f"Security error: {e}"
+    path_error, path = _resolve_excel_path(file_path, ctx)
+    if path_error is not None:
+        return path_error
 
-    if path.suffix.lower() not in _SUPPORTED_SUFFIXES:
-        supported = ", ".join(sorted(_SUPPORTED_SUFFIXES))
-        return f"Error: Unsupported Excel format '{path.suffix}'. Supported formats: {supported}"
+    preview_limit_error = _validate_preview_limits(
+        offset_row=offset_row,
+        context_rows=context_rows,
+        max_matches=max_matches,
+        max_rows=max_rows,
+        max_cols=max_cols,
+    )
+    if preview_limit_error is not None:
+        return preview_limit_error
 
-    if offset_row < 1 or context_rows < 0 or max_matches < 1 or max_rows < 1 or max_cols < 1:
-        return (
-            "Error: offset_row, context_rows, max_matches, max_rows, and max_cols "
-            "must be valid positive integers (context_rows may be zero)."
-        )
-
-    requested_sheet_name = sheet_name.strip() if isinstance(sheet_name, str) else None
-    if requested_sheet_name == "":
-        requested_sheet_name = None
-    requested_find_text = find_text.strip() if isinstance(find_text, str) else None
-    if requested_find_text == "":
-        requested_find_text = None
+    requested_sheet_name = _normalize_optional_request_text(sheet_name)
+    requested_find_text = _normalize_optional_request_text(find_text)
 
     try:
         with zipfile.ZipFile(path) as archive:
-            shared_strings = _load_shared_strings(archive)
-            sheets = _load_sheet_targets(archive)
-            if not sheets:
-                return "Error: Workbook does not contain readable worksheet definitions."
-
-            available_sheet_names = [name for name, _ in sheets]
-            selection_result = _resolve_sheet_selection(
-                requested_sheet_name,
-                sheets,
+            workbook_error, payload = _inspect_workbook(
+                archive,
+                resolved_path=str(path),
+                requested_sheet_name=requested_sheet_name,
+                requested_find_text=requested_find_text,
+                offset_row=offset_row,
+                context_rows=context_rows,
+                max_matches=max_matches,
+                max_rows=max_rows,
+                max_cols=max_cols,
             )
-            if isinstance(selection_result, str):
-                return selection_result
-
-            resolved_sheet_name, selected_or_error = selection_result
-            selected = selected_or_error
-
-            remaining_matches = max_matches
-            matches: list[dict[str, object]] = []
-            sheets_payload: list[dict[str, object]] = []
-            for name, sheet_path in selected:
-                row_count, column_count, parsed_rows = _parse_sheet(
-                    archive, sheet_path, shared_strings
-                )
-                sheets_payload.append(
-                    _inspect_sheet(
-                        name,
-                        parsed_rows,
-                        row_count=row_count,
-                        column_count=column_count,
-                        offset_row=offset_row,
-                        max_rows=max_rows,
-                        max_cols=max_cols,
-                    )
-                )
-
-                if requested_find_text is None or remaining_matches <= 0:
-                    continue
-
-                sheet_matches = _find_matches(
-                    sheet_name=name,
-                    parsed_rows=parsed_rows,
-                    find_text=requested_find_text,
-                    offset_row=offset_row,
-                    max_cols=max_cols,
-                    context_rows=context_rows,
-                    remaining_matches=remaining_matches,
-                )
-                matches.extend(sheet_matches)
-                remaining_matches -= len(sheet_matches)
-
-            payload = {
-                "resolved_path": str(path),
-                "sheet_names": available_sheet_names,
-                "selected_sheet": resolved_sheet_name,
-                "preview_limits": {
-                    "find_text": requested_find_text,
-                    "offset_row": offset_row,
-                    "context_rows": context_rows,
-                    "max_matches": max_matches,
-                    "max_rows": max_rows,
-                    "max_cols": max_cols,
-                },
-                "matches": matches,
-                "sheets": sheets_payload,
-            }
-            return _dump_payload(payload)
-    except zipfile.BadZipFile:
-        return f"Error: '{path.name}' is not a valid OOXML Excel file."
-    except KeyError as e:
-        return f"Error: Workbook is missing required OOXML part: {e}"
-    except ET.ParseError as e:
-        return f"Error: Failed to parse workbook XML: {e}"
     except Exception as e:
-        return f"Error reading Excel file: {e}"
+        return _format_workbook_error(path.name, e)
+
+    if workbook_error is not None:
+        return workbook_error
+    return _dump_payload(payload)

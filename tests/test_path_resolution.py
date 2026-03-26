@@ -122,6 +122,29 @@ def test_resolve_target_path_matches_chinese_punctuation_variants():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def test_resolve_target_path_prefers_full_path_match_over_partial_filename_match():
+    workspace = _make_workspace()
+    exact_dir = workspace / "项目A"
+    partial_dir = workspace / "归档"
+    exact_dir.mkdir()
+    partial_dir.mkdir()
+    exact_file = exact_dir / "报告总结.md"
+    partial_file = partial_dir / "报告总结.md"
+    exact_file.write_text("exact", encoding="utf-8")
+    partial_file.write_text("partial", encoding="utf-8")
+    (exact_dir / "补充说明.txt").write_text("note", encoding="utf-8")
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        query = str(workspace / "项目 A" / "报告总结.md")
+
+        resolved = resolve_target_path(query, ctx, kind="file")
+
+        assert resolved == exact_file.resolve()
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 @pytest.mark.anyio
 async def test_glob_search_uses_resolved_directory_path():
     workspace = _make_workspace()

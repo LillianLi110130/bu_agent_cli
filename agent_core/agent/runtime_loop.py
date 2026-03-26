@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections import deque
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from agent_core.agent.events import (
     AgentEvent,
@@ -108,233 +109,290 @@ class AgentRuntimeLoop:
         event: RuntimeEvent,
         override_result,
     ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
-        if isinstance(event, RunStarted):
-            if not self.agent._context and self.agent.system_prompt:
-                self.agent._context.add_message(
-                    SystemMessage(content=self.agent.system_prompt, cache=True)
-                )
-            self.agent._context.add_message(UserMessage(content=event.message))
-            return [IterationStarted(iteration=1)], []
+        handler = self._event_handlers().get(type(event))
+        if handler is None:
+            raise RuntimeError(f"Unhandled runtime event: {type(event).__name__}")
 
-        if isinstance(event, IterationStarted):
-            if event.iteration > self.state.max_iterations:
-                summary = await self.agent._generate_max_iterations_summary()
-                return [RunFinished(final_response=summary, iterations=self.state.iterations)], []
+        result = handler(event, override_result)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
-            self.state.iterations = event.iteration
-            return [
-                EphemeralPruneRequested(iteration=event.iteration),
-                LLMCallRequested(
-                    messages=self.agent._context.get_messages(),
-                    tools=self.agent.tool_definitions if self.agent.tools else None,
-                    tool_choice=self.agent.tool_choice if self.agent.tools else None,
-                    iteration=event.iteration,
-                ),
-            ], []
+    def _event_handlers(self) -> dict[type[Any], Any]:
+        return {
+            RunStarted: lambda event, _: self._handle_run_started(event),
+            IterationStarted: lambda event, _: self._handle_iteration_started(event),
+            EphemeralPruneRequested: lambda _event, _: self._handle_ephemeral_prune_requested(),
+            LLMCallRequested: lambda event, _: self._handle_llm_call_requested(event),
+            LLMResponseReceived: lambda event, _: self._handle_llm_response_received(event),
+            ToolCallRequested: lambda event, override: self._handle_tool_call_requested(
+                event, override
+            ),
+            ToolResultReceived: lambda event, _: self._handle_tool_result_received(event),
+            ContextMaintenanceRequested: lambda event, _: self._handle_context_maintenance_requested(
+                event
+            ),
+            FinishRequested: lambda event, _: self._handle_finish_requested(event),
+            RunFinished: lambda event, _: self._handle_run_finished(event),
+            RunFailed: lambda event, _: self._handle_run_failed(event),
+        }
 
-        if isinstance(event, EphemeralPruneRequested):
-            self.agent._destroy_ephemeral_messages()
-            return [], []
-
-        if isinstance(event, LLMCallRequested):
-            # Check for cancellation before LLM call
-            if self.state.cancel_event and self.state.cancel_event.is_set():
-                return [
-                    RunFinished(
-                        final_response="[Cancelled by user]", iterations=self.state.iterations
-                    )
-                ], []
-
-            if event.messages != self.agent._context.get_messages():
-                self.agent._context.replace_messages(event.messages)
-
-            try:
-                response = await self.agent._invoke_llm()
-            except asyncio.CancelledError:
-                # LLM call was cancelled
-                return [
-                    RunFinished(
-                        final_response="[Cancelled by user]", iterations=self.state.iterations
-                    )
-                ], []
-            except Exception as error:
-                if (
-                    not self.state.overflow_recovery_attempted
-                    and self.agent._is_context_overflow_error(error)
-                ):
-                    self.state.overflow_recovery_attempted = True
-                    compacted = await self.agent._compact_messages_now()
-                    if compacted:
-                        return [
-                            LLMCallRequested(
-                                messages=self.agent._context.get_messages(),
-                                tools=self.agent.tool_definitions if self.agent.tools else None,
-                                tool_choice=self.agent.tool_choice if self.agent.tools else None,
-                                iteration=event.iteration,
-                            )
-                        ], []
-                return [RunFailed(error=error, iteration=event.iteration)], []
-
-            self.state.last_response = response
-            self.state.last_usage = response.usage
-            return [LLMResponseReceived(response=response, iteration=event.iteration)], []
-
-        if isinstance(event, LLMResponseReceived):
-            response = event.response
+    def _handle_run_started(
+        self,
+        event: RunStarted,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        if not self.agent._context and self.agent.system_prompt:
             self.agent._context.add_message(
-                AssistantMessage(
-                    content=response.content,
-                    tool_calls=response.tool_calls if response.tool_calls else None,
-                )
+                SystemMessage(content=self.agent.system_prompt, cache=True)
             )
+        self.agent._context.add_message(UserMessage(content=event.message))
+        return [IterationStarted(iteration=1)], []
 
-            ui_events: list[AgentEvent] = []
-            if response.thinking:
-                ui_events.append(ThinkingEvent(content=response.thinking))
-            if response.content:
-                ui_events.append(TextEvent(content=response.content))
+    async def _handle_iteration_started(
+        self,
+        event: IterationStarted,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        if event.iteration > self.state.max_iterations:
+            summary = await self.agent._generate_max_iterations_summary()
+            return [RunFinished(final_response=summary, iterations=self.state.iterations)], []
 
-            if not response.has_tool_calls:
-                return [
-                    ContextMaintenanceRequested(
-                        response=response,
-                        iteration=event.iteration,
-                    ),
-                    FinishRequested(
-                        final_response=response.content or "",
-                        iteration=event.iteration,
-                    ),
-                ], ui_events
+        self.state.iterations = event.iteration
+        return [
+            EphemeralPruneRequested(iteration=event.iteration),
+            self._build_llm_call_requested(iteration=event.iteration),
+        ], []
 
-            emitted_events: list[RuntimeEvent] = [
-                ToolCallRequested(tool_call=tool_call, iteration=event.iteration)
-                for tool_call in response.tool_calls
-            ]
-            emitted_events.extend(
-                [
-                    ContextMaintenanceRequested(
-                        response=response,
-                        iteration=event.iteration,
-                    ),
-                    IterationStarted(iteration=event.iteration + 1),
-                ]
+    def _handle_ephemeral_prune_requested(
+        self,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        self.agent._destroy_ephemeral_messages()
+        return [], []
+
+    async def _handle_llm_call_requested(
+        self,
+        event: LLMCallRequested,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        if self._is_cancelled():
+            return [self._cancelled_run_finished()], []
+
+        if event.messages != self.agent._context.get_messages():
+            self.agent._context.replace_messages(event.messages)
+
+        try:
+            response = await self.agent._invoke_llm()
+        except asyncio.CancelledError:
+            return [self._cancelled_run_finished()], []
+        except Exception as error:
+            return await self._handle_llm_call_error(event, error)
+
+        self.state.last_response = response
+        self.state.last_usage = response.usage
+        return [LLMResponseReceived(response=response, iteration=event.iteration)], []
+
+    async def _handle_llm_call_error(
+        self,
+        event: LLMCallRequested,
+        error: Exception,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        if (
+            not self.state.overflow_recovery_attempted
+            and self.agent._is_context_overflow_error(error)
+        ):
+            self.state.overflow_recovery_attempted = True
+            compacted = await self.agent._compact_messages_now()
+            if compacted:
+                return [self._build_llm_call_requested(iteration=event.iteration)], []
+        return [RunFailed(error=error, iteration=event.iteration)], []
+
+    def _handle_llm_response_received(
+        self,
+        event: LLMResponseReceived,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        response = event.response
+        self.agent._context.add_message(
+            AssistantMessage(
+                content=response.content,
+                tool_calls=response.tool_calls if response.tool_calls else None,
             )
-            return emitted_events, ui_events
+        )
 
-        if isinstance(event, ToolCallRequested):
-            # Check for cancellation before tool execution
-            if self.state.cancel_event and self.state.cancel_event.is_set():
-                return [
-                    RunFinished(
-                        final_response="[Cancelled by user]", iterations=self.state.iterations
-                    )
-                ], []
-
-            tool_name = event.tool_call.function.name
-            ui_events: list[AgentEvent] = [
-                StepStartEvent(
-                    step_id=event.tool_call.id,
-                    title=tool_name,
-                    step_number=event.iteration,
-                ),
-                ToolCallEvent(
-                    tool=tool_name,
-                    args=self._parse_args(event.tool_call.function.arguments),
-                    tool_call_id=event.tool_call.id,
-                    display_name=tool_name,
-                ),
-            ]
-
-            if override_result is not None:
-                tool_result = self._coerce_override_result(event.tool_call, override_result)
-                return [
-                    ToolResultReceived(
-                        tool_call=event.tool_call,
-                        tool_result=tool_result,
-                        iteration=event.iteration,
-                    )
-                ], ui_events
-
-            try:
-                tool_result = await self.agent._execute_tool_call(event.tool_call)
-            except asyncio.CancelledError:
-                return [
-                    RunFinished(
-                        final_response="[Cancelled by user]", iterations=self.state.iterations
-                    )
-                ], ui_events
-            except self.agent.task_complete_exc_type as task_complete:
-                terminal_tool_message = ToolMessage(
-                    tool_call_id=event.tool_call.id,
-                    tool_name=tool_name,
-                    content=f"Task completed: {task_complete.message}",
-                    is_error=False,
-                )
-                return [
-                    ToolResultReceived(
-                        tool_call=event.tool_call,
-                        tool_result=terminal_tool_message,
-                        iteration=event.iteration,
-                    ),
-                    RunFinished(
-                        final_response=task_complete.message,
-                        iterations=self.state.iterations,
-                    ),
-                ], ui_events
-
+        ui_events = self._build_llm_response_ui_events(response)
+        if not response.has_tool_calls:
             return [
-                ToolResultReceived(
-                    tool_call=event.tool_call,
-                    tool_result=tool_result,
+                ContextMaintenanceRequested(response=response, iteration=event.iteration),
+                FinishRequested(
+                    final_response=response.content or "",
                     iteration=event.iteration,
-                )
+                ),
             ], ui_events
 
-        if isinstance(event, ToolResultReceived):
-            self.agent._context.add_message(event.tool_result)
-            ui_events = [
-                ToolResultEvent(
-                    tool=event.tool_call.function.name,
-                    result=event.tool_result.text,
-                    tool_call_id=event.tool_call.id,
-                    is_error=event.tool_result.is_error,
-                    screenshot_base64=self.agent._extract_screenshot(event.tool_result),
-                ),
-                StepCompleteEvent(
-                    step_id=event.tool_call.id,
-                    status="error" if event.tool_result.is_error else "completed",
-                    duration_ms=0.0,
-                ),
-            ]
-            return [], ui_events
+        return self._build_tool_call_events(event), ui_events
 
-        if isinstance(event, ContextMaintenanceRequested):
-            await self.agent._maintain_context(event.response)
-            return [], []
+    async def _handle_tool_call_requested(
+        self,
+        event: ToolCallRequested,
+        override_result: Any,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        if self._is_cancelled():
+            return [self._cancelled_run_finished()], []
 
-        if isinstance(event, FinishRequested):
-            if self.agent.require_done_tool:
-                return [IterationStarted(iteration=event.iteration + 1)], []
+        tool_name = event.tool_call.function.name
+        ui_events = self._build_tool_call_ui_events(event)
+
+        if override_result is not None:
+            tool_result = self._coerce_override_result(event.tool_call, override_result)
+            return [self._build_tool_result_received(event, tool_result)], ui_events
+
+        try:
+            tool_result = await self.agent._execute_tool_call(event.tool_call)
+        except asyncio.CancelledError:
+            return [self._cancelled_run_finished()], ui_events
+        except self.agent.task_complete_exc_type as task_complete:
+            terminal_tool_message = ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name=tool_name,
+                content=f"Task completed: {task_complete.message}",
+                is_error=False,
+            )
             return [
+                self._build_tool_result_received(event, terminal_tool_message),
                 RunFinished(
-                    final_response=event.final_response,
+                    final_response=task_complete.message,
                     iterations=self.state.iterations,
-                )
-            ], []
+                ),
+            ], ui_events
 
-        if isinstance(event, RunFinished):
-            self.state.done = True
-            self.state.final_response = event.final_response
-            self.state.finished_at = datetime.now(timezone.utc)
-            return [], [FinalResponseEvent(content=event.final_response)]
+        return [self._build_tool_result_received(event, tool_result)], ui_events
 
-        if isinstance(event, RunFailed):
-            self.state.done = True
-            self.state.error = event.error
-            self.state.finished_at = datetime.now(timezone.utc)
-            return [], []
+    def _handle_tool_result_received(
+        self,
+        event: ToolResultReceived,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        self.agent._context.add_message(event.tool_result)
+        ui_events = [
+            ToolResultEvent(
+                tool=event.tool_call.function.name,
+                result=event.tool_result.text,
+                tool_call_id=event.tool_call.id,
+                is_error=event.tool_result.is_error,
+                screenshot_base64=self.agent._extract_screenshot(event.tool_result),
+            ),
+            StepCompleteEvent(
+                step_id=event.tool_call.id,
+                status="error" if event.tool_result.is_error else "completed",
+                duration_ms=0.0,
+            ),
+        ]
+        return [], ui_events
 
-        raise RuntimeError(f"Unhandled runtime event: {type(event).__name__}")
+    async def _handle_context_maintenance_requested(
+        self,
+        event: ContextMaintenanceRequested,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        await self.agent._maintain_context(event.response)
+        return [], []
+
+    def _handle_finish_requested(
+        self,
+        event: FinishRequested,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        if self.agent.require_done_tool:
+            return [IterationStarted(iteration=event.iteration + 1)], []
+        return [
+            RunFinished(
+                final_response=event.final_response,
+                iterations=self.state.iterations,
+            )
+        ], []
+
+    def _handle_run_finished(
+        self,
+        event: RunFinished,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        self.state.done = True
+        self.state.final_response = event.final_response
+        self.state.finished_at = datetime.now(timezone.utc)
+        return [], [FinalResponseEvent(content=event.final_response)]
+
+    def _handle_run_failed(
+        self,
+        event: RunFailed,
+    ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
+        self.state.done = True
+        self.state.error = event.error
+        self.state.finished_at = datetime.now(timezone.utc)
+        return [], []
+
+    def _build_llm_call_requested(self, *, iteration: int) -> LLMCallRequested:
+        return LLMCallRequested(
+            messages=self.agent._context.get_messages(),
+            tools=self.agent.tool_definitions if self.agent.tools else None,
+            tool_choice=self.agent.tool_choice if self.agent.tools else None,
+            iteration=iteration,
+        )
+
+    def _build_llm_response_ui_events(self, response) -> list[AgentEvent]:
+        ui_events: list[AgentEvent] = []
+        if response.thinking:
+            ui_events.append(ThinkingEvent(content=response.thinking))
+        if response.content:
+            ui_events.append(TextEvent(content=response.content))
+        return ui_events
+
+    def _build_tool_call_events(
+        self,
+        event: LLMResponseReceived,
+    ) -> list[RuntimeEvent]:
+        emitted_events: list[RuntimeEvent] = [
+            ToolCallRequested(tool_call=tool_call, iteration=event.iteration)
+            for tool_call in event.response.tool_calls
+        ]
+        emitted_events.extend(
+            [
+                ContextMaintenanceRequested(
+                    response=event.response,
+                    iteration=event.iteration,
+                ),
+                IterationStarted(iteration=event.iteration + 1),
+            ]
+        )
+        return emitted_events
+
+    def _build_tool_call_ui_events(self, event: ToolCallRequested) -> list[AgentEvent]:
+        tool_name = event.tool_call.function.name
+        return [
+            StepStartEvent(
+                step_id=event.tool_call.id,
+                title=tool_name,
+                step_number=event.iteration,
+            ),
+            ToolCallEvent(
+                tool=tool_name,
+                args=self._parse_args(event.tool_call.function.arguments),
+                tool_call_id=event.tool_call.id,
+                display_name=tool_name,
+            ),
+        ]
+
+    def _build_tool_result_received(
+        self,
+        event: ToolCallRequested,
+        tool_result: ToolMessage,
+    ) -> ToolResultReceived:
+        return ToolResultReceived(
+            tool_call=event.tool_call,
+            tool_result=tool_result,
+            iteration=event.iteration,
+        )
+
+    def _is_cancelled(self) -> bool:
+        return bool(self.state.cancel_event and self.state.cancel_event.is_set())
+
+    def _cancelled_run_finished(self) -> RunFinished:
+        return RunFinished(
+            final_response="[Cancelled by user]",
+            iterations=self.state.iterations,
+        )
 
     @staticmethod
     def _prepend_events(queue: deque[RuntimeEvent], events: list[RuntimeEvent]) -> None:

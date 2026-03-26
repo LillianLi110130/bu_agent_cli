@@ -390,6 +390,41 @@ async def test_read_excel_find_text_respects_offset_row():
 
 
 @pytest.mark.anyio
+async def test_read_excel_reports_invalid_preview_limits():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(workbook_path, [("Sheet1", [["hello", "world"]])])
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func("demo.xlsx", ctx=ctx, context_rows=-1)
+
+        assert (
+            result
+            == "Error: offset_row, context_rows, max_matches, max_rows, and max_cols must be "
+            "valid positive integers (context_rows may be zero)."
+        )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_read_excel_reports_invalid_ooxml_file():
+    workspace = _make_workspace()
+    workbook_path = workspace / "broken.xlsx"
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook_path.write_text("not a zip archive", encoding="utf-8")
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.func("broken.xlsx", ctx=ctx)
+
+        assert result == "Error: 'broken.xlsx' is not a valid OOXML Excel file."
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
 async def test_read_excel_execute_normalizes_none_and_blank_arguments():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
