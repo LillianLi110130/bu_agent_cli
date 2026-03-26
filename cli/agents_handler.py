@@ -13,8 +13,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from bu_agent_sdk.agent.config import AgentConfig
-from bu_agent_sdk.agent.registry import AgentRegistry, get_agent_registry
+from agent_core.agent.config import AgentConfig
+from agent_core.agent.registry import AgentRegistry, get_agent_registry
 
 from cli.interactive_input import InteractivePrompter, get_editor_command
 
@@ -26,9 +26,17 @@ class AgentSlashHandler:
     """
 
     AVAILABLE_TOOLS = [
-        "bash", "read", "write", "edit",
-        "glob_search", "grep", "todo_read", "todo_write",
-        "done", "run_subagent", "run_parallel_subagents",
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "glob_search",
+        "grep",
+        "todo_read",
+        "todo_write",
+        "done",
+        "run_subagent",
+        "run_parallel_subagents",
     ]
     MODE_LABELS = {
         "primary": "主智能体",
@@ -47,7 +55,7 @@ class AgentSlashHandler:
         self.console = console or Console()
         self.prompter = prompter or InteractivePrompter(self.console)
         self.agents_dir = agents_dir or (
-            Path(__file__).parent.parent / "bu_agent_sdk" / "prompts" / "agents"
+            Path(__file__).parent.parent / "agent_core" / "prompts" / "agents"
         )
         self.registry = registry or get_agent_registry(self.agents_dir)
 
@@ -119,7 +127,11 @@ class AgentSlashHandler:
                 "subagent": "blue",
                 "all": "magenta",
             }.get(config.mode, "white")
-            desc = config.description[:50] + "..." if len(config.description) > 50 else config.description
+            desc = (
+                config.description[:50] + "..."
+                if len(config.description) > 50
+                else config.description
+            )
 
             table.add_row(
                 name,
@@ -536,7 +548,7 @@ class AgentSlashHandler:
     def _reload_registry(self):
         """Reload the agent registry."""
         global _global_registry
-        import bu_agent_sdk.agent.registry as registry_module
+        import agent_core.agent.registry as registry_module
 
         _global_registry = AgentRegistry(self.agents_dir)
         registry_module._global_registry = _global_registry

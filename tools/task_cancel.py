@@ -4,7 +4,7 @@ Task cancel tool for cancelling background tasks.
 
 from typing import Annotated
 
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 
 from tools.sandbox import SandboxContext, get_sandbox_context
 

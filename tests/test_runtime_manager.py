@@ -23,7 +23,7 @@ def _load_module(module_name: str):
 
 @pytest.mark.asyncio
 async def test_runtime_manager_reuses_runtime_for_same_session_key(tmp_path: Path) -> None:
-    manager_module = _load_module("bu_agent_sdk.runtime.manager")
+    manager_module = _load_module("agent_core.runtime.manager")
 
     created = 0
 
@@ -44,7 +44,7 @@ async def test_runtime_manager_reuses_runtime_for_same_session_key(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_runtime_manager_creates_new_runtime_after_clear(tmp_path: Path) -> None:
-    manager_module = _load_module("bu_agent_sdk.runtime.manager")
+    manager_module = _load_module("agent_core.runtime.manager")
 
     created = 0
 
@@ -67,7 +67,7 @@ async def test_runtime_manager_creates_new_runtime_after_clear(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_runtime_manager_cleanup_removes_expired_runtimes(tmp_path: Path) -> None:
-    manager_module = _load_module("bu_agent_sdk.runtime.manager")
+    manager_module = _load_module("agent_core.runtime.manager")
 
     def runtime_factory():
         return DummyAgent(), SandboxContext.create(tmp_path)

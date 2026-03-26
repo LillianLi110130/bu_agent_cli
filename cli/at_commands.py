@@ -23,7 +23,7 @@ from prompt_toolkit.document import Document
 class AtCommand:
     """Metadata and content loader for a skill invoked via @.
 
-    Skills are stored in bu_agent_sdk/skills/*/skill.md files with YAML frontmatter.
+    Skills are stored in agent_core/skills/*/skill.md files with YAML frontmatter.
     """
 
     name: str
@@ -104,7 +104,7 @@ class AtCommandRegistry:
     def __init__(self, skills_dir: Path | None = None):
         self.commands: dict[str, AtCommand] = {}
         self._skills_dir = skills_dir or (
-            Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
+            Path(__file__).resolve().parent.parent / "agent_core" / "skills"
         )
         self.discover_skills(self._skills_dir)
 
@@ -114,7 +114,7 @@ class AtCommandRegistry:
         Looks for subdirectories containing skill.md files.
 
         Args:
-            skills_dir: Path to the skills directory (e.g., bu_agent_sdk/skills)
+            skills_dir: Path to the skills directory (e.g., agent_core/skills)
         """
         if skills_dir is not None:
             self._skills_dir = skills_dir
@@ -182,11 +182,7 @@ class AtCommandRegistry:
     def match_prefix(self, prefix: str) -> list[AtCommand]:
         """Get commands matching a name prefix (case-insensitive)."""
         prefix_lower = prefix.lower()
-        return [
-            cmd
-            for cmd in self.commands.values()
-            if cmd.name.lower().startswith(prefix_lower)
-        ]
+        return [cmd for cmd in self.commands.values() if cmd.name.lower().startswith(prefix_lower)]
 
 
 # =============================================================================

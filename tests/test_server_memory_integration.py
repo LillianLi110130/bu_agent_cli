@@ -7,15 +7,15 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from bu_agent_sdk.llm.messages import (
+from agent_core.llm.messages import (
     AssistantMessage,
     BaseMessage,
     DeveloperMessage,
     UserMessage,
 )
-from bu_agent_sdk.server.app import create_app
-from bu_agent_sdk.server.session import AgentSession, SessionManager
-from bu_agent_sdk.tokens.views import UsageSummary
+from agent_core.server.app import create_app
+from agent_core.server.session import AgentSession, SessionManager
+from agent_core.tokens.views import UsageSummary
 
 
 class DummyAgent:
@@ -67,7 +67,7 @@ class DummyAgent:
 
 class StreamingDummyAgent(DummyAgent):
     async def query_stream(self, message: str) -> AsyncIterator[object]:
-        from bu_agent_sdk.agent.events import FinalResponseEvent, TextEvent
+        from agent_core.agent.events import FinalResponseEvent, TextEvent
 
         self._snapshot_context()
         yield TextEvent(content=f"partial:{message}")
@@ -76,7 +76,7 @@ class StreamingDummyAgent(DummyAgent):
 
 class StreamingDeltaDummyAgent(DummyAgent):
     async def query_stream_delta(self, message: str) -> AsyncIterator[object]:
-        from bu_agent_sdk.agent.events import FinalResponseEvent, TextDeltaEvent
+        from agent_core.agent.events import FinalResponseEvent, TextDeltaEvent
 
         self._snapshot_context()
         yield TextDeltaEvent(delta=f"partial:{message}")
@@ -254,7 +254,7 @@ async def test_agent_session_injects_user_memory_context_only_once_per_session()
 
 @pytest.mark.asyncio
 async def test_tg_mem_memory_service_loads_user_and_assistant_history_only() -> None:
-    from bu_agent_sdk.server.memory_service import TgMemMemoryService
+    from agent_core.server.memory_service import TgMemMemoryService
 
     memory = SimpleNamespace(
         db=SimpleNamespace(
@@ -278,7 +278,7 @@ async def test_tg_mem_memory_service_loads_user_and_assistant_history_only() -> 
 
 @pytest.mark.asyncio
 async def test_tg_mem_memory_service_loads_all_user_memories_with_char_limit() -> None:
-    from bu_agent_sdk.server.memory_service import TgMemMemoryService
+    from agent_core.server.memory_service import TgMemMemoryService
 
     memory = SimpleNamespace(
         db=SimpleNamespace(
@@ -308,7 +308,7 @@ async def test_tg_mem_memory_service_loads_all_user_memories_with_char_limit() -
 
 @pytest.mark.asyncio
 async def test_tg_mem_memory_service_appends_single_round_with_infer_true() -> None:
-    from bu_agent_sdk.server.memory_service import TgMemMemoryService
+    from agent_core.server.memory_service import TgMemMemoryService
 
     memory = SimpleNamespace(add=MagicMock(return_value={"results": []}))
     service = TgMemMemoryService(memory=memory)
@@ -343,9 +343,7 @@ def test_query_persists_single_round_after_success() -> None:
 
     assert response.status_code == 200
     payload = response.json()
-    assert memory_service.append_calls == [
-        (payload["session_id"], "user-1", "hello", "echo:hello")
-    ]
+    assert memory_service.append_calls == [(payload["session_id"], "user-1", "hello", "echo:hello")]
 
 
 def test_query_stream_persists_only_after_final_event() -> None:
@@ -420,7 +418,7 @@ async def test_clear_history_triggers_memory_reload_and_reinjection_on_next_quer
 def test_build_memory_service_from_env_returns_none_without_db_uri(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from bu_agent_sdk.server.memory_service import build_memory_service_from_env
+    from agent_core.server.memory_service import build_memory_service_from_env
 
     monkeypatch.delenv("TG_MEM_MYSQL_DB_URI", raising=False)
     monkeypatch.delenv("TG_MEM_ENABLED", raising=False)
@@ -431,7 +429,7 @@ def test_build_memory_service_from_env_returns_none_without_db_uri(
 def test_build_memory_service_from_env_creates_tg_mem_memory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from bu_agent_sdk.server.memory_service import TgMemMemoryService, build_memory_service_from_env
+    from agent_core.server.memory_service import TgMemMemoryService, build_memory_service_from_env
 
     recorded_config: dict[str, object] = {}
 
@@ -471,7 +469,7 @@ def test_create_app_uses_env_memory_service_when_not_explicitly_provided(
     memory_service = DummyMemoryService()
 
     monkeypatch.setattr(
-        "bu_agent_sdk.server.memory_service.build_memory_service_from_env",
+        "agent_core.server.memory_service.build_memory_service_from_env",
         lambda: memory_service,
     )
 
@@ -485,6 +483,4 @@ def test_create_app_uses_env_memory_service_when_not_explicitly_provided(
 
     assert response.status_code == 200
     payload = response.json()
-    assert memory_service.append_calls == [
-        (payload["session_id"], "user-1", "hello", "echo:hello")
-    ]
+    assert memory_service.append_calls == [(payload["session_id"], "user-1", "hello", "echo:hello")]

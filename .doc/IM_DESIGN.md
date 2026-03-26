@@ -49,7 +49,7 @@ agent 会话上下文串行执行。
 
 ### 2.3 现有 IM gateway 现状
 
-仓库里也有 `bu_agent_sdk.gateway.*` 的 in-process gateway 模式。这个模式由服务端进程自己持有 runtime，
+仓库里也有 `agent_core.gateway.*` 的 in-process gateway 模式。这个模式由服务端进程自己持有 runtime，
 与“本地 CLI + 本地附加 client 进程 + 本地文件同步”的目标也不同，因此本次不直接复用其 runtime 持有方式，
 但可以复用其消息协议思路。
 

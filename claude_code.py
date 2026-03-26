@@ -25,22 +25,22 @@ from pathlib import Path
 import socket
 from typing import Any
 
-from bu_agent_sdk import Agent
-from bu_agent_sdk.agent import (
+from agent_core import Agent
+from agent_core.agent import (
     AgentHook,
     AuditHook,
     ExcelReadGuardHook,
     HumanApprovalHook,
     build_default_approval_policy,
 )
-from bu_agent_sdk.llm import ChatOpenAI
-from bu_agent_sdk.agent.config import AgentConfig
-from bu_agent_sdk.agent.registry import AgentRegistry
-from bu_agent_sdk.plugin import PluginManager
+from agent_core.llm import ChatOpenAI
+from agent_core.agent.config import AgentConfig
+from agent_core.agent.registry import AgentRegistry
+from agent_core.plugin import PluginManager
 from rich.console import Console
 
-from bu_agent_sdk.bootstrap.agent_factory import create_agent
-from cli.app import ClaudeCodeCLI
+from agent_core.bootstrap.agent_factory import create_agent
+from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
 from cli.slash_commands import SlashCommandRegistry
@@ -55,8 +55,8 @@ from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 # Directory paths
 _SCRIPT_DIR = Path(__file__).parent.resolve()
-_PROMPTS_DIR = _SCRIPT_DIR / "bu_agent_sdk" / "prompts"
-_SKILLS_DIR = _SCRIPT_DIR / "bu_agent_sdk" / "skills"
+_PROMPTS_DIR = _SCRIPT_DIR / "agent_core" / "prompts"
+_SKILLS_DIR = _SCRIPT_DIR / "agent_core" / "skills"
 _AGENTS_DIR = _PROMPTS_DIR / "agents"
 _PLUGINS_DIR = _SCRIPT_DIR / "plugins"
 
@@ -436,7 +436,7 @@ def create_agent(
     Returns:
         Tuple of (Agent, SandboxContext, RuntimeRegistries)
     """
-    from bu_agent_sdk.agent.subagent_manager import SubagentManager
+    from agent_core.agent.subagent_manager import SubagentManager
 
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
@@ -526,7 +526,7 @@ async def main():
         )
         if bridge_store is not None:
             console.print(f"[dim]工作日志：[/] {bridge_store.logs_dir / 'worker.log'}")
-    cli = ClaudeCodeCLI(
+    cli = TGAgentCLI(
         agent=agent,
         context=ctx,
         slash_registry=runtime.slash_registry,

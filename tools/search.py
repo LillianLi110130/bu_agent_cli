@@ -1,7 +1,7 @@
 """Search tools: glob pattern matching and grep content search."""
 
 import re
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 from typing import Annotated
 
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path

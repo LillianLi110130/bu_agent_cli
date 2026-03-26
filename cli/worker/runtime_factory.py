@@ -8,10 +8,10 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from bu_agent_sdk import Agent
-from bu_agent_sdk.bootstrap.agent_factory import create_agent
-from bu_agent_sdk.llm.messages import BaseMessage
-from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core import Agent
+from agent_core.bootstrap.agent_factory import create_agent
+from agent_core.llm.messages import BaseMessage
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 from tools import SandboxContext
 
 logger = logging.getLogger("cli.worker.runtime_factory")

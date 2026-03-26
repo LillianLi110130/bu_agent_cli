@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from bu_agent_sdk.llm.messages import (
+from agent_core.llm.messages import (
     ContentPartImageParam,
     ContentPartTextParam,
     ImageURL,
@@ -61,8 +61,7 @@ def parse_image_command(
     stripped = text.strip()
     if _LEGACY_IMG_RE.match(stripped):
         raise ImageInputError(
-            "旧版 @img 语法已移除。"
-            "请使用 @\"<图片路径>\"<消息> 或 @'<图片路径>'<消息>。"
+            "旧版 @img 语法已移除。" "请使用 @\"<图片路径>\"<消息> 或 @'<图片路径>'<消息>。"
         )
 
     match = _QUOTED_IMAGE_RE.match(stripped)
@@ -94,9 +93,7 @@ def parse_image_command(
     except OSError as e:
         raise ImageInputError(f"读取图片失败：{resolved}（{e}）") from e
     if len(raw_bytes) > MAX_IMAGE_BYTES:
-        raise ImageInputError(
-            f"图片过大：{len(raw_bytes)} 字节（最大 {MAX_IMAGE_BYTES} 字节）"
-        )
+        raise ImageInputError(f"图片过大：{len(raw_bytes)} 字节（最大 {MAX_IMAGE_BYTES} 字节）")
 
     prompt = user_text.strip() or default_prompt
     data_b64 = base64.b64encode(raw_bytes).decode("ascii")

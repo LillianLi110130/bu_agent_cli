@@ -1,7 +1,7 @@
 """Todo management tools."""
 
-from bu_agent_sdk.tools import Depends, tool
-from bu_agent_sdk.agent import TaskComplete
+from agent_core.tools import Depends, tool
+from agent_core.agent import TaskComplete
 from typing import Annotated
 
 from tools.sandbox import SandboxContext, get_sandbox_context

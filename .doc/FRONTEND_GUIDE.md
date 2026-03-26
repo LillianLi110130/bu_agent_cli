@@ -1,6 +1,6 @@
 # 前端与 Agent 交互指南
 
-本文档描述前端如何通过 HTTP API 与 bu_agent_sdk Agent 进行交互，重点说明事件类型和数据格式。
+本文档描述前端如何通过 HTTP API 与 agent_core Agent 进行交互，重点说明事件类型和数据格式。
 
 ---
 

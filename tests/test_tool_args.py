@@ -4,16 +4,16 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from bu_agent_sdk.agent import Agent, build_default_approval_policy
-from bu_agent_sdk.agent.events import ToolCallEvent
-from bu_agent_sdk.agent.runtime_events import ToolCallRequested
-from bu_agent_sdk.agent.tool_args import (
+from agent_core.agent import Agent, build_default_approval_policy
+from agent_core.agent.events import ToolCallEvent
+from agent_core.agent.runtime_events import ToolCallRequested
+from agent_core.agent.tool_args import (
     parse_tool_arguments_for_display,
     parse_tool_arguments_for_execution,
 )
-from bu_agent_sdk.llm.messages import BaseMessage, Function, ToolCall
-from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
-from bu_agent_sdk.tools.decorator import tool
+from agent_core.llm.messages import BaseMessage, Function, ToolCall
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core.tools.decorator import tool
 
 
 class FakeLLM:

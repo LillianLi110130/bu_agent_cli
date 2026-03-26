@@ -60,8 +60,8 @@ def _load_module(module_name: str):
 
 @pytest.mark.asyncio
 async def test_heartbeat_trigger_now_publishes_inbound_when_decision_is_run(tmp_path: Path) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    heartbeat_module = _load_module("bu_agent_sdk.heartbeat.service")
+    queue_module = _load_module("agent_core.bus.queue")
+    heartbeat_module = _load_module("agent_core.heartbeat.service")
 
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] check tasks", encoding="utf-8")
     llm = FakeLLM(
@@ -93,8 +93,8 @@ async def test_heartbeat_trigger_now_publishes_inbound_when_decision_is_run(tmp_
 
 @pytest.mark.asyncio
 async def test_heartbeat_trigger_now_skips_when_decision_is_skip(tmp_path: Path) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    heartbeat_module = _load_module("bu_agent_sdk.heartbeat.service")
+    queue_module = _load_module("agent_core.bus.queue")
+    heartbeat_module = _load_module("agent_core.heartbeat.service")
 
     (tmp_path / "HEARTBEAT.md").write_text("nothing urgent", encoding="utf-8")
     llm = FakeLLM([FakeCompletion([FakeToolCall("heartbeat", {"action": "skip"})])])
@@ -116,8 +116,8 @@ async def test_heartbeat_trigger_now_skips_when_decision_is_skip(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_heartbeat_trigger_now_skips_without_delivery_target(tmp_path: Path) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    heartbeat_module = _load_module("bu_agent_sdk.heartbeat.service")
+    queue_module = _load_module("agent_core.bus.queue")
+    heartbeat_module = _load_module("agent_core.heartbeat.service")
 
     (tmp_path / "HEARTBEAT.md").write_text("- [ ] check tasks", encoding="utf-8")
     llm = FakeLLM(
@@ -145,8 +145,8 @@ async def test_heartbeat_trigger_now_skips_without_delivery_target(tmp_path: Pat
 
 @pytest.mark.asyncio
 async def test_heartbeat_start_is_idempotent(tmp_path: Path) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    heartbeat_module = _load_module("bu_agent_sdk.heartbeat.service")
+    queue_module = _load_module("agent_core.bus.queue")
+    heartbeat_module = _load_module("agent_core.heartbeat.service")
 
     llm = FakeLLM([])
     bus = queue_module.MessageBus()

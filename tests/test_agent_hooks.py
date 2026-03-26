@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from bu_agent_sdk.agent import (
+from agent_core.agent import (
     Agent,
     AuditHook,
     ExcelReadGuardHook,
@@ -15,10 +15,10 @@ from bu_agent_sdk.agent import (
     ToolPolicyHook,
     build_default_approval_policy,
 )
-from bu_agent_sdk.agent.events import FinalResponseEvent, HiddenUserMessageEvent
-from bu_agent_sdk.llm.messages import BaseMessage, Function, ToolCall
-from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
-from bu_agent_sdk.tools.decorator import tool
+from agent_core.agent.events import FinalResponseEvent, HiddenUserMessageEvent
+from agent_core.llm.messages import BaseMessage, Function, ToolCall
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core.tools.decorator import tool
 
 
 class FakeLLM:

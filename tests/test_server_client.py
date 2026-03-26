@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from bu_agent_sdk.server.client import AgentClient
+from agent_core.server.client import AgentClient
 
 
 class FakeResponse:
@@ -39,9 +39,7 @@ async def test_agent_client_create_session_sends_user_id() -> None:
     session_id = await client.create_session()
 
     assert session_id == "session-1"
-    assert client._client.posts == [
-        ("http://localhost:8000/sessions", {"user_id": "user-1"})
-    ]
+    assert client._client.posts == [("http://localhost:8000/sessions", {"user_id": "user-1"})]
 
 
 @pytest.mark.asyncio

@@ -106,8 +106,8 @@ def _make_update(*, chat_type: str = "private", text: str = "hello", user_id: in
 async def test_telegram_channel_forwards_private_message_to_bus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    telegram_module = _load_module("bu_agent_sdk.channels.telegram")
+    queue_module = _load_module("agent_core.bus.queue")
+    telegram_module = _load_module("agent_core.channels.telegram")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(token="123:abc", allow_from=["*"], proxy=None)
@@ -129,8 +129,8 @@ async def test_telegram_channel_forwards_private_message_to_bus(
 async def test_telegram_channel_ignores_non_private_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    telegram_module = _load_module("bu_agent_sdk.channels.telegram")
+    queue_module = _load_module("agent_core.bus.queue")
+    telegram_module = _load_module("agent_core.channels.telegram")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(token="123:abc", allow_from=["*"], proxy=None)
@@ -145,8 +145,8 @@ async def test_telegram_channel_ignores_non_private_message(
 
 @pytest.mark.asyncio
 async def test_telegram_channel_rejects_sender_not_in_allowlist() -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    telegram_module = _load_module("bu_agent_sdk.channels.telegram")
+    queue_module = _load_module("agent_core.bus.queue")
+    telegram_module = _load_module("agent_core.channels.telegram")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(token="123:abc", allow_from=["999"], proxy=None)
@@ -161,8 +161,8 @@ async def test_telegram_channel_rejects_sender_not_in_allowlist() -> None:
 
 @pytest.mark.asyncio
 async def test_telegram_channel_send_splits_long_messages_and_stops_typing() -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    telegram_module = _load_module("bu_agent_sdk.channels.telegram")
+    bus_events = _load_module("agent_core.bus.events")
+    telegram_module = _load_module("agent_core.channels.telegram")
 
     config = SimpleNamespace(token="123:abc", allow_from=["*"], proxy=None)
     channel = telegram_module.TelegramChannel(config, bus=None)
@@ -181,10 +181,10 @@ async def test_telegram_channel_send_splits_long_messages_and_stops_typing() -> 
 
 @pytest.mark.asyncio
 async def test_channel_manager_dispatches_outbound_messages() -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    channels_base = _load_module("bu_agent_sdk.channels.base")
-    manager_module = _load_module("bu_agent_sdk.channels.manager")
+    bus_events = _load_module("agent_core.bus.events")
+    queue_module = _load_module("agent_core.bus.queue")
+    channels_base = _load_module("agent_core.channels.base")
+    manager_module = _load_module("agent_core.channels.manager")
 
     class FakeChannel(channels_base.BaseChannel):
         name = "fake"
@@ -234,8 +234,8 @@ async def test_channel_manager_dispatches_outbound_messages() -> None:
 
 @pytest.mark.asyncio
 async def test_telegram_channel_start_builds_application(monkeypatch: pytest.MonkeyPatch) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    telegram_module = _load_module("bu_agent_sdk.channels.telegram")
+    queue_module = _load_module("agent_core.bus.queue")
+    telegram_module = _load_module("agent_core.channels.telegram")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(token="123:abc", allow_from=["*"], proxy=None)
