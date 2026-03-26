@@ -1,6 +1,6 @@
 # BU Agent CLI
 
-一个面向编码场景的 Agent CLI / Gateway 项目，基于 `bu_agent_sdk` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派、工作区指令注入，以及 Telegram 私聊网关接入。
+一个面向编码场景的 Agent CLI / Gateway 项目，基于 `agent_core` 实现，支持 OpenAI-compatible 模型、工具调用、子代理委派、工作区指令注入，以及 Telegram 私聊网关接入。
 
 ## 核心能力
 
@@ -20,15 +20,15 @@
 - UI 层：`cli/`
   - `cli/app.py`：交互循环、事件渲染、slash 命令
   - `cli/slash_commands.py`：命令注册与补全
-- Agent 核心：`bu_agent_sdk/agent/`
+- Agent 核心：`agent_core/agent/`
   - 主循环、工具调度、重试、完成判定、流式事件
-- LLM 适配层：`bu_agent_sdk/llm/`
+- LLM 适配层：`agent_core/llm/`
   - 当前主要实现为 `ChatOpenAI`（兼容 OpenAI API schema）
 - 工具层：`tools/`
   - Bash、文件、搜索、todo、subagent
 - 扩展层：
-  - Skills：`bu_agent_sdk/skills/`
-  - 子代理配置：`bu_agent_sdk/prompts/agents/*.md`
+  - Skills：`agent_core/skills/`
+  - 子代理配置：`agent_core/prompts/agents/*.md`
   - 规划插件：`plugins/`
 
 ## 安装
@@ -234,7 +234,7 @@ docs/spec/<spec_name>/
 
 ## 子代理
 
-子代理定义在：`bu_agent_sdk/prompts/agents/*.md`
+子代理定义在：`agent_core/prompts/agents/*.md`
 
 - 通过 frontmatter 指定 `mode/model/tools` 等配置
 - `mode` 为 `subagent` 或 `all` 的代理可被 `task` 工具调用
@@ -257,7 +257,7 @@ bu_agent_cli/
 ├── config/
 │   ├── model_config.py
 │   └── model_presets.json
-└── bu_agent_sdk/
+└── agent_core/
     ├── agent/
     ├── llm/
     ├── tools/

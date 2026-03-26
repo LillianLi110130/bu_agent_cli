@@ -8,13 +8,13 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from bu_agent_sdk.agent.registry import AgentRegistry
-from bu_agent_sdk.plugin import (
+from agent_core.agent.registry import AgentRegistry
+from agent_core.plugin import (
     PluginCommandExecutor,
     PluginExecutionError,
     PluginManager,
 )
-from bu_agent_sdk.version import get_cli_version
+from agent_core.version import get_cli_version
 from cli.app import ClaudeCodeCLI
 from cli.at_commands import AtCommandRegistry
 from cli.plugins_handler import PluginSlashHandler

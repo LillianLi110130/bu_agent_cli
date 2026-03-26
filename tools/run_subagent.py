@@ -6,11 +6,11 @@ import asyncio
 import logging
 from typing import Annotated
 
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 
 from tools.sandbox import SandboxContext, get_sandbox_context
 
-logger = logging.getLogger("bu_agent_sdk.run_subagent")
+logger = logging.getLogger("agent_core.run_subagent")
 
 
 @tool("Run a subagent and wait for completion")

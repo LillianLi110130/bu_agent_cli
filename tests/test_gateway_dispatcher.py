@@ -58,8 +58,8 @@ def _load_module(module_name: str):
 async def test_dispatcher_routes_user_message_to_runtime_and_returns_outbound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
+    bus_events = _load_module("agent_core.bus.events")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
     sandbox_module = _load_module("tools.sandbox")
 
     monkeypatch.setattr(
@@ -102,8 +102,8 @@ async def test_dispatcher_routes_user_message_to_runtime_and_returns_outbound(
 async def test_dispatcher_handles_new_command_without_calling_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
+    bus_events = _load_module("agent_core.bus.events")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
     sandbox_module = _load_module("tools.sandbox")
 
     monkeypatch.setattr(
@@ -139,8 +139,8 @@ async def test_dispatcher_handles_new_command_without_calling_agent(
 async def test_dispatcher_returns_friendly_error_when_agent_query_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
+    bus_events = _load_module("agent_core.bus.events")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
     sandbox_module = _load_module("tools.sandbox")
 
     monkeypatch.setattr(
@@ -174,8 +174,8 @@ async def test_dispatcher_returns_friendly_error_when_agent_query_fails(
 async def test_dispatcher_does_not_update_last_active_chat_for_heartbeat_origin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
+    bus_events = _load_module("agent_core.bus.events")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
     sandbox_module = _load_module("tools.sandbox")
 
     monkeypatch.setattr(
@@ -212,10 +212,10 @@ async def test_dispatcher_does_not_update_last_active_chat_for_heartbeat_origin(
 async def test_gateway_service_starts_dispatch_loop_and_publishes_outbound(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
-    service_module = _load_module("bu_agent_sdk.gateway.service")
+    bus_events = _load_module("agent_core.bus.events")
+    queue_module = _load_module("agent_core.bus.queue")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
+    service_module = _load_module("agent_core.gateway.service")
     sandbox_module = _load_module("tools.sandbox")
 
     monkeypatch.setattr(

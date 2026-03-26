@@ -14,7 +14,7 @@ def _load_module(module_name: str):
 
 
 def test_gateway_settings_reads_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    config_module = _load_module("bu_agent_sdk.gateway.config")
+    config_module = _load_module("agent_core.gateway.config")
 
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
     monkeypatch.setenv("TELEGRAM_ALLOW_FROM", "111,222")
@@ -42,7 +42,7 @@ def test_gateway_settings_reads_env(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 def test_gateway_settings_defaults_when_env_missing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    config_module = _load_module("bu_agent_sdk.gateway.config")
+    config_module = _load_module("agent_core.gateway.config")
 
     for key in [
         "TELEGRAM_BOT_TOKEN",
@@ -72,7 +72,7 @@ def test_gateway_settings_defaults_when_env_missing(
 def test_gateway_main_loads_dotenv_before_resolving_settings(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    main_module = _load_module("bu_agent_sdk.gateway.main")
+    main_module = _load_module("agent_core.gateway.main")
 
     env_path = tmp_path / ".env"
     env_path.write_text(
@@ -122,7 +122,7 @@ def test_gateway_main_loads_dotenv_before_resolving_settings(
 async def test_run_gateway_registers_zhaohu_channel_when_enabled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    main_module = _load_module("bu_agent_sdk.gateway.main")
+    main_module = _load_module("agent_core.gateway.main")
 
     registered_channels: list[object] = []
 

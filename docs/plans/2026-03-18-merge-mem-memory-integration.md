@@ -2,7 +2,7 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** 将裁剪后的 `tg_mem` 记忆能力接入 `bu_agent_sdk.server`，实现基于 `session_id + user_id` 的历史恢复与轮次增量持久化。
+**Goal:** 将裁剪后的 `tg_mem` 记忆能力接入 `agent_core.server`，实现基于 `session_id + user_id` 的历史恢复与轮次增量持久化。
 
 **Architecture:** 在当前仓库 vendoring 一个最小可运行的 `tg_mem` 包，仅保留 MySQL-only 和记忆提炼所需子集。Server 侧新增独立 memory service，负责首次会话恢复和每轮对话后的 `[user, assistant]` 增量写入，不侵入 `Agent` 核心职责。
 
@@ -14,9 +14,9 @@
 
 **Files:**
 - Create: `tests/test_server_memory_integration.py`
-- Modify: `bu_agent_sdk/server/models.py`
-- Modify: `bu_agent_sdk/server/session.py`
-- Modify: `bu_agent_sdk/server/app.py`
+- Modify: `agent_core/server/models.py`
+- Modify: `agent_core/server/session.py`
+- Modify: `agent_core/server/app.py`
 
 **Step 1: Write the failing test**
 
@@ -51,7 +51,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add tests/test_server_memory_integration.py bu_agent_sdk/server/models.py bu_agent_sdk/server/session.py bu_agent_sdk/server/app.py
+git add tests/test_server_memory_integration.py agent_core/server/models.py agent_core/server/session.py agent_core/server/app.py
 git commit -m "test: cover server session user binding"
 ```
 
@@ -96,8 +96,8 @@ git commit -m "feat: vendor minimal tg_mem package"
 ### Task 3: 新增 memory service 并实现首次历史恢复
 
 **Files:**
-- Create: `bu_agent_sdk/server/memory_service.py`
-- Modify: `bu_agent_sdk/server/session.py`
+- Create: `agent_core/server/memory_service.py`
+- Modify: `agent_core/server/session.py`
 - Modify: `tests/test_server_memory_integration.py`
 
 **Step 1: Write the failing test**
@@ -126,14 +126,14 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add bu_agent_sdk/server/memory_service.py bu_agent_sdk/server/session.py tests/test_server_memory_integration.py
+git add agent_core/server/memory_service.py agent_core/server/session.py tests/test_server_memory_integration.py
 git commit -m "feat: load session history from tg_mem"
 ```
 
 ### Task 4: 实现非流式/流式轮次增量写入
 
 **Files:**
-- Modify: `bu_agent_sdk/server/app.py`
+- Modify: `agent_core/server/app.py`
 - Modify: `tests/test_server_memory_integration.py`
 
 **Step 1: Write the failing test**
@@ -168,7 +168,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add bu_agent_sdk/server/app.py tests/test_server_memory_integration.py
+git add agent_core/server/app.py tests/test_server_memory_integration.py
 git commit -m "feat: persist query rounds to tg_mem"
 ```
 

@@ -109,7 +109,7 @@ data: {"type": "usage", "session_id": "...", "usage": {...}}
 
 ```python
 import asyncio
-from bu_agent_sdk import AgentClient
+from agent_core import AgentClient
 
 async def main():
     async with AgentClient("http://localhost:8000") as client:

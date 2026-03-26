@@ -13,8 +13,8 @@ def _load_module(module_name: str):
 
 @pytest.mark.asyncio
 async def test_message_bus_round_trips_inbound_and_outbound_messages() -> None:
-    events = _load_module("bu_agent_sdk.bus.events")
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
+    events = _load_module("agent_core.bus.events")
+    queue_module = _load_module("agent_core.bus.queue")
 
     bus = queue_module.MessageBus()
 
@@ -49,7 +49,7 @@ async def test_message_bus_round_trips_inbound_and_outbound_messages() -> None:
 
 @pytest.mark.asyncio
 async def test_inbound_message_prefers_session_key_override() -> None:
-    events = _load_module("bu_agent_sdk.bus.events")
+    events = _load_module("agent_core.bus.events")
 
     overridden = events.InboundMessage(
         channel="telegram",

@@ -53,7 +53,7 @@ INFO:     Uvicorn running on http://127.0.0.1:8000
 
 ```python
 import asyncio
-from bu_agent_sdk import AgentClient
+from agent_core import AgentClient
 
 async def main():
     async with AgentClient("http://localhost:8000") as client:
@@ -120,7 +120,7 @@ curl -X POST http://localhost:8000/agent/query \
 
 ```python
 import asyncio
-from bu_agent_sdk import AgentClient
+from agent_core import AgentClient
 
 async def main():
     async with AgentClient("http://localhost:8000") as client:

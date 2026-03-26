@@ -16,8 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from bu_agent_sdk import Agent
-from bu_agent_sdk.agent import (
+from agent_core import Agent
+from agent_core.agent import (
     FinalResponseEvent,
     HumanApprovalDecision,
     HumanApprovalRequest,
@@ -28,25 +28,25 @@ from bu_agent_sdk.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from bu_agent_sdk.agent.registry import AgentRegistry
-from bu_agent_sdk.llm import ChatOpenAI
-from bu_agent_sdk.llm.messages import (
+from agent_core.agent.registry import AgentRegistry
+from agent_core.llm import ChatOpenAI
+from agent_core.llm.messages import (
     ContentPartImageParam,
     ContentPartTextParam,
     ImageURL,
     SystemMessage,
     UserMessage,
 )
-from bu_agent_sdk.plugin import (
+from agent_core.plugin import (
     PluginCommandExecutor,
     PluginExecutionError,
     PluginManager,
 )
-from bu_agent_sdk.bootstrap.session_bootstrap import (
+from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
-from bu_agent_sdk.llm.messages import SystemMessage, UserMessage
+from agent_core.llm.messages import SystemMessage, UserMessage
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -235,7 +235,7 @@ class _ConsoleMirror:
 # =============================================================================
 
 
-class ClaudeCodeCLI:
+class TGAgentCLI:
     """Interactive CLI for Claude Code assistant.
 
     Pure UI class - displays agent events and handles user input.
@@ -277,7 +277,7 @@ class ClaudeCodeCLI:
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
-            Path(__file__).resolve().parent.parent / "bu_agent_sdk" / "skills"
+            Path(__file__).resolve().parent.parent / "agent_core" / "skills"
         )
         self._agent_registry = agent_registry
         self._plugin_manager = plugin_manager
@@ -334,15 +334,11 @@ class ClaudeCodeCLI:
             raw = self._model_presets_path.read_text(encoding="utf-8")
             data = json.loads(raw)
         except Exception as e:
-            self._console.print(
-                f"[yellow]加载模型预设失败：{e}[/yellow]"
-            )
+            self._console.print(f"[yellow]加载模型预设失败：{e}[/yellow]")
             return {}
 
         if not isinstance(data, dict):
-            self._console.print(
-                "[yellow]model_presets.json 必须是一个 JSON 对象。[/yellow]"
-            )
+            self._console.print("[yellow]model_presets.json 必须是一个 JSON 对象。[/yellow]")
             return {}
 
         default_name = data.get("default")
@@ -537,9 +533,7 @@ class ClaudeCodeCLI:
     def _print_model_presets(self):
         """Print configured model presets."""
         if not self._model_presets:
-            self._console.print(
-                f"[yellow]未在 {self._model_presets_path} 找到模型预设[/yellow]"
-            )
+            self._console.print(f"[yellow]未在 {self._model_presets_path} 找到模型预设[/yellow]")
             return
 
         self._console.print("[bold cyan]模型预设：[/bold cyan]")
@@ -548,11 +542,7 @@ class ClaudeCodeCLI:
             base_url = str(preset.get("base_url", "(继承当前配置)"))
             api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
             vision_marker = " 视觉" if self._preset_supports_vision(name) else ""
-            marker = (
-                " [green](默认)[/green]"
-                if name == self._default_model_preset
-                else ""
-            )
+            marker = " [green](默认)[/green]" if name == self._default_model_preset else ""
             if name == self._auto_vision_preset:
                 marker += " [magenta](自动视觉)[/magenta]"
             if name == self._image_summary_preset:
@@ -601,9 +591,7 @@ class ClaudeCodeCLI:
                 markers.append("图像摘要")
             marker_text = f" [dim]({', '.join(markers)})[/dim]" if markers else ""
             self._console.print(f"  {idx}. [cyan]{name}[/cyan] -> {model}{marker_text}")
-        self._console.print(
-            "[dim]输入编号后回车即可切换，输入 q 可取消。[/dim]"
-        )
+        self._console.print("[dim]输入编号后回车即可切换，输入 q 可取消。[/dim]")
 
     async def _handle_model_pick_input(self, user_input: str) -> bool:
         """Handle one line of input while in numbered model-pick mode."""
@@ -707,7 +695,7 @@ class ClaudeCodeCLI:
                 f"输入消息后按 Enter 发送。\n"
                 f"按 [cyan]/[/cyan] 可查看可用命令。\n"
                 f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
-                f"可使用 [cyan]@\"<path>\"<message>[/cyan] 或 "
+                f'可使用 [cyan]@"<path>"<message>[/cyan] 或 '
                 f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
                 f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
                 title="[bold blue]欢迎[/bold blue]",
@@ -722,19 +710,13 @@ class ClaudeCodeCLI:
         self._console.print(
             f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
         )
-        self._console.print(
-            f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部"
-        )
-        self._console.print(
-            f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部"
-        )
+        self._console.print(f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部")
+        self._console.print(f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部")
         self._console.print(
             "[dim]审批模式：[/]已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
         )
         if self._model_presets:
-            self._console.print(
-                f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}"
-            )
+            self._console.print(f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}")
         self._console.print()
 
     def _print_help(self):
@@ -825,9 +807,7 @@ class ClaudeCodeCLI:
         self._console.print("[dim]输入 / 可查看可用命令，按 Tab 可自动补全[/dim]")
         self._console.print("[bold cyan]技能命令（@）：[/bold cyan]")
         self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
-        self._console.print(
-            "[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]"
-        )
+        self._console.print("[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
 
         categories = self._slash_registry.get_by_category()
@@ -849,14 +829,20 @@ class ClaudeCodeCLI:
             return
 
         self._console.print()
-        self._console.print(Panel(
-            f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
-            f"[dim]{cmd.description}[/dim]\n\n"
-            f"[bold]用法：[/bold] {cmd.usage}\n\n"
-            + (f"[bold]示例：[/bold]\n" + "\n".join(f"  - {ex}" for ex in cmd.examples) if cmd.examples else ""),
-            title="[bold blue]命令详情[/bold blue]",
-            border_style="bright_blue",
-        ))
+        self._console.print(
+            Panel(
+                f"[bold cyan]/{cmd.name}[/bold cyan]\n\n"
+                f"[dim]{cmd.description}[/dim]\n\n"
+                f"[bold]用法：[/bold] {cmd.usage}\n\n"
+                + (
+                    f"[bold]示例：[/bold]\n" + "\n".join(f"  - {ex}" for ex in cmd.examples)
+                    if cmd.examples
+                    else ""
+                ),
+                title="[bold blue]命令详情[/bold blue]",
+                border_style="bright_blue",
+            )
+        )
         self._console.print()
 
     async def _handle_slash_command(self, text: str) -> bool:
@@ -971,8 +957,13 @@ class ClaudeCodeCLI:
             # Strip any hidden thinking blocks from the output
             if content:
                 import re
-                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE)
-                content = re.sub(r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE)
+
+                content = re.sub(
+                    r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE
+                )
+                content = re.sub(
+                    r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE
+                )
             out_path.write_text(content, encoding="utf-8")
             self._console.print("[yellow]已生成 AGENTS.md[/yellow]")
             return True
@@ -1044,7 +1035,11 @@ class ClaudeCodeCLI:
             self._console.print("[bold cyan]允许目录：[/bold cyan]")
             for i, allowed_dir in enumerate(self._ctx.allowed_dirs, 1):
                 # 标记当前工作目录
-                marker = " [dim](current)[/]" if str(allowed_dir.resolve()) == str(self._ctx.working_dir.resolve()) else ""
+                marker = (
+                    " [dim](current)[/]"
+                    if str(allowed_dir.resolve()) == str(self._ctx.working_dir.resolve())
+                    else ""
+                )
                 self._console.print(f"  {i}. {allowed_dir}{marker}")
             self._console.print()
             return True
@@ -1121,12 +1116,8 @@ class ClaudeCodeCLI:
         """Print all available @ skills grouped by category."""
         self._console.print()
         self._console.print("[bold cyan]可用技能（@）：[/bold cyan]")
-        self._console.print(
-            "[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]"
-        )
-        self._console.print(
-            "[dim]Image input: @\"<path>\"<message> or @'<path>'<message>[/dim]"
-        )
+        self._console.print("[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]")
+        self._console.print("[dim]Image input: @\"<path>\"<message> or @'<path>'<message>[/dim]")
         self._console.print()
 
         categories = self._at_registry.get_by_category()
@@ -1155,7 +1146,9 @@ class ClaudeCodeCLI:
         if not skill:
             self._console.print(f"[yellow]未找到技能：@{skill_name}[/yellow]")
             self._console.print("[dim]使用 /skills 查看可用技能列表。[/dim]")
-            self._store_command_final_content(f"未找到技能：@{skill_name}\n使用 /skills 查看可用技能列表。")
+            self._store_command_final_content(
+                f"未找到技能：@{skill_name}\n使用 /skills 查看可用技能列表。"
+            )
             return True
 
         self._console.print(f"[cyan]正在使用 @{skill.name}...[/cyan]")
@@ -1166,9 +1159,7 @@ class ClaudeCodeCLI:
             self._store_command_final_content(f"加载技能失败：{e}")
             return True
 
-        self._store_command_final_content(
-            await self._run_agent(expanded_message, has_image=False)
-        )
+        self._store_command_final_content(await self._run_agent(expanded_message, has_image=False))
         return True
 
     async def _run_agent(self, user_input: UserInputPayload, has_image: bool = False) -> str | None:
@@ -1188,6 +1179,7 @@ class ClaudeCodeCLI:
 
         # Create cancellation event for 'q' key
         import asyncio
+
         cancel_event = asyncio.Event()
 
         # Background task to listen for 'q' key
@@ -1196,13 +1188,14 @@ class ClaudeCodeCLI:
             import sys
             import os
 
-            if os.name == 'nt':  # Windows
+            if os.name == "nt":  # Windows
                 try:
                     import msvcrt
+
                     while not cancel_event.is_set():
                         if msvcrt.kbhit():  # Check if key is available
                             ch = msvcrt.getwch()  # Get wide char (Unicode)
-                            if ch.lower() == 'q':
+                            if ch.lower() == "q":
                                 cancel_event.set()
                                 break
                         await asyncio.sleep(0.05)  # Small delay to prevent busy-wait
@@ -1227,7 +1220,7 @@ class ClaudeCodeCLI:
                         # Check if data is available on stdin
                         if select.select([sys.stdin], [], [], 0)[0]:
                             ch = sys.stdin.read(1)
-                            if ch.lower() == 'q':
+                            if ch.lower() == "q":
                                 cancel_event.set()
                                 break
                         await asyncio.sleep(0.05)
@@ -1338,7 +1331,7 @@ class ClaudeCodeCLI:
         Args:
             result: TaskResult from SubagentManager
         """
-        from bu_agent_sdk.agent.subagent_manager import TaskResult
+        from agent_core.agent.subagent_manager import TaskResult
         from rich.panel import Panel
 
         if not isinstance(result, TaskResult):
@@ -1352,13 +1345,16 @@ class ClaudeCodeCLI:
             self._console.print()
             self._console.print(
                 Panel(
-                    f"[{status_color}]{status_emoji} 任务已完成：[/{status_color}]\n"
-                    f"[bold]子智能体：[/] {result.subagent_name}\n"
-                    f"[bold]任务 ID：[/] {result.task_id}\n"
-                    f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
-                    f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
-                    f"[bold]结果：[/] {result.final_response[:500]}..."
-                    if len(result.final_response) > 500 else "...",
+                    (
+                        f"[{status_color}]{status_emoji} 任务已完成：[/{status_color}]\n"
+                        f"[bold]子智能体：[/] {result.subagent_name}\n"
+                        f"[bold]任务 ID：[/] {result.task_id}\n"
+                        f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
+                        f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
+                        f"[bold]结果：[/] {result.final_response[:500]}..."
+                        if len(result.final_response) > 500
+                        else "..."
+                    ),
                     title="[bold blue]后台任务通知[/bold blue]",
                     border_style=status_color,
                 )
@@ -1615,13 +1611,15 @@ class ClaudeCodeCLI:
         threaded_completer = ThreadedCompleter(merged_completer)
 
         # Define style for better visual feedback
-        style = Style.from_dict({
-            "completion-menu.completion": "bg:#008888 #ffffff",
-            "completion-menu.completion.current": "bg:#ffffff #000000",
-            "completion-menu.meta.completion": "bg:#00aaaa #000000",
-            "completion-menu.meta.current": "bg:#00ffff #000000",
-            "completion-menu": "bg:#008888 #ffffff",
-        })
+        style = Style.from_dict(
+            {
+                "completion-menu.completion": "bg:#008888 #ffffff",
+                "completion-menu.completion.current": "bg:#ffffff #000000",
+                "completion-menu.meta.completion": "bg:#00aaaa #000000",
+                "completion-menu.meta.current": "bg:#00ffff #000000",
+                "completion-menu": "bg:#008888 #ffffff",
+            }
+        )
 
         # Create prompt session with completer
         session = PromptSession(
@@ -1664,7 +1662,7 @@ class ClaudeCodeCLI:
                 f"输入消息后按 Enter 发送。\n"
                 f"按 [cyan]/[/cyan] 可查看可用命令。\n"
                 f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
-                f"可使用 [cyan]@\"<path>\"<message>[/cyan] 或 "
+                f'可使用 [cyan]@"<path>"<message>[/cyan] 或 '
                 f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
                 f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
                 title="[bold blue]欢迎[/bold blue]",
@@ -1678,12 +1676,8 @@ class ClaudeCodeCLI:
         self._console.print(
             f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
         )
-        self._console.print(
-            f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部"
-        )
-        self._console.print(
-            f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部"
-        )
+        self._console.print(f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部")
+        self._console.print(f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部")
         self._console.print(
             "[dim]审批模式：[/] 已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
         )
@@ -1776,9 +1770,7 @@ class ClaudeCodeCLI:
         self._console.print("[dim]输入 / 可查看可用命令，按 Tab 可自动补全[/dim]")
         self._console.print("[bold cyan]技能命令（@）：[/bold cyan]")
         self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
-        self._console.print(
-            "[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]"
-        )
+        self._console.print("[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
 
         categories = self._slash_registry.get_by_category()
@@ -1817,9 +1809,7 @@ class ClaudeCodeCLI:
         self._console.print()
         self._console.print("[bold cyan]可用技能（@）：[/bold cyan]")
         self._console.print("[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]")
-        self._console.print(
-            "[dim]图片输入：@\"<path>\"<message> 或 @'<path>'<message>[/dim]"
-        )
+        self._console.print("[dim]图片输入：@\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
 
         categories = self._at_registry.get_by_category()
@@ -1836,7 +1826,7 @@ class ClaudeCodeCLI:
 
     async def _on_task_completed(self, result: Any):
         """Handle background task completion notification."""
-        from bu_agent_sdk.agent.subagent_manager import TaskResult
+        from agent_core.agent.subagent_manager import TaskResult
         from rich.panel import Panel
 
         if not isinstance(result, TaskResult):

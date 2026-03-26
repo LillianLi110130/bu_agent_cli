@@ -1,5 +1,5 @@
 """
-Test server for bu_agent_sdk HTTP API.
+Test server for agent_core HTTP API.
 
 Run with: conda run -n 314 python test_server.py
 
@@ -22,10 +22,10 @@ logging.basicConfig(
 
 from pydantic import BaseModel, Field
 
-from bu_agent_sdk import Agent
-from bu_agent_sdk.llm import ChatOpenAI
-from bu_agent_sdk.server import create_server
-from bu_agent_sdk.tools import tool
+from agent_core import Agent
+from agent_core.llm import ChatOpenAI
+from agent_core.server import create_server
+from agent_core.tools import tool
 
 
 @tool("Add two numbers")

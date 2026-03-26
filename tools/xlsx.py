@@ -12,7 +12,7 @@ from xml.etree import ElementTree as ET
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context

@@ -4,14 +4,14 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from bu_agent_sdk.agent import Agent, ModelRoutingHook
-from bu_agent_sdk.llm.messages import (
+from agent_core.agent import Agent, ModelRoutingHook
+from agent_core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
     ContentPartTextParam,
     ImageURL,
 )
-from bu_agent_sdk.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 
 
 class FakeLLM:

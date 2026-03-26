@@ -26,8 +26,8 @@ class _FakeServer:
 
 
 def test_zhaohu_channel_healthz_returns_ok() -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    zhaohu_module = _load_module("bu_agent_sdk.channels.zhaohu")
+    queue_module = _load_module("agent_core.bus.queue")
+    zhaohu_module = _load_module("agent_core.channels.zhaohu")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(host="127.0.0.1", port=18080, webhook_path="/webhook/zhaohu")
@@ -45,8 +45,8 @@ def test_zhaohu_channel_healthz_returns_ok() -> None:
 
 
 def test_zhaohu_channel_webhook_accepts_payload_and_publishes_inbound_message() -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    zhaohu_module = _load_module("bu_agent_sdk.channels.zhaohu")
+    queue_module = _load_module("agent_core.bus.queue")
+    zhaohu_module = _load_module("agent_core.channels.zhaohu")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(host="127.0.0.1", port=18080, webhook_path="/hooks/zhaohu")
@@ -85,8 +85,8 @@ def test_zhaohu_channel_webhook_accepts_payload_and_publishes_inbound_message() 
 
 
 def test_zhaohu_channel_webhook_rejects_invalid_payload() -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    zhaohu_module = _load_module("bu_agent_sdk.channels.zhaohu")
+    queue_module = _load_module("agent_core.bus.queue")
+    zhaohu_module = _load_module("agent_core.channels.zhaohu")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(host="127.0.0.1", port=18080, webhook_path="/hooks/zhaohu")
@@ -106,8 +106,8 @@ def test_zhaohu_channel_webhook_rejects_invalid_payload() -> None:
 async def test_zhaohu_channel_start_builds_and_runs_uvicorn_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    zhaohu_module = _load_module("bu_agent_sdk.channels.zhaohu")
+    queue_module = _load_module("agent_core.bus.queue")
+    zhaohu_module = _load_module("agent_core.channels.zhaohu")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(host="127.0.0.1", port=19090, webhook_path="/hooks/zhaohu")
@@ -141,8 +141,8 @@ async def test_zhaohu_channel_start_builds_and_runs_uvicorn_server(
 
 @pytest.mark.asyncio
 async def test_zhaohu_channel_stop_signals_server_exit() -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    zhaohu_module = _load_module("bu_agent_sdk.channels.zhaohu")
+    queue_module = _load_module("agent_core.bus.queue")
+    zhaohu_module = _load_module("agent_core.channels.zhaohu")
 
     bus = queue_module.MessageBus()
     config = SimpleNamespace(host="127.0.0.1", port=18080, webhook_path="/webhook/zhaohu")

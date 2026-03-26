@@ -5,11 +5,11 @@ Parallel subagent tool for running multiple subagents concurrently.
 import logging
 from typing import Annotated
 
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 
 from tools.sandbox import SandboxContext, get_sandbox_context
 
-logger = logging.getLogger("bu_agent_sdk.run_parallel_subagents")
+logger = logging.getLogger("agent_core.run_parallel_subagents")
 
 
 @tool("Run multiple subagents in parallel and wait for all to complete")
@@ -17,7 +17,7 @@ async def run_parallel_subagents(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     tasks: Annotated[
         list[dict[str, str]],
-        "List of tasks, each with 'subagent_name', 'prompt', and optional 'label'"
+        "List of tasks, each with 'subagent_name', 'prompt', and optional 'label'",
     ],
     timeout: Annotated[float, "Timeout in seconds for each task (default: 300)"] = 300.0,
 ) -> str:

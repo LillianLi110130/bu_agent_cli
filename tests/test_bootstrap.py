@@ -32,7 +32,7 @@ def _load_module(module_name: str):
 
 
 def test_build_system_prompt_uses_packaged_skills_outside_workspace(tmp_path: Path) -> None:
-    module = _load_module("bu_agent_sdk.bootstrap.agent_factory")
+    module = _load_module("agent_core.bootstrap.agent_factory")
 
     prompt = module.build_system_prompt(tmp_path)
 
@@ -41,8 +41,8 @@ def test_build_system_prompt_uses_packaged_skills_outside_workspace(tmp_path: Pa
 
 
 def test_sync_workspace_agents_md_deduplicates_and_replaces_content(tmp_path: Path) -> None:
-    module = _load_module("bu_agent_sdk.bootstrap.session_bootstrap")
-    sdk_module = _load_module("bu_agent_sdk")
+    module = _load_module("agent_core.bootstrap.session_bootstrap")
+    sdk_module = _load_module("agent_core")
     state = module.WorkspaceInstructionState()
     agent = sdk_module.Agent(llm=DummyLLM(), tools=[], system_prompt="system prompt")
 

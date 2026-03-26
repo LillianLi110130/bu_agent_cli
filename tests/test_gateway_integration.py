@@ -74,13 +74,13 @@ def _load_module(module_name: str):
 async def test_gateway_pipeline_delivers_user_reply_to_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    bus_events = _load_module("bu_agent_sdk.bus.events")
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    channels_base = _load_module("bu_agent_sdk.channels.base")
-    manager_module = _load_module("bu_agent_sdk.channels.manager")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
-    service_module = _load_module("bu_agent_sdk.gateway.service")
-    runtime_manager_module = _load_module("bu_agent_sdk.runtime.manager")
+    bus_events = _load_module("agent_core.bus.events")
+    queue_module = _load_module("agent_core.bus.queue")
+    channels_base = _load_module("agent_core.channels.base")
+    manager_module = _load_module("agent_core.channels.manager")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
+    service_module = _load_module("agent_core.gateway.service")
+    runtime_manager_module = _load_module("agent_core.runtime.manager")
 
     monkeypatch.setattr(
         dispatcher_module,
@@ -148,13 +148,13 @@ async def test_gateway_pipeline_delivers_user_reply_to_channel(
 async def test_heartbeat_pipeline_delivers_result_to_last_active_channel(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    queue_module = _load_module("bu_agent_sdk.bus.queue")
-    channels_base = _load_module("bu_agent_sdk.channels.base")
-    manager_module = _load_module("bu_agent_sdk.channels.manager")
-    dispatcher_module = _load_module("bu_agent_sdk.gateway.dispatcher")
-    service_module = _load_module("bu_agent_sdk.gateway.service")
-    heartbeat_module = _load_module("bu_agent_sdk.heartbeat.service")
-    runtime_manager_module = _load_module("bu_agent_sdk.runtime.manager")
+    queue_module = _load_module("agent_core.bus.queue")
+    channels_base = _load_module("agent_core.channels.base")
+    manager_module = _load_module("agent_core.channels.manager")
+    dispatcher_module = _load_module("agent_core.gateway.dispatcher")
+    service_module = _load_module("agent_core.gateway.service")
+    heartbeat_module = _load_module("agent_core.heartbeat.service")
+    runtime_manager_module = _load_module("agent_core.runtime.manager")
 
     monkeypatch.setattr(
         dispatcher_module,

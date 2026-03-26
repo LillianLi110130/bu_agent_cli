@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from bu_agent_sdk.agent.registry import AgentRegistry
-from bu_agent_sdk.plugin import PluginManager
-from bu_agent_sdk.version import get_cli_version
+from agent_core.agent.registry import AgentRegistry
+from agent_core.plugin import PluginManager
+from agent_core.version import get_cli_version
 from cli.at_commands import AtCommandRegistry
 from cli.slash_commands import SlashCommandRegistry
 

@@ -12,7 +12,7 @@ import pytest
 import prompt_toolkit
 import prompt_toolkit.patch_stdout as prompt_patch_stdout
 
-from bu_agent_sdk import Agent
+from agent_core import Agent
 import cli.app as app_module
 from cli.app import ClaudeCodeCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
@@ -98,7 +98,9 @@ async def test_local_bridge_exit_request_stops_loop_and_records_result(workspace
 
 
 @pytest.mark.asyncio
-async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(workspace_root, monkeypatch):
+async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
+    workspace_root, monkeypatch
+):
     cli, store = _create_cli(workspace_root, monkeypatch)
     seen_calls: list[tuple[str, bool]] = []
     prompt_started = asyncio.Event()

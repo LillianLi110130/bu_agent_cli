@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Literal
 
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context

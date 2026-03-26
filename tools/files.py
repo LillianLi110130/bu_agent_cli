@@ -1,7 +1,7 @@
 """File operation tools: read, write, edit."""
 
 import difflib
-from bu_agent_sdk.tools import Depends, tool
+from agent_core.tools import Depends, tool
 from typing import Annotated, Optional
 
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path

@@ -6,9 +6,9 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from bu_agent_sdk import Agent
-from bu_agent_sdk.llm import ChatOpenAI
-from bu_agent_sdk.llm.messages import (
+from agent_core import Agent
+from agent_core.llm import ChatOpenAI
+from agent_core.llm.messages import (
     ContentPartImageParam,
     ContentPartTextParam,
     ImageURL,
@@ -115,7 +115,9 @@ class ModelSwitchService:
 
     def _resolve_image_summary_llm(self) -> tuple[Any | None, str | None, str | None]:
         summary_preset = self.resolve_image_summary_preset_name()
-        current_preset = self.resolve_exact_current_preset_name() or self.resolve_current_preset_name()
+        current_preset = (
+            self.resolve_exact_current_preset_name() or self.resolve_current_preset_name()
+        )
         if summary_preset:
             if (
                 current_preset
@@ -255,9 +257,7 @@ class ModelSwitchService:
                 continue
 
             user_text_hint = "\n".join(
-                part.text
-                for part in msg.content
-                if getattr(part, "type", None) == "text"
+                part.text for part in msg.content if getattr(part, "type", None) == "text"
             ).strip()
 
             new_parts: list[ContentPartTextParam | ContentPartImageParam] = []
@@ -306,9 +306,7 @@ class ModelSwitchService:
 
         stripped = self._agent._context.strip_user_image_inputs()
         if stripped:
-            self._print(
-                f"[yellow]记忆转换后已移除 {stripped} 个残留图片片段。[/yellow]"
-            )
+            self._print(f"[yellow]记忆转换后已移除 {stripped} 个残留图片片段。[/yellow]")
 
         status_style = "yellow" if manual else "dim"
         self._print(
@@ -316,8 +314,7 @@ class ModelSwitchService:
         )
         if fallback_count:
             self._print(
-                f"[{status_style}]其中 {fallback_count} 张图片使用了回退记忆。[/"
-                f"{status_style}]"
+                f"[{status_style}]其中 {fallback_count} 张图片使用了回退记忆。[/" f"{status_style}]"
             )
 
     async def switch_model_preset(
@@ -354,16 +351,13 @@ class ModelSwitchService:
         context_snapshot: list[Any] | None = None
         if current_is_vision and not target_is_vision:
             context_snapshot = [
-                message.model_copy(deep=True)
-                for message in self._agent._context.get_messages()
+                message.model_copy(deep=True) for message in self._agent._context.get_messages()
             ]
             try:
                 await self.prepare_text_model_image_memory(manual=manual)
             except Exception as e:
                 self._agent._context.replace_messages(context_snapshot)
-                self._print(
-                    f"[red]切换前准备图片记忆失败：{e}[/red]"
-                )
+                self._print(f"[red]切换前准备图片记忆失败：{e}[/red]")
                 return False
 
         try:
@@ -377,9 +371,7 @@ class ModelSwitchService:
         if not preflight.ok:
             if context_snapshot is not None:
                 self._agent._context.replace_messages(context_snapshot)
-            self._print(
-                f"[red]模型切换预检查失败：{preflight.reason or '上下文过大'}[/red]"
-            )
+            self._print(f"[red]模型切换预检查失败：{preflight.reason or '上下文过大'}[/red]")
             self._print(
                 f"[dim]预估 tokens：{preflight.estimated_tokens}，"
                 f"阈值：{preflight.threshold}，"
@@ -409,16 +401,10 @@ class ModelSwitchService:
             return False
 
         if preflight.compacted:
-            self._print(
-                "[yellow]为适配目标模型，已在切换前压缩上下文。[/yellow]"
-            )
+            self._print("[yellow]为适配目标模型，已在切换前压缩上下文。[/yellow]")
 
-        self._print(
-            f"[green]模型已切换：[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]"
-        )
-        self._print(
-            f"[dim]已保留上下文（{len(self._agent.messages)} 条消息）。[/dim]"
-        )
+        self._print(f"[green]模型已切换：[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]")
+        self._print(f"[dim]已保留上下文（{len(self._agent.messages)} 条消息）。[/dim]")
         if manual and auto_state is not None:
             auto_state.sticky_preset = preset_name
             self.clear_auto_switch_state(auto_state)
@@ -437,7 +423,9 @@ class ModelSwitchService:
             auto_state.sticky_preset = self.resolve_current_preset_name()
 
         sticky_is_vision = self.preset_supports_vision(auto_state.sticky_preset)
-        current_preset = self.resolve_exact_current_preset_name() or self.resolve_current_preset_name()
+        current_preset = (
+            self.resolve_exact_current_preset_name() or self.resolve_current_preset_name()
+        )
 
         if has_image:
             if sticky_is_vision:
@@ -463,9 +451,7 @@ class ModelSwitchService:
                 auto_state=auto_state,
             )
             if not switched:
-                self._print(
-                    "[red]切换到视觉模型失败，图片请求已中止。[/red]"
-                )
+                self._print("[red]切换到视觉模型失败，图片请求已中止。[/red]")
                 return False
 
             auto_state.auto_switched = True
@@ -491,7 +477,5 @@ class ModelSwitchService:
         if switched:
             self.clear_auto_switch_state(auto_state)
         else:
-            self._print(
-                "[yellow]自动切回失败，将继续使用当前模型。[/yellow]"
-            )
+            self._print("[yellow]自动切回失败，将继续使用当前模型。[/yellow]")
         return True
