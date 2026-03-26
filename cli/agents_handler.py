@@ -160,59 +160,7 @@ class AgentSlashHandler:
             self.console.print("[dim]使用 /agents list 查看可用智能体[/dim]")
             return True
 
-        details: list[str] = []
-        mode_color = {
-            "primary": "green",
-            "subagent": "blue",
-            "all": "magenta",
-        }.get(config.mode, "white")
-
-        details.append(f"[bold cyan]名称：[/] {config.name}")
-        details.append(
-            f"[bold cyan]模式：[/] "
-            f"[{mode_color}]{self.MODE_LABELS.get(config.mode, config.mode)}[/{mode_color}]"
-        )
-        details.append(f"[bold cyan]描述：[/] {config.description}")
-
-        if config.model:
-            details.append(f"[bold cyan]模型：[/] {config.model}")
-        if config.temperature is not None:
-            details.append(f"[bold cyan]温度：[/] {config.temperature}")
-
-        from tools import ALL_TOOLS
-
-        all_tool_names = {t.name for t in ALL_TOOLS}
-        if config.tools:
-            enabled_tools = [t for t, enabled in config.tools.items() if enabled]
-            disabled_tools = [t for t, enabled in config.tools.items() if not enabled]
-
-            details.append("")
-            details.append("[bold cyan]工具：[/]")
-
-            if enabled_tools:
-                for tool in enabled_tools:
-                    marker = "[green]✓[/green]" if tool in all_tool_names else "[yellow]?[/yellow]"
-                    details.append(f"  {marker} {tool}")
-            else:
-                details.append("  [dim]未显式启用[/dim]")
-
-            if disabled_tools:
-                details.append("")
-                details.append("[bold cyan]已禁用工具：[/]")
-                for tool in disabled_tools:
-                    details.append(f"  [red]✗[/red] {tool}")
-
-        details.append("")
-        details.append("[bold cyan]系统提示词：[/]")
-        prompt_preview = config.system_prompt[:200]
-        if len(config.system_prompt) > 200:
-            prompt_preview += "..."
-        details.append(f"[dim]{prompt_preview}[/dim]")
-
-        file_path = config.source_path or (self.agents_dir / f"{config.name}.md")
-        if file_path.exists():
-            details.append("")
-            details.append(f"[bold cyan]文件：[/] [dim]{file_path}[/dim]")
+        details = self._build_agent_details(config)
 
         panel = Panel(
             "\n".join(details),
@@ -225,6 +173,95 @@ class AgentSlashHandler:
         self.console.print(panel)
         self.console.print()
         return True
+
+    def _build_agent_details(self, config: AgentConfig) -> list[str]:
+        """Build the display lines for the agent details panel."""
+        details = self._build_basic_agent_details(config)
+        self._append_tool_details(details, config)
+        self._append_prompt_preview(details, config)
+        self._append_source_path(details, config)
+        return details
+
+    def _build_basic_agent_details(self, config: AgentConfig) -> list[str]:
+        """Build the basic metadata section for an agent."""
+        mode_color = self._get_mode_color(config.mode)
+        details = [
+            f"[bold cyan]名称：[/] {config.name}",
+            (
+                f"[bold cyan]模式：[/] "
+                f"[{mode_color}]{self.MODE_LABELS.get(config.mode, config.mode)}[/{mode_color}]"
+            ),
+            f"[bold cyan]描述：[/] {config.description}",
+        ]
+
+        if config.model:
+            details.append(f"[bold cyan]模型：[/] {config.model}")
+        if config.temperature is not None:
+            details.append(f"[bold cyan]温度：[/] {config.temperature}")
+        return details
+
+    def _append_tool_details(self, details: list[str], config: AgentConfig) -> None:
+        """Append configured tool information to the detail lines."""
+        if not config.tools:
+            return
+
+        from tools import ALL_TOOLS
+
+        all_tool_names = {tool.name for tool in ALL_TOOLS}
+        enabled_tools = [tool for tool, enabled in config.tools.items() if enabled]
+        disabled_tools = [tool for tool, enabled in config.tools.items() if not enabled]
+
+        details.append("")
+        details.append("[bold cyan]工具：[/]")
+        self._append_enabled_tool_details(details, enabled_tools, all_tool_names)
+
+        if disabled_tools:
+            details.append("")
+            details.append("[bold cyan]已禁用工具：[/]")
+            for tool in disabled_tools:
+                details.append(f"  [red]✗[/red] {tool}")
+
+    def _append_enabled_tool_details(
+        self,
+        details: list[str],
+        enabled_tools: list[str],
+        all_tool_names: set[str],
+    ) -> None:
+        """Append enabled tools, marking tools that are not currently registered."""
+        if not enabled_tools:
+            details.append("  [dim]未显式启用[/dim]")
+            return
+
+        for tool in enabled_tools:
+            marker = "[green]✓[/green]" if tool in all_tool_names else "[yellow]?[/yellow]"
+            details.append(f"  {marker} {tool}")
+
+    def _append_prompt_preview(self, details: list[str], config: AgentConfig) -> None:
+        """Append a truncated system prompt preview."""
+        details.append("")
+        details.append("[bold cyan]系统提示词：[/]")
+
+        prompt_preview = config.system_prompt[:200]
+        if len(config.system_prompt) > 200:
+            prompt_preview += "..."
+        details.append(f"[dim]{prompt_preview}[/dim]")
+
+    def _append_source_path(self, details: list[str], config: AgentConfig) -> None:
+        """Append the backing file path when it exists on disk."""
+        file_path = config.source_path or (self.agents_dir / f"{config.name}.md")
+        if not file_path.exists():
+            return
+
+        details.append("")
+        details.append(f"[bold cyan]文件：[/] [dim]{file_path}[/dim]")
+
+    def _get_mode_color(self, mode: str) -> str:
+        """Return the display color for a mode."""
+        return {
+            "primary": "green",
+            "subagent": "blue",
+            "all": "magenta",
+        }.get(mode, "white")
 
     async def _create(self, args: list[str]) -> bool:
         """Create a new agent."""
