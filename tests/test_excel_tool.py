@@ -424,6 +424,30 @@ async def test_read_excel_execute_normalizes_none_and_blank_arguments():
 
 
 @pytest.mark.anyio
+async def test_read_excel_execute_normalizes_null_like_optional_text_arguments():
+    workspace = _make_workspace()
+    workbook_path = workspace / "demo.xlsx"
+    _write_test_workbook(workbook_path, [("Sheet1", [["hello", "world"]])])
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        result = await read_excel.execute(
+            _overrides={get_sandbox_context: lambda: ctx},
+            file_path="demo.xlsx",
+            sheet_name="null",
+            find_text=" None ",
+        )
+        payload = json.loads(result)
+
+        assert payload["selected_sheet"] is None
+        assert payload["preview_limits"]["find_text"] is None
+        assert payload["sheet_names"] == ["Sheet1"]
+        assert len(payload["sheets"]) == 1
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
 async def test_read_excel_execute_normalizes_string_numeric_arguments():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
