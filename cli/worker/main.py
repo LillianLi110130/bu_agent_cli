@@ -13,7 +13,7 @@ logger = logging.getLogger("cli.worker.main")
 WorkerGatewayClient: Any = None
 WorkerRunner: Any = None
 load_auth_config: Any = None
-authenticate_if_enabled: Any = None
+load_persisted_auth_result: Any = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,7 +33,7 @@ async def async_main() -> None:
     gateway_client_cls = WorkerGatewayClient
     runner_cls = WorkerRunner
     load_auth_config_fn = load_auth_config
-    authenticate_if_enabled_fn = authenticate_if_enabled
+    load_persisted_auth_result_fn = load_persisted_auth_result
 
     if gateway_client_cls is None:
         from cli.worker.gateway_client import WorkerGatewayClient as gateway_client_cls
@@ -41,18 +41,18 @@ async def async_main() -> None:
     if runner_cls is None:
         from cli.worker.runner import WorkerRunner as runner_cls
 
-    if load_auth_config_fn is None or authenticate_if_enabled_fn is None:
-        from cli.worker.auth import authenticate_if_enabled as authenticate_if_enabled_fn
+    if load_auth_config_fn is None or load_persisted_auth_result_fn is None:
         from cli.worker.auth import load_auth_config as load_auth_config_fn
+        from cli.worker.auth import load_persisted_auth_result as load_persisted_auth_result_fn
 
-    base_dir = Path.cwd()
+    base_dir = Path(args.root_dir or Path.cwd()).resolve()
     auth_config = load_auth_config_fn(base_dir=base_dir)
     authorization: str | None = None
     if auth_config.enable_auth:
-        authorization = await authenticate_if_enabled_fn(
-            config=auth_config,
-            base_dir=base_dir,
-        )
+        persisted_auth = load_persisted_auth_result_fn(base_dir=base_dir)
+        if persisted_auth is None:
+            raise RuntimeError("Worker auth is enabled but no persisted auth result was found")
+        authorization = persisted_auth.authorization
 
     client_kwargs: dict[str, Any] = {"base_url": args.gateway_base_url}
     if authorization is not None:

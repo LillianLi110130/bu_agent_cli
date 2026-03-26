@@ -45,6 +45,7 @@ from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.gateway_client import WorkerGatewayClient
+from cli.worker.auth import authenticate_startup, load_auth_config
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 
@@ -207,7 +208,6 @@ def _build_system_prompt(
 
 console = Console()
 
-_DEFAULT_IM_GATEWAY_BASE_URL = os.getenv("BU_AGENT_IM_GATEWAY_BASE_URL", "http://127.0.0.1:8765")
 _DEFAULT_WORKER_HOST = (
     os.getenv("COMPUTERNAME") or os.getenv("HOSTNAME") or socket.gethostname() or "local"
 )
@@ -248,20 +248,16 @@ def parse_args():
         help="Enable worker bridge mode for a remote IM session (default: enabled)",
     )
     parser.add_argument(
-        "--im-worker-id",
-        default=None,
-        help=f"Worker identifier for the remote session (default: {_DEFAULT_IM_WORKER_ID})",
-    )
-    parser.add_argument(
         "--im-gateway-base-url",
         default=None,
-        help=f"Gateway base URL for the worker (default: {_DEFAULT_IM_GATEWAY_BASE_URL})",
+        help="Gateway base URL for the worker (default: from tg_crab_worker.json)",
     )
     args = parser.parse_args()
+    auth_config = load_auth_config(base_dir=Path(args.root_dir or Path.cwd()).resolve())
     if args.im_enable:
         args.local_bridge = True
-        args.im_worker_id = args.im_worker_id or _DEFAULT_IM_WORKER_ID
-        args.im_gateway_base_url = args.im_gateway_base_url or _DEFAULT_IM_GATEWAY_BASE_URL
+        args.im_worker_id = _DEFAULT_IM_WORKER_ID
+        args.im_gateway_base_url = args.im_gateway_base_url or auth_config.gateway_base_url
     return args
 
 
@@ -290,8 +286,8 @@ async def _start_im_worker_process(
     missing = [
         name
         for name, value in (
-            ("--im-worker-id", args.im_worker_id),
-            ("--im-gateway-base-url", args.im_gateway_base_url),
+            ("worker_id", args.im_worker_id),
+            ("gateway_base_url", args.im_gateway_base_url),
         )
         if not value
     ]
@@ -373,6 +369,20 @@ async def _mark_worker_offline(
         pass
     finally:
         await client.aclose()
+
+
+async def _authenticate_worker_startup(args: argparse.Namespace) -> None:
+    """Authenticate before starting the CLI and worker when auth is enabled."""
+    base_dir = Path(args.root_dir or Path.cwd()).resolve()
+    auth_config = load_auth_config(base_dir=base_dir)
+    if not auth_config.enable_auth:
+        return
+
+    auth_result = await authenticate_startup(
+        config=auth_config,
+        base_dir=base_dir,
+    )
+    args.im_worker_id = auth_result.user_id
 
 
 def create_llm(model: str | None = None) -> ChatOpenAI:
@@ -484,6 +494,7 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
 async def main():
     """Main entry point."""
     args = parse_args()
+    await _authenticate_worker_startup(args)
 
     agent, ctx, runtime = create_agent(
         model=args.model,

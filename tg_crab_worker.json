@@ -1,3 +1,8 @@
 {
-  "enable_auth": false
+  "enable_auth": true,
+  "auth_host": "http://127.0.0.1:8788/oauth/authorize",
+  "server_host": "http://127.0.0.1:8788",
+  "gateway_base_url": "http://127.0.0.1:8765",
+  "client_id": "mock-client",
+  "redirect_url": "http://127.0.0.1:8088/callback"
 }
