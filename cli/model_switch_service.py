@@ -614,14 +614,14 @@ class ModelSwitchService:
         *,
         auto_state: ModelAutoState,
         sticky_is_vision: bool,
-    ) -> bool:
+    ) -> None:
         if not auto_state.auto_switched or sticky_is_vision:
-            return True
+            return
 
         target_preset = auto_state.auto_from_preset or auto_state.sticky_preset
         if not target_preset:
             self.clear_auto_switch_state(auto_state)
-            return True
+            return
 
         self._print(f"[dim]自动切回文本预设：{target_preset}[/dim]")
         switched = await self.switch_model_preset(
@@ -631,9 +631,9 @@ class ModelSwitchService:
         )
         if switched:
             self.clear_auto_switch_state(auto_state)
-        else:
-            self._print("[yellow]自动切回失败，将继续使用当前模型。[/yellow]")
-        return True
+            return
+
+        self._print("[yellow]自动切回失败，将继续使用当前模型。[/yellow]")
 
     async def ensure_model_for_turn(
         self,
@@ -652,7 +652,8 @@ class ModelSwitchService:
                 sticky_is_vision=sticky_is_vision,
                 current_preset=current_preset,
             )
-        return await self._ensure_model_for_text_turn(
+        await self._ensure_model_for_text_turn(
             auto_state=auto_state,
             sticky_is_vision=sticky_is_vision,
         )
+        return True
