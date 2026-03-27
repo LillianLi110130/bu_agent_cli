@@ -190,7 +190,7 @@ class MySQLManager:
             cfg = self._resolve_mysql_config()
 
             if self.engine is None:
-                self._create_database_if_needed(cfg)
+                # self._create_database_if_needed(cfg)
                 self.engine = self._create_engine(cfg["db_uri"], include_database=True)
 
             self._session_factory = sessionmaker(
