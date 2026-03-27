@@ -60,7 +60,7 @@ class StubModelSwitchService:
         return True
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_model_routing_hook_detects_text_turn():
     service = StubModelSwitchService()
     llm = FakeLLM([ChatInvokeCompletion(content="done")])
@@ -73,7 +73,7 @@ async def test_model_routing_hook_detects_text_turn():
     assert service.calls == [False]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_model_routing_hook_detects_image_turn():
     service = StubModelSwitchService()
     llm = FakeLLM([ChatInvokeCompletion(content="done")])

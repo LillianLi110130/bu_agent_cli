@@ -14,7 +14,7 @@ import prompt_toolkit.patch_stdout as prompt_patch_stdout
 
 from agent_core import Agent
 import cli.app as app_module
-from cli.app import ClaudeCodeCLI, _SafeLoadingIndicator
+from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.runtime_factory import EchoLLM
@@ -48,7 +48,7 @@ def _create_cli(workspace_root: Path, monkeypatch):
     )
     context = SandboxContext.create(workspace_root)
     store = FileBridgeStore(workspace_root, session_binding_id="local-cli-test")
-    cli = ClaudeCodeCLI(
+    cli = TGAgentCLI(
         agent=agent,
         context=context,
         slash_registry=SlashCommandRegistry(),

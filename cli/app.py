@@ -1,6 +1,6 @@
-"""CLI Application for Claude Code.
+"""CLI Application for TG Agent.
 
-Contains the main ClaudeCodeCLI class and loading indicator.
+Contains the main TGAgentCLI class and loading indicator.
 Pure UI logic - receives pre-configured Agent and context.
 """
 

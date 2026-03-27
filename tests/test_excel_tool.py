@@ -141,7 +141,7 @@ def _write_test_workbook(path: Path, sheets: list[tuple[str, list[list[str]]]]) 
             archive.writestr(f"xl/worksheets/sheet{index}.xml", _sheet_xml(rows, shared_index))
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_reads_workbook_via_fuzzy_path():
     workspace = _make_workspace()
     workbook_path = workspace / "资料" / "数据表解释-市场维度数据集0324.xlsx"
@@ -166,7 +166,7 @@ async def test_read_excel_reads_workbook_via_fuzzy_path():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_reads_selected_sheet_with_chinese_path():
     workspace = _make_workspace()
     workbook_path = workspace / "中文目录" / "样例.xlsx"
@@ -192,7 +192,7 @@ async def test_read_excel_reads_selected_sheet_with_chinese_path():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_reports_missing_sheet_name():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -207,7 +207,7 @@ async def test_read_excel_reports_missing_sheet_name():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_treats_blank_sheet_name_as_all_sheets():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -231,7 +231,7 @@ async def test_read_excel_treats_blank_sheet_name_as_all_sheets():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_matches_sheet_name_with_spacing_variants():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -260,7 +260,7 @@ async def test_read_excel_matches_sheet_name_with_spacing_variants():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_supports_offset_row_preview():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -300,7 +300,7 @@ async def test_read_excel_supports_offset_row_preview():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_find_text_returns_match_context():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -346,7 +346,7 @@ async def test_read_excel_find_text_returns_match_context():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_find_text_respects_offset_row():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -389,7 +389,7 @@ async def test_read_excel_find_text_respects_offset_row():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_reports_invalid_preview_limits():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -408,7 +408,7 @@ async def test_read_excel_reports_invalid_preview_limits():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_reports_invalid_ooxml_file():
     workspace = _make_workspace()
     workbook_path = workspace / "broken.xlsx"
@@ -424,7 +424,7 @@ async def test_read_excel_reports_invalid_ooxml_file():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_execute_normalizes_none_and_blank_arguments():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -458,7 +458,7 @@ async def test_read_excel_execute_normalizes_none_and_blank_arguments():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_execute_normalizes_null_like_optional_text_arguments():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"
@@ -482,7 +482,7 @@ async def test_read_excel_execute_normalizes_null_like_optional_text_arguments()
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_excel_execute_normalizes_string_numeric_arguments():
     workspace = _make_workspace()
     workbook_path = workspace / "demo.xlsx"

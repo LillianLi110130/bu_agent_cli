@@ -76,7 +76,7 @@ def test_parse_tool_arguments_for_display_preserves_valid_json_escapes():
     assert parsed["path"] == r"D:\中文\文件.txt"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_agent_query_executes_tool_with_repaired_windows_style_path():
     seen: list[str] = []
 
@@ -109,7 +109,7 @@ async def test_agent_query_executes_tool_with_repaired_windows_style_path():
     assert seen == [r"D:\中文\文件.txt"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_query_stream_emits_repaired_tool_call_arguments():
     @tool("Echo file path")
     async def echo_path(file_path: str) -> str:

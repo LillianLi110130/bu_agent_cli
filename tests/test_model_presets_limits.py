@@ -4,8 +4,8 @@ from uuid import uuid4
 
 import pytest
 
-from bu_agent_sdk.agent.compaction.service import CompactionService
-from bu_agent_sdk.llm.openai.chat import ChatOpenAI
+from agent_core.agent.compaction.service import CompactionService
+from agent_core.llm.openai.chat import ChatOpenAI
 from config import model_config
 
 
@@ -84,7 +84,7 @@ def test_chat_openai_uses_model_preset_limits(monkeypatch):
     assert fallback.max_completion_tokens == 4096
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_compaction_service_uses_model_preset_max_input_tokens(monkeypatch):
     config_path = _make_temp_file()
     _write_model_presets(

@@ -36,7 +36,7 @@ def test_read_text_with_fallback_reads_gbk_content():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_tool_reads_gbk_file_with_chinese_path():
     workspace = _make_workspace()
     path = workspace / "中文目录" / "示例.txt"
@@ -54,7 +54,7 @@ async def test_read_tool_reads_gbk_file_with_chinese_path():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_edit_tool_preserves_original_gbk_encoding():
     workspace = _make_workspace()
     path = workspace / "中文目录" / "示例.txt"
@@ -71,7 +71,7 @@ async def test_edit_tool_preserves_original_gbk_encoding():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_grep_tool_searches_gbk_content():
     workspace = _make_workspace()
     path = workspace / "中文目录" / "示例.txt"

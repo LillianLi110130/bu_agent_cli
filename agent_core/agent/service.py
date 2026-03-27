@@ -58,7 +58,7 @@ import logging
 import random
 import time
 from collections.abc import AsyncIterator
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -388,26 +388,29 @@ class Agent:
             # No cancel event, run normally
             return await coro
 
-        # Run with cancellation support
+        if self._cancel_event.is_set():
+            raise asyncio.CancelledError("Operation cancelled by user")
+
+        # Race the task against the cancellation event instead of polling.
         task = asyncio.create_task(coro)
+        cancel_wait_task = asyncio.create_task(self._cancel_event.wait())
 
-        while not task.done():
-            if self._cancel_event.is_set():
+        try:
+            done, _ = await asyncio.wait(
+                {task, cancel_wait_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if cancel_wait_task in done and self._cancel_event.is_set():
                 task.cancel()
-                try:
+                with suppress(asyncio.CancelledError):
                     await task
-                except asyncio.CancelledError:
-                    raise
                 raise asyncio.CancelledError("Operation cancelled by user")
-
-            # Wait a bit for the task to complete or cancel event
-            try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
-                break
-            except asyncio.TimeoutError:
-                continue
-
-        return await task
+            return await task
+        finally:
+            cancel_wait_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await cancel_wait_task
 
     async def _sleep_with_cancel(self, delay: float):
         """Sleep with cancellation support."""
@@ -415,15 +418,17 @@ class Agent:
             await asyncio.sleep(delay)
             return
 
-        # Sleep in small chunks to check for cancellation
-        remaining = delay
-        chunk = 0.1
-        while remaining > 0:
-            if self._cancel_event.is_set():
-                raise asyncio.CancelledError("Sleep cancelled by user")
-            sleep_time = min(chunk, remaining)
-            await asyncio.sleep(sleep_time)
-            remaining -= sleep_time
+        if delay <= 0:
+            return
+
+        if self._cancel_event.is_set():
+            raise asyncio.CancelledError("Sleep cancelled by user")
+
+        try:
+            await asyncio.wait_for(self._cancel_event.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            return
+        raise asyncio.CancelledError("Sleep cancelled by user")
 
     # 对标记为ephemeral 的 ToolMessage，按 tool 维度，只保留最近N条
     def _destroy_ephemeral_messages(self) -> None:

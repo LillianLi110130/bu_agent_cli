@@ -15,7 +15,7 @@ from agent_core.plugin import (
     PluginManager,
 )
 from agent_core.version import get_cli_version
-from cli.app import ClaudeCodeCLI
+from cli.app import TGAgentCLI
 from cli.at_commands import AtCommandRegistry
 from cli.plugins_handler import PluginSlashHandler
 from cli.slash_commands import SlashCommandRegistry
@@ -789,7 +789,7 @@ def test_cli_runs_python_plugin_command_and_prints_output_without_agent(monkeypa
         context = SimpleNamespace(working_dir=workspace, subagent_manager=None)
         monkeypatch.setattr("cli.interactive_input.PromptSession", lambda: SimpleNamespace())
 
-        cli = ClaudeCodeCLI(
+        cli = TGAgentCLI(
             agent=agent,
             context=context,
             slash_registry=SlashCommandRegistry(),

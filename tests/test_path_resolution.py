@@ -75,7 +75,7 @@ def test_resolve_target_path_raises_for_ambiguous_filename():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_read_tool_uses_resolved_real_path():
     workspace = _make_workspace()
     real_dir = workspace / "AI价值链探索-特色存款案例"
@@ -145,7 +145,7 @@ def test_resolve_target_path_prefers_full_path_match_over_partial_filename_match
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_glob_search_uses_resolved_directory_path():
     workspace = _make_workspace()
     real_dir = workspace / "AI价值链探索-特色存款案例"
@@ -161,7 +161,7 @@ async def test_glob_search_uses_resolved_directory_path():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_glob_search_reports_missing_path_instead_of_empty_match():
     workspace = _make_workspace()
     ctx = SandboxContext.create(workspace)
@@ -194,7 +194,7 @@ def test_format_bash_result_includes_return_code_and_streams():
     assert payload["stderr"] == "err\n"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_resolve_path_tool_returns_real_path_for_fuzzy_query():
     workspace = _make_workspace()
     real_dir = workspace / "AI价值链探索-特色存款案例"
@@ -214,7 +214,7 @@ async def test_resolve_path_tool_returns_real_path_for_fuzzy_query():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_resolve_path_tool_reports_ambiguous_candidates():
     workspace = _make_workspace()
     first = workspace / "甲目录"

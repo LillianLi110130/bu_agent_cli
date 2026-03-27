@@ -91,7 +91,7 @@ def _image_part() -> ContentPartImageParam:
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_prepare_text_model_image_memory_replaces_images_with_text_memory():
     agent, service, _console = _make_service(current_model="vision-model")
     agent.load_history(
@@ -123,7 +123,7 @@ async def test_prepare_text_model_image_memory_replaces_images_with_text_memory(
     assert "未配置可用视觉摘要模型" in image_memory_parts[0]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_switch_model_preset_restores_context_when_image_memory_preparation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -153,7 +153,7 @@ async def test_switch_model_preset_restores_context_when_image_memory_preparatio
     assert agent.llm.model == "vision-model"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_ensure_model_for_turn_auto_switches_to_vision_and_back():
     _agent, service, console = _make_service(current_model="text-model")
     auto_state = ModelAutoState(sticky_preset="text")
@@ -187,7 +187,7 @@ async def test_ensure_model_for_turn_auto_switches_to_vision_and_back():
     assert any("自动切回文本预设：text" in message for message in console.messages)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_switch_model_preset_updates_llm_and_manual_auto_state(
     monkeypatch: pytest.MonkeyPatch,
 ):

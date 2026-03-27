@@ -1,9 +1,13 @@
 """Bash command execution tool."""
 
+import asyncio
 import json
 import locale
+import os
+import signal
 import subprocess
 import sys
+from contextlib import suppress
 from agent_core.tools import Depends, tool
 from typing import Annotated
 
@@ -22,24 +26,20 @@ async def bash(
 ) -> str:
     """Run a command in the current OS shell within the sandbox working directory."""
     try:
-        result = subprocess.run(
+        result = await _run_shell_command(
             command,
-            shell=True,
-            capture_output=True,
-            timeout=timeout,
             cwd=str(ctx.working_dir),
+            timeout=timeout,
         )
-        stdout = _decode_process_stream(result.stdout)
-        stderr = _decode_process_stream(result.stderr)
         return _format_bash_result(
             command=command,
             cwd=str(ctx.working_dir),
             returncode=result.returncode,
-            stdout=stdout,
-            stderr=stderr,
+            stdout=result.stdout,
+            stderr=result.stderr,
             timed_out=False,
         )
-    except subprocess.TimeoutExpired:
+    except asyncio.TimeoutError:
         return _format_bash_result(
             command=command,
             cwd=str(ctx.working_dir),
@@ -50,6 +50,116 @@ async def bash(
         )
     except Exception as e:
         return f"Error: {e}"
+
+
+class _AsyncShellResult:
+    def __init__(self, returncode: int, stdout: str, stderr: str):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+async def _run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
+    popen_kwargs: dict[str, object] = {
+        "shell": True,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "cwd": cwd,
+    }
+    if sys.platform == "win32":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+
+    process = subprocess.Popen(command, **popen_kwargs)
+    wait_task = asyncio.create_task(asyncio.to_thread(process.wait))
+
+    try:
+        done, _ = await asyncio.wait(
+            {wait_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if wait_task not in done:
+            await _terminate_shell_process(process)
+            await asyncio.to_thread(process.wait)
+            _close_process_pipes(process)
+            raise asyncio.TimeoutError
+    except asyncio.CancelledError:
+        await _terminate_shell_process(process)
+        await asyncio.to_thread(process.wait)
+        _close_process_pipes(process)
+        raise
+    finally:
+        if wait_task.done():
+            with suppress(Exception):
+                await wait_task
+
+    stdout, stderr = await asyncio.to_thread(process.communicate)
+    return _AsyncShellResult(
+        returncode=process.returncode or 0,
+        stdout=_decode_process_stream(stdout),
+        stderr=_decode_process_stream(stderr),
+    )
+
+
+async def _terminate_shell_process(process: subprocess.Popen) -> None:
+    if process.returncode is not None:
+        return
+
+    try:
+        if sys.platform == "win32":
+            await _terminate_windows_process_tree(process.pid)
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=1)
+        return
+    except (asyncio.TimeoutError, ProcessLookupError):
+        pass
+    except asyncio.CancelledError:
+        process.kill()
+        raise
+
+    try:
+        process.kill()
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=1)
+    except (asyncio.TimeoutError, ProcessLookupError):
+        pass
+
+
+async def _terminate_windows_process_tree(pid: int | None) -> None:
+    if not pid:
+        return
+
+    killer = await asyncio.create_subprocess_exec(
+        "taskkill",
+        "/PID",
+        str(pid),
+        "/T",
+        "/F",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    await killer.wait()
+
+
+def _close_process_pipes(process: subprocess.Popen) -> None:
+    for stream_name in ("stdout", "stderr", "stdin"):
+        stream = getattr(process, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except Exception:
+            pass
 
 
 def _decode_process_stream(data: bytes | str | None) -> str:

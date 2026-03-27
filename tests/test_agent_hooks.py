@@ -79,7 +79,7 @@ class FakeApprovalHandler:
         return self.decision
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_query_uses_runtime_loop_for_basic_completion():
     llm = FakeLLM([ChatInvokeCompletion(content="done")])
     agent = Agent(llm=llm, tools=[], system_prompt="system prompt")
@@ -91,7 +91,7 @@ async def test_query_uses_runtime_loop_for_basic_completion():
     assert [message.role for message in agent.messages] == ["system", "user", "assistant"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_runtime_loop_handle_tool_call_requested_uses_override_result():
     @tool("Echo payload")
     async def echo(payload: str) -> str:
@@ -118,7 +118,7 @@ async def test_runtime_loop_handle_tool_call_requested_uses_override_result():
     assert ui_events[1].args["payload"] == "hello"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_finish_guard_hook_continues_when_todos_incomplete():
     llm = FakeLLM(
         [
@@ -140,7 +140,7 @@ async def test_finish_guard_hook_continues_when_todos_incomplete():
     ]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_tool_policy_hook_blocks_disallowed_tool():
     called = {"value": False}
 
@@ -178,7 +178,7 @@ async def test_tool_policy_hook_blocks_disallowed_tool():
     assert "blocked by ToolPolicyHook" in tool_messages[0].text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_query_stream_emits_hidden_message_from_finish_guard():
     llm = FakeLLM(
         [
@@ -195,7 +195,7 @@ async def test_query_stream_emits_hidden_message_from_finish_guard():
     assert events[-1].content == "final"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_audit_hook_records_runtime_events():
     audit_hook = AuditHook()
     llm = FakeLLM([ChatInvokeCompletion(content="done")])
@@ -209,7 +209,7 @@ async def test_audit_hook_records_runtime_events():
     assert "RunFinished" in recorded_events
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_human_approval_hook_skips_when_disabled():
     called = {"value": False}
 
@@ -247,7 +247,7 @@ async def test_human_approval_hook_skips_when_disabled():
     assert handler.requests == []
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_human_approval_hook_allows_approved_tool_call():
     called = {"value": False}
 
@@ -287,7 +287,7 @@ async def test_human_approval_hook_allows_approved_tool_call():
     assert handler.requests[0].arguments["command"] == "echo hi"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_human_approval_hook_blocks_rejected_tool_call():
     called = {"value": False}
 
@@ -329,7 +329,7 @@ async def test_human_approval_hook_blocks_rejected_tool_call():
     assert len(llm.invocations) == 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_human_approval_hook_fails_closed_without_handler():
     called = {"value": False}
 
@@ -367,7 +367,7 @@ async def test_human_approval_hook_fails_closed_without_handler():
     assert len(llm.invocations) == 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_excel_read_guard_hook_blocks_excel_related_bash_after_read_excel():
     called = {"value": False}
 
@@ -433,7 +433,7 @@ async def test_excel_read_guard_hook_blocks_excel_related_bash_after_read_excel(
     assert "Do not use `bash`" in tool_messages[1].text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_excel_read_guard_hook_allows_non_excel_bash_after_read_excel():
     called = {"value": False}
 
@@ -491,7 +491,7 @@ async def test_excel_read_guard_hook_allows_non_excel_bash_after_read_excel():
     assert called["value"] is True
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_query_stream_with_human_approval_rejection_still_finishes():
     called = {"value": False}
 
