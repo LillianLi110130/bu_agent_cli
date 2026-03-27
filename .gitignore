@@ -18,3 +18,5 @@ __pycache__/
 .pytest_tmp/
 .DS_Store
 .tg_agent
+tests/conftest.py
+AGENTS.md
