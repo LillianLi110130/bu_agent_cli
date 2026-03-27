@@ -18,7 +18,7 @@ from openai.types.shared_params.reasoning_effort import ReasoningEffort
 from config.model_config import get_model_limits
 from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition
 from agent_core.llm.exceptions import ModelProviderError, ModelRateLimitError
-from agent_core.llm.messages import BaseMessage, Function, ToolCall
+from agent_core.llm.messages import AssistantMessage, BaseMessage, Function, ToolCall, ToolMessage
 from agent_core.llm.openai.serializer import OpenAIMessageSerializer
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
 
@@ -305,6 +305,74 @@ class ChatOpenAI(BaseChatModel):
 
         return tool_calls
 
+    def _sanitize_messages_for_openai(self, messages: list[BaseMessage]) -> list[BaseMessage]:
+        """Drop malformed tool history so OpenAI-compatible backends accept the request.
+
+        OpenAI requires each `tool` message to be preceded by an assistant message
+        with matching `tool_calls`, and each assistant tool-call block must be
+        followed by the matching tool result messages before the conversation moves on.
+        """
+        sanitized: list[BaseMessage] = []
+        index = 0
+
+        while index < len(messages):
+            message = messages[index]
+
+            if isinstance(message, ToolMessage):
+                logger.warning(
+                    "Dropping orphan tool message for tool_call_id=%s before OpenAI request",
+                    message.tool_call_id,
+                )
+                index += 1
+                continue
+
+            if not isinstance(message, AssistantMessage) or not message.tool_calls:
+                sanitized.append(message)
+                index += 1
+                continue
+
+            expected_tool_ids = {tool_call.id for tool_call in message.tool_calls}
+            collected_tool_messages: list[ToolMessage] = []
+            next_index = index + 1
+
+            while next_index < len(messages) and isinstance(messages[next_index], ToolMessage):
+                tool_message = messages[next_index]
+                if tool_message.tool_call_id in expected_tool_ids:
+                    collected_tool_messages.append(tool_message)
+                else:
+                    logger.warning(
+                        "Dropping mismatched tool message for tool_call_id=%s before OpenAI request",
+                        tool_message.tool_call_id,
+                    )
+                next_index += 1
+
+            received_tool_ids = {tool_message.tool_call_id for tool_message in collected_tool_messages}
+            if received_tool_ids == expected_tool_ids:
+                sanitized.append(message)
+                sanitized.extend(collected_tool_messages)
+                index = next_index
+                continue
+
+            logger.warning(
+                "Stripping incomplete assistant tool_calls before OpenAI request; "
+                "expected=%s received=%s",
+                sorted(expected_tool_ids),
+                sorted(received_tool_ids),
+            )
+            if message.content is not None or message.refusal is not None:
+                sanitized.append(
+                    AssistantMessage(
+                        content=message.content,
+                        name=message.name,
+                        refusal=message.refusal,
+                        tool_calls=None,
+                        cache=message.cache,
+                    )
+                )
+            index = next_index
+
+        return sanitized
+
     async def ainvoke(
         self,
         messages: list[BaseMessage],
@@ -323,7 +391,8 @@ class ChatOpenAI(BaseChatModel):
         Returns:
             ChatInvokeCompletion with content and/or tool_calls
         """
-        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+        sanitized_messages = self._sanitize_messages_for_openai(messages)
+        openai_messages = OpenAIMessageSerializer.serialize_messages(sanitized_messages)
 
         try:
             model_params: dict[str, Any] = {}
@@ -446,7 +515,8 @@ class ChatOpenAI(BaseChatModel):
         """
         from agent_core.llm.views import ChatInvokeCompletionChunk
 
-        openai_messages = OpenAIMessageSerializer.serialize_messages(messages)
+        sanitized_messages = self._sanitize_messages_for_openai(messages)
+        openai_messages = OpenAIMessageSerializer.serialize_messages(sanitized_messages)
 
         try:
             # 准备模型参数（与 ainvoke 相同）

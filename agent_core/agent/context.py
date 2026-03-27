@@ -18,6 +18,7 @@ import re
 logger = logging.getLogger("agent_core.agent")
 
 from agent_core.llm.messages import (
+    AssistantMessage,
     BaseMessage,
     ContentPartTextParam,
     DeveloperMessage,
@@ -128,6 +129,76 @@ class ContextManager:
         self._by_role = defaultdict(list)
         for msg in self._messages:
             self._by_role[msg.role].append(msg)
+
+    @staticmethod
+    def _find_matching_assistant_index(
+        messages: Sequence[BaseMessage],
+        tool_call_id: str,
+        tool_index: int,
+    ) -> int | None:
+        """Find the assistant message that issued a specific tool call."""
+        for i in range(tool_index - 1, -1, -1):
+            msg = messages[i]
+            if isinstance(msg, ToolMessage):
+                continue
+            if isinstance(msg, AssistantMessage) and msg.tool_calls:
+                if any(tool_call.id == tool_call_id for tool_call in msg.tool_calls):
+                    return i
+            break
+        return None
+
+    @staticmethod
+    def _expand_keep_indices_for_tool_pairs(
+        messages: Sequence[BaseMessage],
+        keep_indices: set[int],
+    ) -> set[int]:
+        """Expand keep set so tool transactions are preserved atomically."""
+        expanded = set(keep_indices)
+        changed = True
+
+        while changed:
+            changed = False
+            for index in list(expanded):
+                msg = messages[index]
+
+                if isinstance(msg, ToolMessage):
+                    assistant_index = ContextManager._find_matching_assistant_index(
+                        messages, msg.tool_call_id, index
+                    )
+                    if assistant_index is not None and assistant_index not in expanded:
+                        expanded.add(assistant_index)
+                        changed = True
+                    continue
+
+                if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+                    continue
+
+                expected_tool_ids = {tool_call.id for tool_call in msg.tool_calls}
+                next_index = index + 1
+                while next_index < len(messages) and isinstance(messages[next_index], ToolMessage):
+                    tool_msg = messages[next_index]
+                    if tool_msg.tool_call_id in expected_tool_ids and next_index not in expanded:
+                        expanded.add(next_index)
+                        changed = True
+                    next_index += 1
+
+        return expanded
+
+    @staticmethod
+    def _should_keep_destroyed_tool_message(
+        messages: Sequence[BaseMessage],
+        keep_indices: set[int],
+        index: int,
+    ) -> bool:
+        """Keep destroyed tool messages only when their assistant tool call is also kept."""
+        msg = messages[index]
+        if not isinstance(msg, ToolMessage):
+            return False
+
+        assistant_index = ContextManager._find_matching_assistant_index(
+            messages, msg.tool_call_id, index
+        )
+        return assistant_index is not None and assistant_index in keep_indices
 
     def get_messages_by_role(self, role: str) -> list[BaseMessage]:
         """Return a shallow copy of messages for a given role."""
@@ -357,6 +428,7 @@ class ContextManager:
             return False
 
         keep_indices = set(countable_indices[-keep_count:])
+        keep_indices = self._expand_keep_indices_for_tool_pairs(messages, keep_indices)
         cutoff_index = min(keep_indices)
         head = [messages[i] for i in countable_indices if i not in keep_indices]
 
@@ -377,7 +449,11 @@ class ContextManager:
                 continue
 
             is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
-            if is_destroyed_tool and i >= cutoff_index:
+            if (
+                is_destroyed_tool
+                and i >= cutoff_index
+                and self._should_keep_destroyed_tool_message(messages, keep_indices, i)
+            ):
                 new_messages.append(msg)
                 continue
 
