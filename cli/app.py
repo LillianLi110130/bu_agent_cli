@@ -316,7 +316,7 @@ class TGAgentCLI:
         self._ralph_handler: RalphSlashHandler | None = None
         self._approval_handler = _CLIHumanApprovalHandler(self)
         self._agent.human_in_loop_handler = self._approval_handler
-        self._agent.human_in_loop_config = HumanInLoopConfig(enabled=True)
+        self._agent.human_in_loop_config = HumanInLoopConfig(enabled=False)
         self._agent.register_hook(
             ModelRoutingHook(
                 service=self._model_switch_service,
@@ -651,119 +651,6 @@ class TGAgentCLI:
         """Stop the loading animation."""
         if loading:
             loading.stop()
-
-    def _print_welcome(self):
-        """Print welcome message."""
-        self._console.print(
-            Panel(
-                f"[bold cyan]Claude Code CLI[/bold cyan]\n\n"
-                f"输入消息后按 Enter 发送。\n"
-                f"按 [cyan]/[/cyan] 可查看可用命令。\n"
-                f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
-                f'可使用 [cyan]@"<path>"<message>[/cyan] 或 '
-                f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
-                f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
-                title="[bold blue]欢迎[/bold blue]",
-                border_style="bright_blue",
-            )
-        )
-
-        # Show sandbox info
-        self._console.print()
-        self._console.print(f"[dim]工作目录：[/] {self._ctx.working_dir}")
-        self._console.print(f"[dim]模型：[/] {self._agent.llm.model}")
-        self._console.print(
-            f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
-        )
-        self._console.print(f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部")
-        self._console.print(f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部")
-        self._console.print(
-            "[dim]审批模式：[/]已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
-        )
-        if self._model_presets:
-            self._console.print(f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}")
-        self._console.print()
-
-    def _print_help(self):
-        """Print help information."""
-        help_text = """
-[bold cyan]可用命令：[/bold cyan]
-
-  [blue]help[/blue]          - 显示帮助信息
-  [blue]exit[/blue]          - 退出 CLI
-  [blue]pwd[/blue]           - 显示当前工作目录
-  [blue]ls [path][/blue]     - 列出目录中的文件（AI 也可以完成）
-  [blue]/approval on|off|status[/blue] - 控制高风险工具的人类审批开关
-
-[bold cyan]可用工具（供 AI 使用）：[/bold cyan]
-
-  [blue]bash <cmd>[/blue]    - 执行 shell 命令
-  [blue]resolve_path <query>[/blue] - 解析近似路径
-  [blue]read <file>[/blue]   - 读取文件内容
-  [blue]write <file>[/blue]  - 写入文件内容
-  [blue]edit <file>[/blue]   - 编辑文件（替换文本）
-  [blue]glob <pattern>[/blue]- 按模式查找文件
-  [blue]grep <pattern>[/blue] - 搜索文件内容
-  [blue]todos[/blue]         - 管理待办事项
-
-[bold cyan]提示：[/boldcyan]
-
-  - 直接自然地输入你的需求，例如“列出所有 Python 文件”
-  - 可使用 [blue]@"<path>"<message>[/blue] 或 [blue]@'<path>'<message>[/blue] 发送图片输入
-  - AI 会自动使用工具帮助你
-"""
-        self._console.print(Panel(help_text, border_style="dim"))
-
-    def _print_approval_status(self) -> None:
-        status = "已开启" if self._agent.human_in_loop_config.enabled else "已关闭"
-        style = "green" if self._agent.human_in_loop_config.enabled else "yellow"
-        self._console.print(f"[{style}]审批模式：{status}[/{style}]")
-
-    async def _request_human_approval(
-        self,
-        request: HumanApprovalRequest,
-    ) -> HumanApprovalDecision:
-        self._stop_loading(self._loading)
-        self._loading = None
-
-        args_preview = json.dumps(request.arguments, ensure_ascii=False, default=str)
-        if len(args_preview) > 240:
-            args_preview = args_preview[:237].rstrip() + "..."
-
-        command_preview_line = (
-            f"[bold]命令预览：[/bold] {request.command_preview}\n"
-            if request.command_preview
-            else ""
-        )
-        panel = Panel(
-            f"[bold]工具：[/bold] {request.tool_name}\n"
-            f"[bold]风险级别：[/bold] {request.risk_level}\n"
-            f"[bold]审批原因：[/bold] {request.reason}\n"
-            f"{command_preview_line}"
-            f"[bold]参数：[/bold] {args_preview}\n"
-            "[dim]提示：如需关闭后续审批，可在本轮结束后输入 /approval off。[/dim]",
-            title="[bold yellow]需要审批[/bold yellow]",
-            border_style="yellow",
-        )
-        self._console.print()
-        self._console.print(panel)
-
-        approved = await self._prompter.prompt_yes_no(
-            "是否批准这次工具调用？如需关闭后续审批，可在本轮结束后使用 /approval off",
-            default=False,
-        )
-        if approved:
-            self._console.print("[green]已批准。[/green]")
-            self._console.print()
-            return HumanApprovalDecision(approved=True)
-
-        reason = await self._prompter.prompt_text(
-            "拒绝原因",
-            optional=True,
-        )
-        self._console.print("[yellow]已拒绝。[/yellow]")
-        self._console.print()
-        return HumanApprovalDecision(approved=False, reason=reason or None)
 
     def _print_slash_help(self):
         """Print slash command help information."""
@@ -1644,7 +1531,7 @@ class TGAgentCLI:
         self._console.print(f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部")
         self._console.print(f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部")
         self._console.print(
-            "[dim]审批模式：[/] 已开启（使用 [cyan]/approval off[/cyan] 可关闭逐条审批）"
+            "[dim]审批模式：[/] 已关闭（使用 [cyan]/approval on[/cyan] 可开启逐条审批）"
         )
         if self._model_presets:
             self._console.print(f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}")
