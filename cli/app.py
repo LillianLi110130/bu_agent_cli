@@ -242,7 +242,7 @@ class _ConsoleMirror:
 
 
 class TGAgentCLI:
-    """Interactive CLI for Claude Code assistant.
+    """Interactive CLI for TG Agent assistant.
 
     Pure UI class - displays agent events and handles user input.
     """
@@ -1556,7 +1556,7 @@ class TGAgentCLI:
         """Print welcome message."""
         self._console.print(
             Panel(
-                f"[bold cyan]Claude Code CLI[/bold cyan]\n\n"
+                f"[bold cyan]TG Agent CLI[/bold cyan]\n\n"
                 f"输入消息后按 Enter 发送。\n"
                 f"按 [cyan]/[/cyan] 可查看可用命令。\n"
                 f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
