@@ -46,30 +46,30 @@ def test_sync_workspace_agents_md_deduplicates_and_replaces_content(tmp_path: Pa
     state = module.WorkspaceInstructionState()
     agent = sdk_module.Agent(llm=DummyLLM(), tools=[], system_prompt="system prompt")
 
-    agents_md_path = tmp_path / "AGENTS.md"
+    agents_md_path = tmp_path / "TGAGENTS.md"
     agents_md_path.write_text("first rule", encoding="utf-8")
 
     state = module.sync_workspace_agents_md(agent, tmp_path, state)
     state = module.sync_workspace_agents_md(agent, tmp_path, state)
 
-    first_dev_messages = [
+    first_system_messages = [
         message
         for message in agent.messages
-        if message.role == "developer" and getattr(message, "content", "") == "first rule"
+        if message.role == "system" and getattr(message, "content", "") == "first rule"
     ]
     system_messages = [message for message in agent.messages if message.role == "system"]
 
-    assert len(first_dev_messages) == 1
-    assert len(system_messages) == 1
+    assert len(first_system_messages) == 1
+    assert len(system_messages) == 2
     assert state.injected_content == "first rule"
 
     agents_md_path.write_text("second rule", encoding="utf-8")
     state = module.sync_workspace_agents_md(agent, tmp_path, state)
 
-    developer_contents = [
-        getattr(message, "content", "") for message in agent.messages if message.role == "developer"
+    system_contents = [
+        getattr(message, "content", "") for message in agent.messages if message.role == "system"
     ]
 
-    assert "first rule" not in developer_contents
-    assert "second rule" in developer_contents
+    assert "first rule" not in system_contents
+    assert "second rule" in system_contents
     assert state.injected_content == "second rule"

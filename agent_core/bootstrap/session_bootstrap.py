@@ -7,11 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from agent_core.llm.messages import SystemMessage, UserMessage
+from agent_core.llm.messages import SystemMessage
 
 if TYPE_CHECKING:
     from agent_core import Agent
 
+WORKSPACE_INSTRUCTION_FILENAME = "TGAGENTS.md"
 
 @dataclass
 class WorkspaceInstructionState:
@@ -26,9 +27,9 @@ def sync_workspace_agents_md(
     workspace_dir: Path,
     state: WorkspaceInstructionState | None = None,
 ) -> WorkspaceInstructionState:
-    """Synchronize workspace AGENTS.md into pinned developer context."""
+    """Synchronize workspace TGAGENTS.md into pinned system context."""
     resolved_state = state or WorkspaceInstructionState()
-    agents_path = workspace_dir / "AGENTS.md"
+    agents_path = workspace_dir / WORKSPACE_INSTRUCTION_FILENAME
 
     if not agents_path.exists():
         _clear_injected_content(agent, resolved_state)
@@ -53,7 +54,7 @@ def sync_workspace_agents_md(
     if resolved_state.injected_content:
         _remove_injected_content(agent, resolved_state.injected_content)
 
-    agent._context.inject_message(UserMessage(content=content), pinned=True)
+    agent._context.inject_message(SystemMessage(content=content), pinned=True)
     resolved_state.content_hash = content_hash
     resolved_state.injected_content = content
     return resolved_state
@@ -61,7 +62,7 @@ def sync_workspace_agents_md(
 
 def _has_injected_content(agent: "Agent", content: str) -> bool:
     return any(
-        message.role == "developer" and getattr(message, "content", "") == content
+        message.role == "system" and getattr(message, "content", "") == content
         for message in agent._context.get_messages()
     )
 
@@ -77,5 +78,5 @@ def _remove_injected_content(agent: "Agent", content: str) -> None:
     messages = agent._context.get_messages()
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
-        if message.role == "developer" and getattr(message, "content", "") == content:
+        if message.role == "system" and getattr(message, "content", "") == content:
             agent._context.remove_message_at(index)

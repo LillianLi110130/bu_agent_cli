@@ -7,7 +7,7 @@
 - **交互式 CLI**：本地终端对话，支持 slash 命令、`@skill` 调用和模型切换
 - **工具调用**：内置 `bash`、文件读写编辑、搜索、todo、子代理执行等工具
 - **子代理机制**：可将任务委派给专业子代理并同步等待结果，或并行执行多个子任务
-- **工作区指令同步**：自动读取工作区 `AGENTS.md`，并同步到当前会话上下文
+- **工作区指令同步**：自动读取工作区 `TGAGENTS.md`，并同步到当前会话上下文
 - **Gateway 会话隔离**：按 chat/session 维度维护独立运行时，避免不同会话串上下文
 - **Telegram 集成**：支持 Telegram 私聊消息接入与回复
 - **Heartbeat 机制**：定期检查 `HEARTBEAT.md`，在有任务时自动投递到网关会话
@@ -76,7 +76,7 @@ bu-agent --root-dir ./your-project
    - `ZHAOHU_PORT`，默认 `18080`
    - `ZHAOHU_WEBHOOK_PATH`，默认 `/webhook/zhaohu`
 5. 建议在工作区根目录启动，这样可直接使用：
-   - `AGENTS.md`：工作区规则，会在会话处理中自动同步到 Agent 上下文
+   - `TGAGENTS.md`：工作区规则，会在会话处理中自动同步到 Agent 上下文
    - `HEARTBEAT.md`：heartbeat 任务来源
 
 > 注意：gateway 读取 `.env` 的位置是**当前启动目录**；`--root-dir` 控制的是 Agent 工作区，不会改变 `.env` 的加载位置。
