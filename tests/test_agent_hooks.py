@@ -9,6 +9,7 @@ from agent_core.agent import (
     Agent,
     AgentRunState,
     AuditHook,
+    BashFileTaskGuardHook,
     ExcelReadGuardHook,
     HumanApprovalDecision,
     HumanApprovalHook,
@@ -486,6 +487,157 @@ async def test_excel_read_guard_hook_allows_non_excel_bash_after_read_excel():
     )
 
     result = await agent.query("analyze workbook")
+
+    assert result == "done"
+    assert called["value"] is True
+
+
+@pytest.mark.asyncio
+async def test_bash_file_task_guard_hook_blocks_directory_listing_commands():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"dir"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[BashFileTaskGuardHook()],
+    )
+
+    result = await agent.query("list files")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "file discovery or directory listing" in tool_messages[0].text
+    assert "`glob_search`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_bash_file_task_guard_hook_blocks_text_search_commands():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"grep TODO src/app.py"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[BashFileTaskGuardHook()],
+    )
+
+    result = await agent.query("search for TODO")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "text search inside files" in tool_messages[0].text
+    assert "`grep`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_bash_file_task_guard_hook_blocks_file_read_commands():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"type README.md"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[BashFileTaskGuardHook()],
+    )
+
+    result = await agent.query("read the readme")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "trying to read file contents" in tool_messages[0].text
+    assert "`read`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_bash_file_task_guard_hook_allows_non_file_shell_commands():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"python -c \\"print(123)\\""}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[BashFileTaskGuardHook()],
+    )
+
+    result = await agent.query("run a script")
 
     assert result == "done"
     assert called["value"] is True

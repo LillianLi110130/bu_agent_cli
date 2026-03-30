@@ -29,6 +29,7 @@ from agent_core import Agent
 from agent_core.agent import (
     AgentHook,
     AuditHook,
+    BashFileTaskGuardHook,
     ExcelReadGuardHook,
     HumanApprovalHook,
     build_default_approval_policy,
@@ -444,6 +445,7 @@ def build_agent_hooks(*, mode: str) -> list[AgentHook]:
     """
     hooks: list[AgentHook] = [
         HumanApprovalHook(policy=build_default_approval_policy(mode)),
+        BashFileTaskGuardHook(),
         ExcelReadGuardHook(),
         AuditHook(),
     ]

@@ -28,6 +28,44 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("agent_core.agent.hooks")
 _EXCEL_COMMAND_RE = re.compile(r"(?i)(openpyxl|\.xlsx\b|\.xlsm\b|\.xltx\b|\.xltm\b)")
+_BASH_FILE_DISCOVERY_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[;&|]\s*)"
+    r"(?:"
+    r"dir\b|"
+    r"ls\b|"
+    r"tree\b|"
+    r"fd\b|"
+    r"where\b|"
+    r"get-childitem\b|"
+    r"gci\b|"
+    r"git\s+ls-files\b"
+    r")"
+)
+_BASH_TEXT_SEARCH_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[;&|]\s*)"
+    r"(?:"
+    r"find\b|"
+    r"findstr\b|"
+    r"grep\b|"
+    r"rg\b|"
+    r"select-string\b|"
+    r"git\s+grep\b"
+    r")"
+)
+_BASH_FILE_READ_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[;&|]\s*)"
+    r"(?:"
+    r"type\b|"
+    r"cat\b|"
+    r"more\b|"
+    r"get-content\b|"
+    r"gc\b|"
+    r"git\s+show\b"
+    r")"
+)
 
 
 class HookAction(str, Enum):
@@ -276,6 +314,80 @@ class ExcelReadGuardHook(BaseAgentHook):
         reads = []
         setattr(ctx.state, self.state_attr, reads)
         return reads
+
+
+@dataclass
+class BashFileTaskGuardHook(BaseAgentHook):
+    """Block bash when the agent tries to use it as a file inspection tool."""
+
+    priority: int = 19
+
+    async def before_event(
+        self,
+        event: RuntimeEvent,
+        ctx: HookContext,
+    ) -> HookDecision | None:
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        if event.tool_call.function.name != "bash":
+            return None
+
+        try:
+            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
+        except ToolArgumentsError:
+            return None
+
+        command = args.get("command")
+        if not isinstance(command, str):
+            return None
+
+        normalized = command.strip()
+        if not normalized:
+            return None
+
+        guidance = self._build_guidance(normalized)
+        if guidance is None:
+            return None
+
+        return HookDecision(
+            action=HookAction.OVERRIDE_RESULT,
+            override_result=ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name="bash",
+                content=guidance,
+                is_error=True,
+            ),
+            reason="blocked file-oriented bash usage",
+        )
+
+    @staticmethod
+    def _build_guidance(command: str) -> str | None:
+        if _BASH_FILE_DISCOVERY_RE.search(command):
+            return (
+                "Error: This `bash` command is doing file discovery or directory listing.\n"
+                "Use `glob_search` to list files and folders, and `resolve_path` first if the "
+                "target path is fuzzy.\n"
+                "Do not retry the same discovery step with `bash`, because that bypasses sandbox and "
+                ".tgagentignore protections."
+            )
+        if _BASH_TEXT_SEARCH_RE.search(command):
+            return (
+                "Error: This `bash` command is doing text search inside files.\n"
+                "Use `grep` for content search, and `resolve_path` first when the search scope path "
+                "is ambiguous.\n"
+                "Do not retry the same search step with `bash`, because that bypasses sandbox and "
+                ".tgagentignore protections."
+            )
+        if _BASH_FILE_READ_RE.search(command):
+            return (
+                "Error: This `bash` command is trying to read file contents.\n"
+                "Use `read` for text files, or `read_excel` for Excel workbooks. If the path is "
+                "unclear, call `resolve_path` first.\n"
+                "Do not retry the same read step with `bash`, because that bypasses sandbox and "
+                ".tgagentignore protections."
+            )
+        return None
 
 
 @dataclass

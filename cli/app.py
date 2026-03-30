@@ -420,18 +420,29 @@ class TGAgentCLI:
                 ".idea",
             }
 
+        def is_blocked(path: Path) -> bool:
+            return self._ctx.is_ignored(path)
+
         # Tree (depth 4)
         tree_lines: list[str] = []
         for current, dirs, files in os.walk(root):
+            current_path = Path(current)
+            if is_blocked(current_path):
+                dirs[:] = []
+                continue
             rel = os.path.relpath(current, root)
             depth = 0 if rel == "." else rel.count(os.sep) + 1
             if depth > 4:
                 dirs[:] = []
                 continue
-            dirs[:] = [d for d in dirs if not is_ignored_dir(d)]
+            dirs[:] = [
+                d for d in dirs if not is_ignored_dir(d) and not is_blocked(current_path / d)
+            ]
             indent = "  " * depth
             tree_lines.append(f"{indent}{os.path.basename(current)}/")
             for f in sorted(files):
+                if is_blocked(current_path / f):
+                    continue
                 tree_lines.append(f"{indent}  {f}")
 
         # Important files (top-level)
@@ -444,21 +455,29 @@ class TGAgentCLI:
         file_snippets: list[str] = []
         for name in important:
             path = root / name
-            if path.exists():
+            if path.exists() and not is_blocked(path):
                 content = path.read_text(encoding="utf-8")[:4000]
                 file_snippets.append(f"## {name}\n{content}")
 
         # Files (depth-limited, read all with truncation)
         file_snippets_all: list[str] = []
         for current, dirs, files in os.walk(root):
+            current_path = Path(current)
+            if is_blocked(current_path):
+                dirs[:] = []
+                continue
             rel = os.path.relpath(current, root)
             depth = 0 if rel == "." else rel.count(os.sep) + 1
             if depth > 4:
                 dirs[:] = []
                 continue
-            dirs[:] = [d for d in dirs if not is_ignored_dir(d)]
+            dirs[:] = [
+                d for d in dirs if not is_ignored_dir(d) and not is_blocked(current_path / d)
+            ]
             for f in sorted(files):
                 path = Path(current) / f
+                if is_blocked(path):
+                    continue
                 try:
                     content = path.read_text(encoding="utf-8", errors="ignore")[:2000]
                 except Exception:

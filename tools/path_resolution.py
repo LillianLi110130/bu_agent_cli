@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from tools.sandbox import SandboxContext
+from tools.sandbox import SandboxContext, SecurityError
 
 TargetKind = Literal["file", "dir", "any"]
 
@@ -58,31 +59,31 @@ class _CandidateSignature:
 
 _SEPARATOR_TRANSLATION = str.maketrans(
     {
-        "（": "(",
-        "）": ")",
-        "【": "[",
-        "】": "]",
-        "《": "<",
-        "》": ">",
-        "，": ",",
-        "。": ".",
-        "、": ",",
-        "；": ";",
-        "：": ":",
-        "“": '"',
-        "”": '"',
-        "‘": "'",
-        "’": "'",
-        "—": "-",
-        "–": "-",
-        "－": "-",
-        "‒": "-",
-        "―": "-",
-        "﹘": "-",
-        "﹣": "-",
-        "·": "-",
-        "•": "-",
-        "　": " ",
+        "\uff08": "(",
+        "\uff09": ")",
+        "\u3010": "[",
+        "\u3011": "]",
+        "\u3008": "<",
+        "\u3009": ">",
+        "\uff0c": ",",
+        "\u3002": ".",
+        "\u3001": ",",
+        "\uff1b": ";",
+        "\uff1a": ":",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u2014": "-",
+        "\u2013": "-",
+        "\uff0d": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+        "\u2500": "-",
+        "\u2010": "-",
+        "\u00b7": "-",
+        "\u30fb": "-",
+        "\u3000": " ",
     }
 )
 
@@ -119,13 +120,20 @@ def resolve_target_path(
 
 
 def _resolve_direct_path(query: str, ctx: SandboxContext, *, kind: TargetKind) -> Path | None:
+    last_security_error: SecurityError | None = None
     for candidate_text in _candidate_query_paths(query):
         try:
             resolved = ctx.resolve_path(candidate_text)
+        except SecurityError as exc:
+            last_security_error = exc
+            continue
         except Exception:
             continue
         if _matches_kind(resolved, kind):
             return resolved
+
+    if last_security_error is not None and _looks_like_path(query):
+        raise last_security_error
     return None
 
 
@@ -161,6 +169,7 @@ def _build_candidate_signature(candidate: Path) -> _CandidateSignature:
 
 def _iter_unique_search_candidates(
     roots: list[Path],
+    ctx: SandboxContext,
     *,
     kind: TargetKind,
 ) -> list[Path]:
@@ -169,15 +178,37 @@ def _iter_unique_search_candidates(
 
     for root in roots:
         try:
-            iterator = root.rglob("*")
+            resolved_root = root.resolve()
         except Exception:
             continue
-        for candidate in iterator:
-            if candidate in seen:
+        if not resolved_root.exists() or ctx.is_ignored(resolved_root):
+            continue
+
+        if resolved_root not in seen and _matches_kind(resolved_root, kind):
+            seen.add(resolved_root)
+            candidates.append(resolved_root)
+
+        if not resolved_root.is_dir():
+            continue
+
+        for current, dirs, files in os.walk(resolved_root):
+            current_path = Path(current)
+            dirs[:] = [name for name in dirs if not ctx.is_ignored(current_path / name)]
+
+            if current_path not in seen and current_path != resolved_root and _matches_kind(current_path, kind):
+                seen.add(current_path)
+                candidates.append(current_path)
+
+            if kind == "dir":
                 continue
-            seen.add(candidate)
-            if _matches_kind(candidate, kind):
-                candidates.append(candidate)
+
+            for file_name in files:
+                candidate = current_path / file_name
+                if candidate in seen or ctx.is_ignored(candidate):
+                    continue
+                if _matches_kind(candidate, kind):
+                    seen.add(candidate)
+                    candidates.append(candidate)
 
     return candidates
 
@@ -192,10 +223,7 @@ def _score_candidate_name_match(
         return 220
     if query_signature.relaxed_name and query_signature.relaxed_name in candidate_signature.relaxed_name:
         return 170
-    if (
-        candidate_signature.relaxed_name
-        and candidate_signature.relaxed_name in query_signature.relaxed_name
-    ):
+    if candidate_signature.relaxed_name and candidate_signature.relaxed_name in query_signature.relaxed_name:
         return 150
     return 0
 
@@ -240,7 +268,7 @@ def _search_matches(query: str, ctx: SandboxContext, *, kind: TargetKind) -> lis
     roots = _search_roots(query, ctx)
     query_signature = _build_query_signature(query)
     results: list[_Match] = []
-    for candidate in _iter_unique_search_candidates(roots, kind=kind):
+    for candidate in _iter_unique_search_candidates(roots, ctx, kind=kind):
         score = _score_candidate(query_signature, candidate)
         if score >= 80:
             results.append(_Match(path=candidate, score=score))
@@ -251,8 +279,7 @@ def _search_matches(query: str, ctx: SandboxContext, *, kind: TargetKind) -> lis
 
 def _search_roots(query: str, ctx: SandboxContext) -> list[Path]:
     roots: list[Path] = []
-    path_like = _looks_like_path(query)
-    if path_like:
+    if _looks_like_path(query):
         candidate_path = Path(query).expanduser()
         if not candidate_path.is_absolute():
             candidate_path = ctx.working_dir / candidate_path
@@ -263,12 +290,18 @@ def _search_roots(query: str, ctx: SandboxContext) -> list[Path]:
                 continue
             if not resolved.exists() or not resolved.is_dir():
                 continue
-            if not ctx.is_allowed(resolved):
+            if not ctx.is_allowed(resolved) or ctx.is_ignored(resolved):
                 continue
             roots.append(resolved)
             break
 
-    roots.extend(path.resolve() for path in ctx.allowed_dirs if path.exists())
+    for path in ctx.allowed_dirs:
+        try:
+            resolved = path.resolve()
+        except Exception:
+            continue
+        if resolved.exists() and not ctx.is_ignored(resolved):
+            roots.append(resolved)
 
     deduped: list[Path] = []
     seen: set[Path] = set()

@@ -1,5 +1,7 @@
 """Bash command execution tool."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import locale
@@ -8,8 +10,9 @@ import signal
 import subprocess
 import sys
 from contextlib import suppress
-from agent_core.tools import Depends, tool
 from typing import Annotated
+
+from agent_core.tools import Depends, tool
 
 from tools.sandbox import SandboxContext, get_sandbox_context
 

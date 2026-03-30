@@ -1,12 +1,51 @@
 """Search tools: glob pattern matching and grep content search."""
 
+from __future__ import annotations
+
+import os
 import re
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Iterable
+
 from agent_core.tools import Depends, tool
-from typing import Annotated
 
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
 from tools.text_encoding import read_text_with_fallback
+
+
+def _iter_searchable_files(root: Path, ctx: SandboxContext) -> Iterable[Path]:
+    """Yield files below ``root`` while pruning ignored paths."""
+    resolved_root = root.resolve()
+    if ctx.is_ignored(resolved_root):
+        return
+    if resolved_root.is_file():
+        if not ctx.is_ignored(resolved_root):
+            yield resolved_root
+        return
+
+    for current, dirs, files in os.walk(resolved_root):
+        current_path = Path(current)
+        dirs[:] = [name for name in dirs if not ctx.is_ignored(current_path / name)]
+        for file_name in files:
+            candidate = current_path / file_name
+            if not ctx.is_ignored(candidate):
+                yield candidate
+
+
+def _matches_glob(root: Path, candidate: Path, pattern: str) -> bool:
+    pattern_text = pattern.replace("\\", "/")
+    relative = candidate.relative_to(root).as_posix()
+    return PurePosixPath(relative).match(pattern_text) or PurePosixPath(candidate.name).match(
+        pattern_text
+    )
+
+
+def _display_path(path: Path, ctx: SandboxContext) -> str:
+    try:
+        return str(path.relative_to(ctx.root_dir))
+    except ValueError:
+        return str(path)
 
 
 @tool("Find files matching a glob pattern")
@@ -15,7 +54,7 @@ async def glob_search(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     path: str | None = None,
 ) -> str:
-    """Find files matching a glob pattern like **/*.py"""
+    """Find files matching a glob pattern like ``**/*.py``."""
     try:
         if path:
             search_dir = resolve_target_path(path, ctx, kind="dir")
@@ -27,11 +66,14 @@ async def glob_search(
         return f"Security error: {e}"
 
     try:
-        matches = list(search_dir.glob(pattern))
-        files = [str(m.relative_to(ctx.root_dir)) for m in matches if m.is_file()][:50]
-        if not files:
+        matches = [
+            _display_path(candidate, ctx)
+            for candidate in _iter_searchable_files(search_dir, ctx)
+            if _matches_glob(search_dir, candidate, pattern)
+        ][:50]
+        if not matches:
             return f"No files match pattern: {pattern}"
-        return f"Found {len(files)} file(s):\n" + "\n".join(files)
+        return f"Found {len(matches)} file(s):\n" + "\n".join(matches)
     except Exception as e:
         return f"Error: {e}"
 
@@ -42,7 +84,7 @@ async def grep(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     path: str | None = None,
 ) -> str:
-    """Search for pattern in files recursively."""
+    """Search for a regular-expression pattern in files recursively."""
     try:
         if path:
             search_target = resolve_target_path(path, ctx, kind="any")
@@ -58,23 +100,15 @@ async def grep(
     except re.error as e:
         return f"Invalid regex: {e}"
 
-    results = []
-    if search_target.is_file():
-        files_to_search = [search_target]
-    else:
-        files_to_search = search_target.rglob("*")
-
-    for file_path in files_to_search:
-        if not file_path.is_file():
-            continue
+    results: list[str] = []
+    for file_path in _iter_searchable_files(search_target, ctx):
         try:
             content, _ = read_text_with_fallback(file_path)
             for i, line in enumerate(content.splitlines(), 1):
                 if regex.search(line):
-                    rel_path = file_path.relative_to(ctx.root_dir)
-                    results.append(f"{rel_path}:{i}: {line[:100]}")
+                    results.append(f"{_display_path(file_path, ctx)}:{i}: {line[:100]}")
                     if len(results) >= 50:
                         return "\n".join(results) + "\n... (truncated)"
         except Exception:
-            pass
+            continue
     return "\n".join(results) if results else f"No matches for: {pattern}"
