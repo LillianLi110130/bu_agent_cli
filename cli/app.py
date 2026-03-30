@@ -395,7 +395,7 @@ class TGAgentCLI:
         )
 
     def _maybe_inject_agents_md(self) -> None:
-        """Inject workspace AGENTS.md into context if present."""
+        """Inject workspace TGAGENTS.md into context if present."""
         self._workspace_instruction_state = sync_workspace_agents_md(
             agent=self._agent,
             workspace_dir=self._ctx.working_dir,
@@ -780,22 +780,49 @@ class TGAgentCLI:
 
         if command_name == "init":
             # Generate docs/PROJECT.md with an AI summary of the project
-            out_path = self._ctx.working_dir / "AGENTS.md"
+            out_path = self._ctx.working_dir / "TGAGENTS.md"
 
             snapshot = self._build_project_snapshot()
             system = SystemMessage(
                 content=(
                     "The user just ran `/init`.\n"
-                    "Generate AGENTS.md based on the project snapshot.\n"
-                    "Keep it concise and useful for onboarding.\n"
-                    "内容要求中文"
+                    "Generate a repository-specific TGAGENTS.md from the project snapshot.\n"
+                    "Write in Chinese.\n"
+                    "Keep it concise, practical, and instruction-oriented.\n"
+                    "Focus on helping a coding agent quickly understand the repository and decide what to read first.\n"
+                    "Do not invent files, behaviors, architecture, commands, or workflows that are not supported by the snapshot.\n"
+                    "If something cannot be verified from the snapshot, mark it as a hypothesis instead of stating it as a fact."
                 )
             )
             user = UserMessage(
                 content=(
-                    "Based on the project snapshot below, write AGENTS.md with:\n"
-                    "1) Overview\n2) Project Structure\n3) How It Works\n"
-                    "4) Constraints/Assumptions\n\n"
+                    "Based on the project snapshot below, write TGAGENTS.md for future coding and analysis sessions.\n\n"
+                    "The document should help an agent work efficiently in this repository, not just introduce the project.\n\n"
+                    "Use this structure:\n"
+                    "1) 项目目标\n"
+                    "简要说明该项目看起来在做什么。\n\n"
+                    "2) 目录与职责\n"
+                    "概括主要目录、模块和关键文件的职责；只写能从快照中推断出的内容。\n\n"
+                    "3) 推荐阅读路径\n"
+                    "分别说明下面几类任务优先看哪些文件或目录：\n"
+                    "- 快速了解项目\n"
+                    "- 分析代码架构\n"
+                    "- 修改功能\n"
+                    "- 排查问题\n\n"
+                    "4) 关键入口与核心链路\n"
+                    "指出可能的入口文件、主运行流程、配置入口、关键集成点。\n\n"
+                    "5) 可暂时忽略的内容\n"
+                    "列出首次分析时通常优先级较低的目录或文件；如果无法判断，可以明确写无法判断。\n\n"
+                    "6) 开发与验证命令\n"
+                    "只有当快照中出现了明确依据时，才写常用命令。\n\n"
+                    "7) 约束与假设\n"
+                    "列出仓库内约定、边界、未验证前提，以及哪些内容只是推测。\n\n"
+                    "Requirements:\n"
+                    "- Prefer actionable guidance over prose.\n"
+                    "- Avoid generic advice that would apply to any repository.\n"
+                    "- If the snapshot is insufficient, say so explicitly.\n"
+                    "- When describing reading strategy, favor \"read these first\" guidance over exhaustive coverage.\n\n"
+                    "Project snapshot:\n\n"
                     f"{snapshot}"
                 )
             )
@@ -817,7 +844,7 @@ class TGAgentCLI:
                     r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE
                 )
             out_path.write_text(content, encoding="utf-8")
-            self._console.print("[yellow]已生成 AGENTS.md[/yellow]")
+            self._console.print("[yellow]已生成 TGAGENTS.md[/yellow]")
             return True
 
         if command_name == "tasks":
@@ -1020,7 +1047,7 @@ class TGAgentCLI:
         self._console.print()
         final_response: str | None = None
 
-        # Inject AGENTS.md (if present) before each user query
+        # Inject TGAGENTS.md (if present) before each user query
         # self._maybe_inject_agents_md()
 
         # Start loading animation

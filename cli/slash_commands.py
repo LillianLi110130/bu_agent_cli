@@ -117,7 +117,7 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="init",
-                description="生成 AGENTS.md",
+                description="生成 TGAGENTS.md",
                 usage="/init",
                 examples=["/init"],
                 category="会话",
