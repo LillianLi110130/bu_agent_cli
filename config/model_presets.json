@@ -2,7 +2,16 @@
   "default": "GLM-4.7",
   "auto_vision_preset": "GLM-4.6V",
   "image_summary_preset": "GLM-4.6V",
-  "presets": {
+  "presets": 
+  {
+    "GLM-5.1": {
+      "model": "GLM-5.1",
+      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+      "api_key_env": "OPENAI_API_KEY",
+      "vision": false,
+      "max_input_tokens": 200000,
+      "max_output_tokens": 4096
+    },
     "GLM-4.7": {
       "model": "GLM-4.7",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
