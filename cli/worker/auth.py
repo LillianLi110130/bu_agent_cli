@@ -19,6 +19,7 @@ logger = logging.getLogger("cli.worker.auth")
 
 DEFAULT_AUTH_CALLBACK_URL = "http://127.0.0.1:8088/callback"
 AUTH_CALLBACK_TIMEOUT_SECONDS = 180.0
+_PACKAGE_CONFIG_FILE_NAME = "tg_crab_worker.json"
 
 
 @dataclass(slots=True)
@@ -157,10 +158,12 @@ class _LocalAuthCallbackServer:
 
 def load_auth_config(base_dir: Path | str | None = None) -> WorkerAuthConfig:
     """Load worker auth config from tg_crab_worker.json."""
-    resolved_base_dir = Path(base_dir or Path.cwd())
-    config_path = resolved_base_dir / "tg_crab_worker.json"
-    if not config_path.exists():
-        logger.info(f"Worker auth config file not found, using defaults: {config_path}")
+    config_path = _resolve_auth_config_path(base_dir)
+    if config_path is None:
+        logger.info(
+            "Worker auth config file not found, using defaults. "
+            f"Searched: {_format_auth_config_search_paths(base_dir)}"
+        )
         return WorkerAuthConfig()
 
     try:
@@ -176,6 +179,35 @@ def load_auth_config(base_dir: Path | str | None = None) -> WorkerAuthConfig:
         client_id=_normalize_optional_string(payload.get("client_id")),
         redirect_url=_normalize_optional_string(payload.get("redirect_url")),
     )
+
+
+def _resolve_auth_config_path(base_dir: Path | str | None = None) -> Path | None:
+    """Return the first existing auth config path."""
+    for config_path in _iter_auth_config_paths(base_dir):
+        if config_path.exists():
+            return config_path
+    return None
+
+
+def _iter_auth_config_paths(base_dir: Path | str | None = None) -> list[Path]:
+    """Return auth config search paths in priority order."""
+    resolved_base_dir = Path(base_dir or Path.cwd()).resolve()
+    search_paths = [resolved_base_dir / _PACKAGE_CONFIG_FILE_NAME]
+
+    package_config_path = _get_package_config_dir() / _PACKAGE_CONFIG_FILE_NAME
+    if package_config_path not in search_paths:
+        search_paths.append(package_config_path)
+
+    return search_paths
+
+
+def _format_auth_config_search_paths(base_dir: Path | str | None = None) -> str:
+    return ", ".join(str(path) for path in _iter_auth_config_paths(base_dir))
+
+
+def _get_package_config_dir() -> Path:
+    """Return the installed tg-agent package root directory."""
+    return Path(__file__).resolve().parents[2]
 
 
 async def authenticate_startup(

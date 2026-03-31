@@ -135,6 +135,30 @@ def test_load_auth_config_reads_gateway_base_url(workspace_root: Path):
     assert config.gateway_base_url == "http://127.0.0.1:9765"
 
 
+def test_load_auth_config_falls_back_to_package_install_dir(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    package_root = workspace_root / "installed-package"
+    package_root.mkdir(parents=True, exist_ok=True)
+    (package_root / "tg_crab_worker.json").write_text(
+        json.dumps(
+            {
+                "enable_auth": False,
+                "gateway_base_url": "http://127.0.0.1:8866",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(auth, "_get_package_config_dir", lambda: package_root)
+
+    config = auth.load_auth_config(workspace_root)
+
+    assert config.gateway_base_url == "http://127.0.0.1:8866"
+
+
 def test_claude_code_authentication_overrides_worker_id(
     workspace_root: Path,
     monkeypatch,

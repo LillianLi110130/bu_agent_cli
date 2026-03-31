@@ -57,6 +57,7 @@ build-backend = "hatchling.build"
 "plugins" = "tg_agent_cli/plugins"
 "gateway" = "tg_agent_cli/gateway"
 "tg_agent_cli.pth" = "tg_agent_cli.pth"
+"tg_crab_worker.json" = "tg_agent_cli/tg_crab_worker.json"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -74,6 +75,7 @@ include = [
     "README.md",
     "plugins/**",
     "tg_agent_cli.pth",
+    "tg_crab_worker.json",
     "pyproject.toml",
 ]
 
