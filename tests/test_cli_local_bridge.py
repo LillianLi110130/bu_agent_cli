@@ -5,15 +5,16 @@ import io
 import shutil
 import sys
 import uuid
-from pathlib import Path
 from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
 
-import pytest
 import prompt_toolkit
 import prompt_toolkit.patch_stdout as prompt_patch_stdout
+import pytest
 
-from agent_core import Agent
 import cli.app as app_module
+from agent_core import Agent
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
 from cli.slash_commands import SlashCommandRegistry
@@ -80,6 +81,44 @@ async def test_local_bridge_drains_enqueued_input_through_execution(workspace_ro
     assert result.input_content == "hello bridge"
     assert result.input_kind == "text"
     assert result.final_content == "processed:hello bridge"
+
+
+@pytest.mark.asyncio
+async def test_init_command_uses_dedicated_agent_and_injects_immediately(
+    workspace_root,
+    monkeypatch,
+):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+    init_agent = SimpleNamespace(name="init-agent")
+
+    monkeypatch.setattr(app_module, "build_init_agent", lambda **kwargs: init_agent)
+    monkeypatch.setattr(
+        app_module,
+        "build_init_user_prompt",
+        lambda workspace: f"init prompt for {workspace}",
+    )
+    monkeypatch.setattr(app_module, "validate_init_output", lambda workspace: (True, None))
+
+    async def fake_run_agent(user_input, has_image=False, agent=None):
+        assert has_image is False
+        assert agent is init_agent
+        assert str(workspace_root) in user_input
+        (workspace_root / "TGAGENTS.md").write_text("repo rules", encoding="utf-8")
+        return "init completed"
+
+    monkeypatch.setattr(cli, "_run_agent", fake_run_agent)
+
+    handled = await cli._handle_slash_command("/init")
+
+    assert handled is True
+    assert (workspace_root / "TGAGENTS.md").read_text(encoding="utf-8") == "repo rules"
+    system_contents = [
+        getattr(message, "content", "")
+        for message in cli._agent.messages
+        if message.role == "system"
+    ]
+    assert "test" in system_contents
+    assert "repo rules" in system_contents
 
 
 @pytest.mark.asyncio

@@ -46,7 +46,6 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
-from agent_core.llm.messages import SystemMessage, UserMessage
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -76,6 +75,7 @@ from cli.image_input import (
     is_image_command,
     parse_image_command,
 )
+from cli.init_agent import build_init_agent, build_init_user_prompt, validate_init_output
 from cli.im_bridge import BridgeRequest, FileBridgeStore
 from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
@@ -798,72 +798,7 @@ class TGAgentCLI:
             return True
 
         if command_name == "init":
-            # Generate docs/PROJECT.md with an AI summary of the project
-            out_path = self._ctx.working_dir / "TGAGENTS.md"
-
-            snapshot = self._build_project_snapshot()
-            system = SystemMessage(
-                content=(
-                    "The user just ran `/init`.\n"
-                    "Generate a repository-specific TGAGENTS.md from the project snapshot.\n"
-                    "Write in Chinese.\n"
-                    "Keep it concise, practical, and instruction-oriented.\n"
-                    "Focus on helping a coding agent quickly understand the repository and decide what to read first.\n"
-                    "Do not invent files, behaviors, architecture, commands, or workflows that are not supported by the snapshot.\n"
-                    "If something cannot be verified from the snapshot, mark it as a hypothesis instead of stating it as a fact."
-                )
-            )
-            user = UserMessage(
-                content=(
-                    "Based on the project snapshot below, write TGAGENTS.md for future coding and analysis sessions.\n\n"
-                    "The document should help an agent work efficiently in this repository, not just introduce the project.\n\n"
-                    "Use this structure:\n"
-                    "1) 项目目标\n"
-                    "简要说明该项目看起来在做什么。\n\n"
-                    "2) 目录与职责\n"
-                    "概括主要目录、模块和关键文件的职责；只写能从快照中推断出的内容。\n\n"
-                    "3) 推荐阅读路径\n"
-                    "分别说明下面几类任务优先看哪些文件或目录：\n"
-                    "- 快速了解项目\n"
-                    "- 分析代码架构\n"
-                    "- 修改功能\n"
-                    "- 排查问题\n\n"
-                    "4) 关键入口与核心链路\n"
-                    "指出可能的入口文件、主运行流程、配置入口、关键集成点。\n\n"
-                    "5) 可暂时忽略的内容\n"
-                    "列出首次分析时通常优先级较低的目录或文件；如果无法判断，可以明确写无法判断。\n\n"
-                    "6) 开发与验证命令\n"
-                    "只有当快照中出现了明确依据时，才写常用命令。\n\n"
-                    "7) 约束与假设\n"
-                    "列出仓库内约定、边界、未验证前提，以及哪些内容只是推测。\n\n"
-                    "Requirements:\n"
-                    "- Prefer actionable guidance over prose.\n"
-                    "- Avoid generic advice that would apply to any repository.\n"
-                    "- If the snapshot is insufficient, say so explicitly.\n"
-                    "- When describing reading strategy, favor \"read these first\" guidance over exhaustive coverage.\n\n"
-                    "Project snapshot:\n\n"
-                    f"{snapshot}"
-                )
-            )
-
-            response = await self._agent.llm.ainvoke(
-                messages=[system, user],
-                tools=None,
-                tool_choice=None,
-            )
-            content = response.content or ""
-            # Strip any hidden thinking blocks from the output
-            if content:
-                import re
-
-                content = re.sub(
-                    r"<think>.*?</think>", "", content, flags=re.DOTALL | re.IGNORECASE
-                )
-                content = re.sub(
-                    r"<analysis>.*?</analysis>", "", content, flags=re.DOTALL | re.IGNORECASE
-                )
-            out_path.write_text(content, encoding="utf-8")
-            self._console.print("[yellow]已生成 TGAGENTS.md[/yellow]")
+            await self._run_init_agent()
             return True
 
         if command_name == "tasks":
@@ -1060,11 +995,39 @@ class TGAgentCLI:
         self._store_command_final_content(await self._run_agent(expanded_message, has_image=False))
         return True
 
-    async def _run_agent(self, user_input: UserInputPayload, has_image: bool = False) -> str | None:
+    async def _run_init_agent(self) -> str | None:
+        """Run the dedicated `/init` agent workflow."""
+        self._console.print("[dim]正在通过专用 init agent 分析仓库并生成 TGAGENTS.md...[/dim]")
+        init_agent = build_init_agent(
+            llm=self._agent.llm,
+            workspace_root=self._ctx.working_dir,
+            dependency_overrides=self._agent.dependency_overrides,
+        )
+        prompt = build_init_user_prompt(self._ctx.working_dir)
+        final_response = await self._run_agent(prompt, has_image=False, agent=init_agent)
+        ok, error = validate_init_output(self._ctx.working_dir)
+        if not ok:
+            self._store_command_final_content(error)
+            self._console.print(f"[red]{error}[/red]")
+            return final_response
+
+        self._maybe_inject_agents_md()
+        success_message = "已生成并注入 TGAGENTS.md"
+        self._store_command_final_content(final_response or success_message)
+        self._console.print(f"[yellow]{success_message}[/yellow]")
+        return final_response
+
+    async def _run_agent(
+        self,
+        user_input: UserInputPayload,
+        has_image: bool = False,
+        agent: Agent | None = None,
+    ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
         self._console.print()
         final_response: str | None = None
+        active_agent = agent or self._agent
 
         # Inject TGAGENTS.md (if present) before each user query
         # self._maybe_inject_agents_md()
@@ -1137,7 +1100,7 @@ class TGAgentCLI:
 
         try:
             # Pass cancel_event to agent for immediate cancellation
-            async for event in self._agent.query_stream(user_input, cancel_event=cancel_event):
+            async for event in active_agent.query_stream(user_input, cancel_event=cancel_event):
                 # Cancellation is now handled inside query_stream for immediate response
                 # This check is for final confirmation
                 if cancel_event.is_set():
