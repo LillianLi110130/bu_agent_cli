@@ -396,6 +396,7 @@ class ContextManager:
     async def apply_sliding_window_by_messages(
         self,
         keep_count: int,
+        llm: "BaseChatModel",
         pin_roles: Iterable[str] = ("system", "developer"),
         buffer: int = 10,
     ) -> bool:
@@ -432,7 +433,7 @@ class ContextManager:
         cutoff_index = min(keep_indices)
         head = [messages[i] for i in countable_indices if i not in keep_indices]
 
-        result = await self._compaction_service.compact(head)
+        result = await self._compaction_service.compact(head, llm)
         summary_text = (result.summary or "").strip()
         if not summary_text:
             return False
@@ -472,6 +473,7 @@ class ContextManager:
     async def apply_sliding_window_by_rounds(
         self,
         keep_rounds: int,
+        llm: "BaseChatModel",
         pin_roles: Iterable[str] = ("system", "developer"),
         buffer: int = 10,
     ) -> bool:
@@ -507,7 +509,7 @@ class ContextManager:
         tail_rounds = rounds[-keep_rounds:]
         head = [msg for r in head_rounds for msg in r]
 
-        result = await self._compaction_service.compact(head)
+        result = await self._compaction_service.compact(head, llm)
         summary_text = (result.summary or "").strip()
         if not summary_text:
             return False

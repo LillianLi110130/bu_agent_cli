@@ -312,6 +312,12 @@ class Agent:
         """Get the token cost service for direct access to usage tracking."""
         return self._token_cost
 
+    def set_llm(self, llm: BaseChatModel) -> None:
+        """Update the active LLM and keep compaction state in sync."""
+        self.llm = llm
+        if self._context._compaction_service is not None:
+            self._context._compaction_service.llm = llm
+
     async def get_usage(self) -> UsageSummary:
         """Get usage summary for the agent.
 
@@ -740,10 +746,12 @@ Keep the summary brief but informative."""
         if self._context.sliding_window_messages is not None:
             did_slide = await self._context.apply_sliding_window_by_messages(
                 keep_count=self._context.sliding_window_messages,
+                llm=self.llm,
             )
             # Alternative strategy (round-based):
             # did_slide = await self._context.apply_sliding_window_by_rounds(
             #     keep_rounds=self._context.sliding_window_messages,
+            #     llm=self.llm,
             # )
 
         if did_slide:

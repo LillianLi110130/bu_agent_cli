@@ -223,7 +223,20 @@ async def test_switch_model_preset_updates_llm_and_manual_auto_state(
     assert switched is True
     assert agent.llm.model == "text-model"
     assert agent.llm.base_url == "https://old"
+    assert agent._context._compaction_service is not None
+    assert agent._context._compaction_service.llm is agent.llm
     assert auto_state.sticky_preset == "text"
     assert auto_state.auto_switched is False
     assert auto_state.auto_from_preset is None
     assert any("已在切换前压缩上下文" in message for message in console.messages)
+
+
+def test_set_llm_updates_compaction_service_reference():
+    agent, _service, _console = _make_service(current_model="text-model")
+    new_llm = FakeLLM(model="replacement-model", base_url="https://example.test")
+
+    agent.set_llm(new_llm)
+
+    assert agent.llm is new_llm
+    assert agent._context._compaction_service is not None
+    assert agent._context._compaction_service.llm is new_llm

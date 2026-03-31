@@ -539,13 +539,15 @@ class ModelSwitchService:
         new_base_url = self._resolve_switch_target_base_url(preset, old_llm)
 
         try:
-            self._agent.llm = ChatOpenAI(
-                model=model,
-                api_key=api_key,
-                base_url=new_base_url,
+            self._agent.set_llm(
+                ChatOpenAI(
+                    model=model,
+                    api_key=api_key,
+                    base_url=new_base_url,
+                )
             )
         except Exception as e:
-            self._agent.llm = old_llm
+            self._agent.set_llm(old_llm)
             self._restore_context_snapshot(context_snapshot)
             self._print(f"[red]切换模型失败：{e}[/red]")
             return False
