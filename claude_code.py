@@ -19,11 +19,13 @@ Environment Variables:
 import argparse
 import asyncio
 import os
+import socket
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-import socket
 from typing import Any
+
+from rich.console import Console
 
 from agent_core import Agent
 from agent_core.agent import (
@@ -34,21 +36,18 @@ from agent_core.agent import (
     HumanApprovalHook,
     build_default_approval_policy,
 )
-from agent_core.llm import ChatOpenAI
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
+from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
-from rich.console import Console
-
-from agent_core.bootstrap.agent_factory import create_agent
+from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
 from cli.slash_commands import SlashCommandRegistry
-from cli.worker.gateway_client import WorkerGatewayClient
 from cli.worker.auth import authenticate_startup, load_auth_config
+from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
-
 
 # =============================================================================
 # Prompt & Skills Loading
@@ -176,7 +175,11 @@ def create_runtime_registries(
 ) -> RuntimeRegistries:
     """Create shared registries for built-ins and workspace plugins."""
     slash_registry = SlashCommandRegistry()
-    skill_registry = AtCommandRegistry(skills_dir or _SKILLS_DIR)
+    resolved_skill_dirs = default_skill_dirs(
+        workspace_root=workspace_root,
+        builtin_skills_dir=skills_dir or _SKILLS_DIR,
+    )
+    skill_registry = AtCommandRegistry(skill_dirs=resolved_skill_dirs)
     agent_registry = AgentRegistry(agents_dir or _AGENTS_DIR)
     resolved_plugin_dirs = plugin_dirs or [
         ("builtin", plugin_dir or _PLUGINS_DIR),
@@ -516,7 +519,10 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
 
     # 为子代理添加系统信息到系统提示词
     system_info_text = _get_system_info()
-    system_prompt = f"{config.system_prompt}\n\n## System Information\n\nThe current environment: {system_info_text}"
+    system_prompt = (
+        f"{config.system_prompt}\n\n## System Information\n\n"
+        f"The current environment: {system_info_text}"
+    )
 
     agent = Agent(
         llm=llm,

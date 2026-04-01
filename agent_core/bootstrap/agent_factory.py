@@ -11,8 +11,7 @@ from typing import Any
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
-from agent_core.skill.loader import load_skills
-from agent_core.skill.types import Skill
+from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
@@ -20,7 +19,7 @@ _PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
 _SKILLS_DIR = _PACKAGE_ROOT.parent / "skills"
 
 
-def _format_skills(skills: list[Skill]) -> str:
+def _format_skills(skills: list[Any]) -> str:
     """Format skills list into a readable string for the prompt."""
     if not skills:
         return "No skills available."
@@ -78,11 +77,20 @@ def _get_system_info() -> str:
     return f"{system} {release}"
 
 
-def build_system_prompt(working_dir: Path) -> str:
-    """Build the system prompt using packaged skills and prompts."""
+def build_system_prompt(
+    working_dir: Path,
+    builtin_skills_dir: Path | None = None,
+) -> str:
+    """Build the system prompt using built-in and custom skills."""
     from agent_core.agent.registry import get_agent_registry
 
-    skills = load_skills(_SKILLS_DIR)
+    resolved_builtin_skills_dir = builtin_skills_dir or _SKILLS_DIR
+    skills = discover_skill_files(
+        default_skill_dirs(
+            workspace_root=working_dir,
+            builtin_skills_dir=resolved_builtin_skills_dir,
+        )
+    )
     skills_text = _format_skills(skills)
 
     registry = get_agent_registry()
