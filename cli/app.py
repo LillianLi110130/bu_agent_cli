@@ -1009,12 +1009,11 @@ class TGAgentCLI:
         if not ok:
             self._store_command_final_content(error)
             self._console.print(f"[red]{error}[/red]")
-            return final_response
-
-        self._maybe_inject_agents_md()
-        success_message = "已生成并注入 TGAGENTS.md"
-        self._store_command_final_content(final_response or success_message)
-        self._console.print(f"[yellow]{success_message}[/yellow]")
+        else:
+            self._maybe_inject_agents_md()
+            success_message = "已生成并注入 TGAGENTS.md"
+            self._store_command_final_content(final_response or success_message)
+            self._console.print(f"[yellow]{success_message}[/yellow]")
         return final_response
 
     async def _run_agent(

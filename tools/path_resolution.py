@@ -167,6 +167,66 @@ def _build_candidate_signature(candidate: Path) -> _CandidateSignature:
     )
 
 
+def _resolve_search_root(root: Path, ctx: SandboxContext) -> Path | None:
+    try:
+        resolved_root = root.resolve()
+    except Exception:
+        return None
+    if not resolved_root.exists() or ctx.is_ignored(resolved_root):
+        return None
+    return resolved_root
+
+
+def _append_candidate_if_unique(
+    candidate: Path,
+    candidates: list[Path],
+    seen: set[Path],
+    *,
+    kind: TargetKind,
+) -> None:
+    if candidate in seen or not _matches_kind(candidate, kind):
+        return
+    seen.add(candidate)
+    candidates.append(candidate)
+
+
+def _collect_file_candidates(
+    current_path: Path,
+    files: list[str],
+    ctx: SandboxContext,
+    candidates: list[Path],
+    seen: set[Path],
+    *,
+    kind: TargetKind,
+) -> None:
+    for file_name in files:
+        candidate = current_path / file_name
+        if ctx.is_ignored(candidate):
+            continue
+        _append_candidate_if_unique(candidate, candidates, seen, kind=kind)
+
+
+def _collect_walk_candidates(
+    resolved_root: Path,
+    ctx: SandboxContext,
+    candidates: list[Path],
+    seen: set[Path],
+    *,
+    kind: TargetKind,
+) -> None:
+    for current, dirs, files in os.walk(resolved_root):
+        current_path = Path(current)
+        dirs[:] = [name for name in dirs if not ctx.is_ignored(current_path / name)]
+
+        if current_path != resolved_root:
+            _append_candidate_if_unique(current_path, candidates, seen, kind=kind)
+
+        if kind == "dir":
+            continue
+
+        _collect_file_candidates(current_path, files, ctx, candidates, seen, kind=kind)
+
+
 def _iter_unique_search_candidates(
     roots: list[Path],
     ctx: SandboxContext,
@@ -177,38 +237,15 @@ def _iter_unique_search_candidates(
     seen: set[Path] = set()
 
     for root in roots:
-        try:
-            resolved_root = root.resolve()
-        except Exception:
-            continue
-        if not resolved_root.exists() or ctx.is_ignored(resolved_root):
+        resolved_root = _resolve_search_root(root, ctx)
+        if resolved_root is None:
             continue
 
-        if resolved_root not in seen and _matches_kind(resolved_root, kind):
-            seen.add(resolved_root)
-            candidates.append(resolved_root)
-
+        _append_candidate_if_unique(resolved_root, candidates, seen, kind=kind)
         if not resolved_root.is_dir():
             continue
 
-        for current, dirs, files in os.walk(resolved_root):
-            current_path = Path(current)
-            dirs[:] = [name for name in dirs if not ctx.is_ignored(current_path / name)]
-
-            if current_path not in seen and current_path != resolved_root and _matches_kind(current_path, kind):
-                seen.add(current_path)
-                candidates.append(current_path)
-
-            if kind == "dir":
-                continue
-
-            for file_name in files:
-                candidate = current_path / file_name
-                if candidate in seen or ctx.is_ignored(candidate):
-                    continue
-                if _matches_kind(candidate, kind):
-                    seen.add(candidate)
-                    candidates.append(candidate)
+        _collect_walk_candidates(resolved_root, ctx, candidates, seen, kind=kind)
 
     return candidates
 
