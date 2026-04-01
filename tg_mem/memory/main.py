@@ -245,6 +245,45 @@ def _build_infer_metadata(messages, metadata, should_use_agent_memory_extraction
     return inferred_metadata
 
 
+def _normalize_add_messages(messages):
+    if isinstance(messages, str):
+        return [{"role": "user", "content": messages}]
+    if isinstance(messages, dict):
+        return [messages]
+    if not isinstance(messages, list):
+        raise Mem0ValidationError(
+            message="messages must be str, dict, or list[dict]",
+            error_code="VALIDATION_003",
+            details={"provided_type": type(messages).__name__, "valid_types": ["str", "dict", "list[dict]"]},
+            suggestion="Convert your input to a string, dictionary, or list of dictionaries.",
+        )
+    return messages
+
+
+def _resolve_custom_prompt(runtime_prompt_value, config: MemoryConfig, config_attr_name: str):
+    return runtime_prompt_value or getattr(config, config_attr_name, None)
+
+
+def _build_memory_add_response(results, relations, include_relations: bool):
+    if include_relations:
+        return {
+            "results": results,
+            "relations": relations,
+        }
+    return {"results": results}
+
+
+def _deduplicate_memory_entries(entries):
+    unique_entries = {}
+    for item in entries:
+        unique_entries[item["id"]] = item
+    return list(unique_entries.values())
+
+
+def _has_session_identifier_updates(metadata: Dict[str, Any]) -> bool:
+    return bool(metadata.get("agent_id") or metadata.get("run_id"))
+
+
 def _resolve_runtime_prompt_overrides(config: MemoryConfig, user_id: Optional[Any]) -> RuntimePromptOverrides:
     if not user_id:
         return RuntimePromptOverrides()
@@ -519,23 +558,10 @@ class Memory(MemoryBase):
                 message=f"Invalid 'memory_type'. Please pass {MemoryType.PROCEDURAL.value} to create procedural memories.",
                 error_code="VALIDATION_002",
                 details={"provided_type": memory_type, "valid_type": MemoryType.PROCEDURAL.value},
-                suggestion=f"Use '{MemoryType.PROCEDURAL.value}' to create procedural memories."
+                suggestion=f"Use '{MemoryType.PROCEDURAL.value}' to create procedural memories.",
             )
 
-        if isinstance(messages, str):
-            messages = [{"role": "user", "content": messages}]
-
-        elif isinstance(messages, dict):
-            messages = [messages]
-
-        elif not isinstance(messages, list):
-            raise Mem0ValidationError(
-                message="messages must be str, dict, or list[dict]",
-                error_code="VALIDATION_003",
-                details={"provided_type": type(messages).__name__, "valid_types": ["str", "dict", "list[dict]"]},
-                suggestion="Convert your input to a string, dictionary, or list of dictionaries."
-            )
-
+        messages = _normalize_add_messages(messages)
         resolved_session_id = _resolve_session_id(session_id)
         processed_metadata = deepcopy(processed_metadata)
         processed_metadata["session_id"] = resolved_session_id
@@ -543,8 +569,51 @@ class Memory(MemoryBase):
         if not processed_metadata.get("user_id"):
             raise ValueError("user_id is required")
 
+        self._persist_conversation_records(resolved_session_id, messages, processed_metadata, channel)
+
+        vector_enabled = self._is_vector_store_enabled()
+        runtime_prompt_overrides, inferred_metadata = self._resolve_add_inference_context(
+            infer,
+            messages,
+            processed_metadata,
+        )
+
+        procedural_result = self._handle_procedural_memory_add(
+            agent_id,
+            memory_type,
+            vector_enabled,
+            messages,
+            processed_metadata,
+            prompt,
+        )
+        if procedural_result is not None:
+            return procedural_result
+
+        mysql_only_result = self._handle_mysql_only_add(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            infer,
+            vector_enabled,
+            runtime_prompt_overrides,
+        )
+        if mysql_only_result is not None:
+            return mysql_only_result
+
+        messages = self._prepare_vector_messages(messages, vector_enabled)
+        vector_store_result, graph_result = self._execute_add_storage(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            infer,
+            runtime_prompt_overrides,
+            vector_enabled,
+        )
+        return _build_memory_add_response(vector_store_result, graph_result, self.enable_graph)
+
+    def _persist_conversation_records(self, session_id, messages, processed_metadata, channel: str) -> None:
         self.db.add_conversation_records(
-            session_id=resolved_session_id,
+            session_id=session_id,
             messages=messages,
             user_id=processed_metadata.get("user_id"),
             agent_id=processed_metadata.get("agent_id"),
@@ -552,128 +621,206 @@ class Memory(MemoryBase):
             channel=channel,
         )
 
-        vector_enabled = self._is_vector_store_enabled()
+    def _resolve_add_inference_context(self, infer: bool, messages, processed_metadata):
+        if not infer:
+            return RuntimePromptOverrides(), processed_metadata
 
-        runtime_prompt_overrides = RuntimePromptOverrides()
-        inferred_metadata = processed_metadata
-        if infer:
-            runtime_prompt_overrides = _resolve_runtime_prompt_overrides(
-                self.config,
-                processed_metadata.get("user_id"),
+        runtime_prompt_overrides = _resolve_runtime_prompt_overrides(
+            self.config,
+            processed_metadata.get("user_id"),
+        )
+        inferred_metadata = _build_infer_metadata(
+            messages,
+            processed_metadata,
+            self._should_use_agent_memory_extraction,
+        )
+        return runtime_prompt_overrides, inferred_metadata
+
+    def _handle_procedural_memory_add(
+        self,
+        agent_id,
+        memory_type,
+        vector_enabled: bool,
+        messages,
+        processed_metadata,
+        prompt,
+    ):
+        if agent_id is None or memory_type != MemoryType.PROCEDURAL.value:
+            return None
+        if not vector_enabled:
+            logger.warning(
+                "Procedural memory requested but vector stack is unavailable. "
+                "Only raw conversation is persisted to MySQL."
             )
-            inferred_metadata = _build_infer_metadata(
+            return {"results": []}
+        return self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt)
+
+    def _handle_mysql_only_add(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        vector_enabled: bool,
+        runtime_prompt_overrides: RuntimePromptOverrides,
+    ):
+        if not infer or vector_enabled:
+            return None
+
+        fact_prompt, update_prompt = self._resolve_add_prompts(runtime_prompt_overrides)
+        rdb_store_result = self._safe_add_to_mysql_only_store(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            fact_prompt,
+            update_prompt,
+        )
+        graph_result = self._safe_add_to_graph(messages, effective_filters) if self.enable_graph else []
+        return _build_memory_add_response(rdb_store_result, graph_result, self.enable_graph)
+
+    def _resolve_add_prompts(self, runtime_prompt_overrides: RuntimePromptOverrides):
+        fact_prompt = _resolve_custom_prompt(
+            runtime_prompt_overrides.fact_extraction_prompt,
+            self.config,
+            "custom_fact_extraction_prompt",
+        )
+        update_prompt = _resolve_custom_prompt(
+            runtime_prompt_overrides.update_memory_prompt,
+            self.config,
+            "custom_update_memory_prompt",
+        )
+        return fact_prompt, update_prompt
+
+    def _safe_add_to_mysql_only_store(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        fact_prompt,
+        update_prompt,
+    ):
+        try:
+            return self._add_to_mysql_only_store(
                 messages,
-                processed_metadata,
-                self._should_use_agent_memory_extraction,
+                inferred_metadata,
+                effective_filters,
+                custom_fact_extraction_prompt=fact_prompt,
+                custom_update_memory_prompt=update_prompt,
             )
+        except Exception as e:
+            logger.warning(f"MySQL-only inferred add failed; preserving raw conversation only. Error: {e}")
+            return []
 
-        if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
-            if not vector_enabled:
-                logger.warning(
-                    "Procedural memory requested but vector stack is unavailable. "
-                    "Only raw conversation is persisted to MySQL."
-                )
-                return {"results": []}
-            results = self._create_procedural_memory(messages, metadata=processed_metadata, prompt=prompt)
-            return results
+    def _prepare_vector_messages(self, messages, vector_enabled: bool):
+        if not vector_enabled:
+            return messages
+        if self.config.llm.config.get("enable_vision"):
+            return parse_vision_messages(messages, self.llm, self.config.llm.config.get("vision_details"))
+        return parse_vision_messages(messages)
 
+    def _execute_add_storage(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        runtime_prompt_overrides: RuntimePromptOverrides,
+        vector_enabled: bool,
+    ):
+        if vector_enabled and self.enable_graph:
+            return self._execute_parallel_add_storage(
+                messages,
+                inferred_metadata,
+                effective_filters,
+                infer,
+                runtime_prompt_overrides,
+            )
+        return self._execute_serial_add_storage(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            infer,
+            runtime_prompt_overrides,
+            vector_enabled,
+        )
+
+    def _execute_parallel_add_storage(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        runtime_prompt_overrides: RuntimePromptOverrides,
+    ):
+        fact_prompt, update_prompt = self._resolve_add_prompts(runtime_prompt_overrides)
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future1 = executor.submit(
+                self._safe_add_to_vector_store,
+                messages,
+                inferred_metadata,
+                effective_filters,
+                infer,
+                fact_prompt,
+                update_prompt,
+            )
+            future2 = executor.submit(self._safe_add_to_graph, messages, effective_filters)
+            concurrent.futures.wait([future1, future2])
+            return future1.result(), future2.result()
+
+    def _execute_serial_add_storage(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        runtime_prompt_overrides: RuntimePromptOverrides,
+        vector_enabled: bool,
+    ):
+        fact_prompt, update_prompt = self._resolve_add_prompts(runtime_prompt_overrides)
         vector_store_result = []
         graph_result = []
-        rdb_store_result= []
-
-        if infer and not vector_enabled:
-            try:
-                rdb_store_result = self._add_to_mysql_only_store(
-                    messages,
-                    inferred_metadata,
-                    effective_filters,
-                    custom_fact_extraction_prompt=(
-                        runtime_prompt_overrides.fact_extraction_prompt
-                        or getattr(self.config, "custom_fact_extraction_prompt", None)
-                    ),
-                    custom_update_memory_prompt=(
-                        runtime_prompt_overrides.update_memory_prompt
-                        or getattr(self.config, "custom_update_memory_prompt", None)
-                    ),
-                )
-            except Exception as e:
-                logger.warning(f"MySQL-only inferred add failed; preserving raw conversation only. Error: {e}")
-                rdb_store_result = []
-
-            if self.enable_graph:
-                try:
-                    graph_result = self._add_to_graph(messages, effective_filters)
-                except Exception as e:
-                    logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
-                    graph_result = []
-                return {
-                    "results": rdb_store_result,
-                    "relations": graph_result,
-                }
-
-            return {"results": rdb_store_result}
 
         if vector_enabled:
-            if self.config.llm.config.get("enable_vision"):
-                messages = parse_vision_messages(messages, self.llm, self.config.llm.config.get("vision_details"))
-            else:
-                messages = parse_vision_messages(messages)
-
-        if vector_enabled and self.enable_graph:
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future1 = executor.submit(
-                    self._add_to_vector_store,
-                    messages,
-                    inferred_metadata,
-                    effective_filters,
-                    infer,
-                    runtime_prompt_overrides.fact_extraction_prompt or getattr(self.config, "custom_fact_extraction_prompt", None),
-                    runtime_prompt_overrides.update_memory_prompt or getattr(self.config, "custom_update_memory_prompt", None),
-                )
-                future2 = executor.submit(self._add_to_graph, messages, effective_filters)
-
-                concurrent.futures.wait([future1, future2])
-
-                try:
-                    vector_store_result = future1.result()
-                except Exception as e:
-                    logger.warning(f"Vector store add failed; preserving only MySQL record. Error: {e}")
-                    vector_store_result = []
-
-                try:
-                    graph_result = future2.result()
-                except Exception as e:
-                    logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
-                    graph_result = []
-        else:
-            if vector_enabled:
-                try:
-                    vector_store_result = self._add_to_vector_store(
-                        messages,
-                        inferred_metadata,
-                        effective_filters,
-                        infer,
-                        runtime_prompt_overrides.fact_extraction_prompt or getattr(self.config, "custom_fact_extraction_prompt", None),
-                        runtime_prompt_overrides.update_memory_prompt or getattr(self.config, "custom_update_memory_prompt", None),
-                    )
-                except Exception as e:
-                    logger.warning(f"Vector store add failed; preserving only MySQL record. Error: {e}")
-                    vector_store_result = []
-
-            if self.enable_graph:
-                try:
-                    graph_result = self._add_to_graph(messages, effective_filters)
-                except Exception as e:
-                    logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
-                    graph_result = []
-
+            vector_store_result = self._safe_add_to_vector_store(
+                messages,
+                inferred_metadata,
+                effective_filters,
+                infer,
+                fact_prompt,
+                update_prompt,
+            )
         if self.enable_graph:
-            return {
-                "results": vector_store_result,
-                "relations": graph_result,
-            }
+            graph_result = self._safe_add_to_graph(messages, effective_filters)
+        return vector_store_result, graph_result
 
-        return {"results": vector_store_result}
+    def _safe_add_to_vector_store(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        fact_prompt,
+        update_prompt,
+    ):
+        try:
+            return self._add_to_vector_store(
+                messages,
+                inferred_metadata,
+                effective_filters,
+                infer,
+                fact_prompt,
+                update_prompt,
+            )
+        except Exception as e:
+            logger.warning(f"Vector store add failed; preserving only MySQL record. Error: {e}")
+            return []
+
+    def _safe_add_to_graph(self, messages, effective_filters):
+        try:
+            return self._add_to_graph(messages, effective_filters)
+        except Exception as e:
+            logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
+            return []
 
     def _add_to_vector_store(
         self,
@@ -690,40 +837,7 @@ class Memory(MemoryBase):
             custom_update_memory_prompt = getattr(self.config, "custom_update_memory_prompt", None)
 
         if not infer:
-            returned_memories = []
-            for message_dict in messages:
-                if (
-                    not isinstance(message_dict, dict)
-                    or message_dict.get("role") is None
-                    or message_dict.get("content") is None
-                ):
-                    logger.warning(f"Skipping invalid message format: {message_dict}")
-                    continue
-
-                if message_dict["role"] == "system":
-                    continue
-
-                per_msg_meta = deepcopy(metadata)
-                per_msg_meta["role"] = message_dict["role"]
-
-                actor_name = message_dict.get("name")
-                if actor_name:
-                    per_msg_meta["actor_id"] = actor_name
-
-                msg_content = message_dict["content"]
-                msg_embeddings = self.embedding_model.embed(msg_content, "add")
-                mem_id = self._create_memory(msg_content, msg_embeddings, per_msg_meta)
-
-                returned_memories.append(
-                    {
-                        "id": mem_id,
-                        "memory": msg_content,
-                        "event": "ADD",
-                        "actor_id": actor_name if actor_name else None,
-                        "role": message_dict["role"],
-                    }
-                )
-            return returned_memories
+            return self._store_raw_vector_messages(messages, metadata)
 
         new_retrieved_facts = self._extract_new_facts(
             messages,
@@ -735,6 +849,60 @@ class Memory(MemoryBase):
         if not new_retrieved_facts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
 
+        retrieved_old_memory, new_message_embeddings = self._collect_existing_vector_memories(
+            new_retrieved_facts,
+            filters,
+        )
+        temp_uuid_mapping = _remap_old_memory_ids_for_llm(retrieved_old_memory)
+        new_memories_with_actions = self._resolve_memory_actions(
+            retrieved_old_memory,
+            new_retrieved_facts,
+            custom_update_memory_prompt=custom_update_memory_prompt,
+            response_error_log="Error in new memory actions response",
+            empty_response_warning="Empty response from LLM, no memories to extract",
+            invalid_json_error="Invalid JSON response",
+        )
+        return self._process_vector_memory_actions(
+            new_memories_with_actions.get("memory", []),
+            temp_uuid_mapping,
+            new_message_embeddings,
+            metadata,
+        )
+
+    def _store_raw_vector_messages(self, messages, metadata):
+        returned_memories = []
+        for message_dict in messages:
+            if (
+                not isinstance(message_dict, dict)
+                or message_dict.get("role") is None
+                or message_dict.get("content") is None
+            ):
+                logger.warning(f"Skipping invalid message format: {message_dict}")
+                continue
+            if message_dict["role"] == "system":
+                continue
+
+            per_msg_meta = deepcopy(metadata)
+            per_msg_meta["role"] = message_dict["role"]
+            actor_name = message_dict.get("name")
+            if actor_name:
+                per_msg_meta["actor_id"] = actor_name
+
+            msg_content = message_dict["content"]
+            msg_embeddings = self.embedding_model.embed(msg_content, "add")
+            mem_id = self._create_memory(msg_content, msg_embeddings, per_msg_meta)
+            returned_memories.append(
+                {
+                    "id": mem_id,
+                    "memory": msg_content,
+                    "event": "ADD",
+                    "actor_id": actor_name if actor_name else None,
+                    "role": message_dict["role"],
+                }
+            )
+        return returned_memories
+
+    def _collect_existing_vector_memories(self, new_retrieved_facts, filters):
         retrieved_old_memory = []
         new_message_embeddings = {}
         search_filters = _build_session_search_filters(filters)
@@ -748,96 +916,114 @@ class Memory(MemoryBase):
                 limit=5,
                 filters=search_filters,
             )
-            for mem in existing_memories:
-                retrieved_old_memory.append({"id": mem.id, "text": mem.payload.get("data", "")})
+            retrieved_old_memory.extend(
+                {"id": mem.id, "text": mem.payload.get("data", "")}
+                for mem in existing_memories
+            )
 
-        unique_data = {}
-        for item in retrieved_old_memory:
-            unique_data[item["id"]] = item
-        retrieved_old_memory = list(unique_data.values())
+        retrieved_old_memory = _deduplicate_memory_entries(retrieved_old_memory)
         logger.info(f"Total existing memories: {len(retrieved_old_memory)}")
+        return retrieved_old_memory, new_message_embeddings
 
-        # mapping UUIDs with integers for handling UUID hallucinations
-        temp_uuid_mapping = _remap_old_memory_ids_for_llm(retrieved_old_memory)
-
-        new_memories_with_actions = self._resolve_memory_actions(
-            retrieved_old_memory,
-            new_retrieved_facts,
-            custom_update_memory_prompt=custom_update_memory_prompt,
-            response_error_log="Error in new memory actions response",
-            empty_response_warning="Empty response from LLM, no memories to extract",
-            invalid_json_error="Invalid JSON response",
-        )
-
-        returned_memories = []
+    def _process_vector_memory_actions(
+        self,
+        memory_actions,
+        temp_uuid_mapping,
+        new_message_embeddings,
+        metadata,
+    ):
         try:
-            for resp in new_memories_with_actions.get("memory", []):
-                logger.info(resp)
-                try:
-                    action_text = resp.get("text")
-                    if not action_text:
-                        logger.info("Skipping memory entry because of empty `text` field.")
-                        continue
-
-                    event_type = resp.get("event")
-                    if event_type == "ADD":
-                        memory_id = self._create_memory(
-                            data=action_text,
-                            existing_embeddings=new_message_embeddings,
-                            metadata=deepcopy(metadata),
-                        )
-                        returned_memories.append({"id": memory_id, "memory": action_text, "event": event_type})
-                    elif event_type == "UPDATE":
-                        self._update_memory(
-                            memory_id=temp_uuid_mapping[resp.get("id")],
-                            data=action_text,
-                            existing_embeddings=new_message_embeddings,
-                            metadata=deepcopy(metadata),
-                        )
-                        returned_memories.append(
-                            {
-                                "id": temp_uuid_mapping[resp.get("id")],
-                                "memory": action_text,
-                                "event": event_type,
-                                "previous_memory": resp.get("old_memory"),
-                            }
-                        )
-                    elif event_type == "DELETE":
-                        self._delete_memory(memory_id=temp_uuid_mapping[resp.get("id")])
-                        returned_memories.append(
-                            {
-                                "id": temp_uuid_mapping[resp.get("id")],
-                                "memory": action_text,
-                                "event": event_type,
-                            }
-                        )
-                    elif event_type == "NONE":
-                        # Even if content doesn't need updating, update session IDs if provided
-                        memory_id = temp_uuid_mapping.get(resp.get("id"))
-                        if memory_id and (metadata.get("agent_id") or metadata.get("run_id")):
-                            # Update only the session identifiers, keep content the same
-                            existing_memory = self.vector_store.get(vector_id=memory_id)
-                            updated_metadata = deepcopy(existing_memory.payload)
-                            if metadata.get("agent_id"):
-                                updated_metadata["agent_id"] = metadata["agent_id"]
-                            if metadata.get("run_id"):
-                                updated_metadata["run_id"] = metadata["run_id"]
-                            updated_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
-
-                            self.vector_store.update(
-                                vector_id=memory_id,
-                                vector=None,  # Keep same embeddings
-                                payload=updated_metadata,
-                            )
-                            logger.info(f"Updated session IDs for memory {memory_id}")
-                        else:
-                            logger.info("NOOP for Memory.")
-                except Exception as e:
-                    logger.error(f"Error processing memory action: {resp}, Error: {e}")
+            actions = list(memory_actions or [])
         except Exception as e:
             logger.error(f"Error iterating new_memories_with_actions: {e}")
+            return []
 
+        returned_memories = []
+        for resp in actions:
+            logger.info(resp)
+            try:
+                result = self._process_single_vector_memory_action(
+                    resp,
+                    temp_uuid_mapping,
+                    new_message_embeddings,
+                    metadata,
+                )
+            except Exception as e:
+                logger.error(f"Error processing memory action: {resp}, Error: {e}")
+                continue
+
+            if result is not None:
+                returned_memories.append(result)
         return returned_memories
+
+    def _process_single_vector_memory_action(
+        self,
+        resp,
+        temp_uuid_mapping,
+        new_message_embeddings,
+        metadata,
+    ):
+        action_text = resp.get("text")
+        if not action_text:
+            logger.info("Skipping memory entry because of empty `text` field.")
+            return None
+
+        event_type = resp.get("event")
+        if event_type == "ADD":
+            memory_id = self._create_memory(
+                data=action_text,
+                existing_embeddings=new_message_embeddings,
+                metadata=deepcopy(metadata),
+            )
+            return {"id": memory_id, "memory": action_text, "event": event_type}
+
+        if event_type == "UPDATE":
+            memory_id = temp_uuid_mapping[resp.get("id")]
+            self._update_memory(
+                memory_id=memory_id,
+                data=action_text,
+                existing_embeddings=new_message_embeddings,
+                metadata=deepcopy(metadata),
+            )
+            return {
+                "id": memory_id,
+                "memory": action_text,
+                "event": event_type,
+                "previous_memory": resp.get("old_memory"),
+            }
+
+        if event_type == "DELETE":
+            memory_id = temp_uuid_mapping[resp.get("id")]
+            self._delete_memory(memory_id=memory_id)
+            return {
+                "id": memory_id,
+                "memory": action_text,
+                "event": event_type,
+            }
+
+        if event_type == "NONE":
+            memory_id = temp_uuid_mapping.get(resp.get("id"))
+            if memory_id and _has_session_identifier_updates(metadata):
+                self._update_vector_session_identifiers(memory_id, metadata)
+            else:
+                logger.info("NOOP for Memory.")
+        return None
+
+    def _update_vector_session_identifiers(self, memory_id, metadata) -> None:
+        existing_memory = self.vector_store.get(vector_id=memory_id)
+        updated_metadata = deepcopy(existing_memory.payload)
+        if metadata.get("agent_id"):
+            updated_metadata["agent_id"] = metadata["agent_id"]
+        if metadata.get("run_id"):
+            updated_metadata["run_id"] = metadata["run_id"]
+        updated_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+
+        self.vector_store.update(
+            vector_id=memory_id,
+            vector=None,
+            payload=updated_metadata,
+        )
+        logger.info(f"Updated session IDs for memory {memory_id}")
 
     def _ensure_llm_for_inference(self) -> bool:
         if self.llm is not None:
@@ -1876,7 +2062,10 @@ class AsyncMemory(MemoryBase):
             dict: A dictionary containing the result of the memory addition operation.
         """
         processed_metadata, effective_filters = _build_filters_and_metadata(
-            user_id=user_id, agent_id=agent_id, run_id=run_id, input_metadata=metadata
+            user_id=user_id,
+            agent_id=agent_id,
+            run_id=run_id,
+            input_metadata=metadata,
         )
 
         if memory_type is not None and memory_type != MemoryType.PROCEDURAL.value:
@@ -1884,20 +2073,7 @@ class AsyncMemory(MemoryBase):
                 f"Invalid 'memory_type'. Please pass {MemoryType.PROCEDURAL.value} to create procedural memories."
             )
 
-        if isinstance(messages, str):
-            messages = [{"role": "user", "content": messages}]
-
-        elif isinstance(messages, dict):
-            messages = [messages]
-
-        elif not isinstance(messages, list):
-            raise Mem0ValidationError(
-                message="messages must be str, dict, or list[dict]",
-                error_code="VALIDATION_003",
-                details={"provided_type": type(messages).__name__, "valid_types": ["str", "dict", "list[dict]"]},
-                suggestion="Convert your input to a string, dictionary, or list of dictionaries."
-            )
-
+        messages = _normalize_add_messages(messages)
         resolved_session_id = _resolve_session_id(session_id)
         processed_metadata = deepcopy(processed_metadata)
         processed_metadata["session_id"] = resolved_session_id
@@ -1905,9 +2081,53 @@ class AsyncMemory(MemoryBase):
         if not processed_metadata.get("user_id"):
             raise ValueError("user_id is required")
 
+        await self._persist_conversation_records(resolved_session_id, messages, processed_metadata, channel)
+
+        vector_enabled = self._is_vector_store_enabled()
+        runtime_prompt_overrides, inferred_metadata = await self._resolve_add_inference_context(
+            infer,
+            messages,
+            processed_metadata,
+        )
+
+        procedural_result = await self._handle_procedural_memory_add(
+            agent_id,
+            memory_type,
+            vector_enabled,
+            messages,
+            processed_metadata,
+            prompt,
+            llm,
+        )
+        if procedural_result is not None:
+            return procedural_result
+
+        mysql_only_result = await self._handle_mysql_only_add(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            infer,
+            vector_enabled,
+            runtime_prompt_overrides,
+        )
+        if mysql_only_result is not None:
+            return mysql_only_result
+
+        messages = self._prepare_vector_messages(messages, vector_enabled)
+        vector_store_result, graph_result = await self._execute_add_storage(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            infer,
+            runtime_prompt_overrides,
+            vector_enabled,
+        )
+        return _build_memory_add_response(vector_store_result, graph_result, self.enable_graph)
+
+    async def _persist_conversation_records(self, session_id, messages, processed_metadata, channel: str) -> None:
         await asyncio.to_thread(
             self.db.add_conversation_records,
-            session_id=resolved_session_id,
+            session_id=session_id,
             messages=messages,
             user_id=processed_metadata.get("user_id"),
             agent_id=processed_metadata.get("agent_id"),
@@ -1915,130 +2135,168 @@ class AsyncMemory(MemoryBase):
             channel=channel,
         )
 
-        vector_enabled = self._is_vector_store_enabled()
+    async def _resolve_add_inference_context(self, infer: bool, messages, processed_metadata):
+        if not infer:
+            return RuntimePromptOverrides(), processed_metadata
 
-        runtime_prompt_overrides = RuntimePromptOverrides()
-        inferred_metadata = processed_metadata
-        if infer:
-            runtime_prompt_overrides = await _resolve_runtime_prompt_overrides_async(
-                self.config,
-                processed_metadata.get("user_id"),
+        runtime_prompt_overrides = await _resolve_runtime_prompt_overrides_async(
+            self.config,
+            processed_metadata.get("user_id"),
+        )
+        inferred_metadata = _build_infer_metadata(
+            messages,
+            processed_metadata,
+            self._should_use_agent_memory_extraction,
+        )
+        return runtime_prompt_overrides, inferred_metadata
+
+    async def _handle_procedural_memory_add(
+        self,
+        agent_id,
+        memory_type,
+        vector_enabled: bool,
+        messages,
+        processed_metadata,
+        prompt,
+        llm,
+    ):
+        if agent_id is None or memory_type != MemoryType.PROCEDURAL.value:
+            return None
+        if not vector_enabled:
+            logger.warning(
+                "Procedural memory requested but vector stack is unavailable. "
+                "Only raw conversation is persisted to MySQL."
             )
-            inferred_metadata = _build_infer_metadata(
+            return {"results": []}
+        return await self._create_procedural_memory(
+            messages,
+            metadata=processed_metadata,
+            prompt=prompt,
+            llm=llm,
+        )
+
+    async def _handle_mysql_only_add(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        vector_enabled: bool,
+        runtime_prompt_overrides: RuntimePromptOverrides,
+    ):
+        if not infer or vector_enabled:
+            return None
+
+        fact_prompt, update_prompt = self._resolve_add_prompts(runtime_prompt_overrides)
+        vector_store_result = await self._safe_add_to_mysql_only_store(
+            messages,
+            inferred_metadata,
+            effective_filters,
+            fact_prompt,
+            update_prompt,
+        )
+        graph_result = await self._safe_add_to_graph(messages, effective_filters) if self.enable_graph else []
+        return _build_memory_add_response(vector_store_result, graph_result, self.enable_graph)
+
+    def _resolve_add_prompts(self, runtime_prompt_overrides: RuntimePromptOverrides):
+        fact_prompt = _resolve_custom_prompt(
+            runtime_prompt_overrides.fact_extraction_prompt,
+            self.config,
+            "custom_fact_extraction_prompt",
+        )
+        update_prompt = _resolve_custom_prompt(
+            runtime_prompt_overrides.update_memory_prompt,
+            self.config,
+            "custom_update_memory_prompt",
+        )
+        return fact_prompt, update_prompt
+
+    async def _safe_add_to_mysql_only_store(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        fact_prompt,
+        update_prompt,
+    ):
+        try:
+            return await self._add_to_mysql_only_store(
                 messages,
-                processed_metadata,
-                self._should_use_agent_memory_extraction,
+                inferred_metadata,
+                effective_filters,
+                custom_fact_extraction_prompt=fact_prompt,
+                custom_update_memory_prompt=update_prompt,
             )
+        except Exception as e:
+            logger.warning(f"MySQL-only inferred add failed; preserving raw conversation only. Error: {e}")
+            return []
 
-        if agent_id is not None and memory_type == MemoryType.PROCEDURAL.value:
-            if not vector_enabled:
-                logger.warning(
-                    "Procedural memory requested but vector stack is unavailable. "
-                    "Only raw conversation is persisted to MySQL."
-                )
-                return {"results": []}
-            results = await self._create_procedural_memory(
-                messages, metadata=processed_metadata, prompt=prompt, llm=llm
-            )
-            return results
+    def _prepare_vector_messages(self, messages, vector_enabled: bool):
+        if not vector_enabled:
+            return messages
+        if self.config.llm.config.get("enable_vision"):
+            return parse_vision_messages(messages, self.llm, self.config.llm.config.get("vision_details"))
+        return parse_vision_messages(messages)
 
-        vector_store_result = []
-        graph_result = []
-
-        if infer and not vector_enabled:
-            try:
-                vector_store_result = await self._add_to_mysql_only_store(
-                    messages,
-                    inferred_metadata,
-                    effective_filters,
-                    custom_fact_extraction_prompt=(
-                        runtime_prompt_overrides.fact_extraction_prompt
-                        or getattr(self.config, "custom_fact_extraction_prompt", None)
-                    ),
-                    custom_update_memory_prompt=(
-                        runtime_prompt_overrides.update_memory_prompt
-                        or getattr(self.config, "custom_update_memory_prompt", None)
-                    ),
-                )
-            except Exception as e:
-                logger.warning(f"MySQL-only inferred add failed; preserving raw conversation only. Error: {e}")
-                vector_store_result = []
-
-            if self.enable_graph:
-                try:
-                    graph_result = await self._add_to_graph(messages, effective_filters)
-                except Exception as e:
-                    logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
-                    graph_result = []
-
-            if self.enable_graph:
-                return {
-                    "results": vector_store_result,
-                    "relations": graph_result,
-                }
-
-            return {"results": vector_store_result}
+    async def _execute_add_storage(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        runtime_prompt_overrides: RuntimePromptOverrides,
+        vector_enabled: bool,
+    ):
+        fact_prompt, update_prompt = self._resolve_add_prompts(runtime_prompt_overrides)
+        vector_store_task = None
+        graph_task = None
 
         if vector_enabled:
-            if self.config.llm.config.get("enable_vision"):
-                messages = parse_vision_messages(messages, self.llm, self.config.llm.config.get("vision_details"))
-            else:
-                messages = parse_vision_messages(messages)
-
-        vector_store_task = (
-            asyncio.create_task(
-                self._add_to_vector_store(
+            vector_store_task = asyncio.create_task(
+                self._safe_add_to_vector_store(
                     messages,
                     inferred_metadata,
                     effective_filters,
                     infer,
-                    runtime_prompt_overrides.fact_extraction_prompt or getattr(self.config, "custom_fact_extraction_prompt", None),
-                    runtime_prompt_overrides.update_memory_prompt or getattr(self.config, "custom_update_memory_prompt", None),
+                    fact_prompt,
+                    update_prompt,
                 )
             )
-            if vector_enabled
-            else None
-        )
-        graph_task = asyncio.create_task(self._add_to_graph(messages, effective_filters)) if self.enable_graph else None
-
-        if vector_store_task and graph_task:
-            vector_result_raw, graph_result_raw = await asyncio.gather(
-                vector_store_task,
-                graph_task,
-                return_exceptions=True,
-            )
-
-            if isinstance(vector_result_raw, Exception):
-                logger.warning(
-                    f"Vector store add failed; preserving only MySQL record. Error: {vector_result_raw}"
-                )
-            else:
-                vector_store_result = vector_result_raw
-
-            if isinstance(graph_result_raw, Exception):
-                logger.warning(f"Graph store add failed; graph relation update skipped. Error: {graph_result_raw}")
-            else:
-                graph_result = graph_result_raw
-
-        elif vector_store_task:
-            try:
-                vector_store_result = await vector_store_task
-            except Exception as e:
-                logger.warning(f"Vector store add failed; preserving only MySQL record. Error: {e}")
-
-        elif graph_task:
-            try:
-                graph_result = await graph_task
-            except Exception as e:
-                logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
-
         if self.enable_graph:
-            return {
-                "results": vector_store_result,
-                "relations": graph_result,
-            }
+            graph_task = asyncio.create_task(self._safe_add_to_graph(messages, effective_filters))
 
-        return {"results": vector_store_result}
+        vector_store_result = await vector_store_task if vector_store_task else []
+        graph_result = await graph_task if graph_task else []
+        return vector_store_result, graph_result
+
+    async def _safe_add_to_vector_store(
+        self,
+        messages,
+        inferred_metadata,
+        effective_filters,
+        infer: bool,
+        fact_prompt,
+        update_prompt,
+    ):
+        try:
+            return await self._add_to_vector_store(
+                messages,
+                inferred_metadata,
+                effective_filters,
+                infer,
+                fact_prompt,
+                update_prompt,
+            )
+        except Exception as e:
+            logger.warning(f"Vector store add failed; preserving only MySQL record. Error: {e}")
+            return []
+
+    async def _safe_add_to_graph(self, messages, effective_filters):
+        try:
+            return await self._add_to_graph(messages, effective_filters)
+        except Exception as e:
+            logger.warning(f"Graph store add failed; graph relation update skipped. Error: {e}")
+            return []
 
     async def _add_to_vector_store(
         self,
@@ -2055,40 +2313,7 @@ class AsyncMemory(MemoryBase):
             custom_update_memory_prompt = getattr(self.config, "custom_update_memory_prompt", None)
 
         if not infer:
-            returned_memories = []
-            for message_dict in messages:
-                if (
-                    not isinstance(message_dict, dict)
-                    or message_dict.get("role") is None
-                    or message_dict.get("content") is None
-                ):
-                    logger.warning(f"Skipping invalid message format (async): {message_dict}")
-                    continue
-
-                if message_dict["role"] == "system":
-                    continue
-
-                per_msg_meta = deepcopy(metadata)
-                per_msg_meta["role"] = message_dict["role"]
-
-                actor_name = message_dict.get("name")
-                if actor_name:
-                    per_msg_meta["actor_id"] = actor_name
-
-                msg_content = message_dict["content"]
-                msg_embeddings = await asyncio.to_thread(self.embedding_model.embed, msg_content, "add")
-                mem_id = await self._create_memory(msg_content, msg_embeddings, per_msg_meta)
-
-                returned_memories.append(
-                    {
-                        "id": mem_id,
-                        "memory": msg_content,
-                        "event": "ADD",
-                        "actor_id": actor_name if actor_name else None,
-                        "role": message_dict["role"],
-                    }
-                )
-            return returned_memories
+            return await self._store_raw_vector_messages(messages, metadata)
 
         new_retrieved_facts = await self._extract_new_facts(
             messages,
@@ -2100,6 +2325,60 @@ class AsyncMemory(MemoryBase):
         if not new_retrieved_facts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
 
+        retrieved_old_memory, new_message_embeddings = await self._collect_existing_vector_memories(
+            new_retrieved_facts,
+            effective_filters,
+        )
+        temp_uuid_mapping = _remap_old_memory_ids_for_llm(retrieved_old_memory)
+        new_memories_with_actions = await self._resolve_memory_actions(
+            retrieved_old_memory,
+            new_retrieved_facts,
+            custom_update_memory_prompt=custom_update_memory_prompt,
+            response_error_log="Error in new memory actions response",
+            empty_response_warning="Empty response from LLM, no memories to extract",
+            invalid_json_error="Invalid JSON response",
+        )
+        return await self._process_vector_memory_actions(
+            new_memories_with_actions.get("memory", []),
+            temp_uuid_mapping,
+            new_message_embeddings,
+            metadata,
+        )
+
+    async def _store_raw_vector_messages(self, messages, metadata):
+        returned_memories = []
+        for message_dict in messages:
+            if (
+                not isinstance(message_dict, dict)
+                or message_dict.get("role") is None
+                or message_dict.get("content") is None
+            ):
+                logger.warning(f"Skipping invalid message format (async): {message_dict}")
+                continue
+            if message_dict["role"] == "system":
+                continue
+
+            per_msg_meta = deepcopy(metadata)
+            per_msg_meta["role"] = message_dict["role"]
+            actor_name = message_dict.get("name")
+            if actor_name:
+                per_msg_meta["actor_id"] = actor_name
+
+            msg_content = message_dict["content"]
+            msg_embeddings = await asyncio.to_thread(self.embedding_model.embed, msg_content, "add")
+            mem_id = await self._create_memory(msg_content, msg_embeddings, per_msg_meta)
+            returned_memories.append(
+                {
+                    "id": mem_id,
+                    "memory": msg_content,
+                    "event": "ADD",
+                    "actor_id": actor_name if actor_name else None,
+                    "role": message_dict["role"],
+                }
+            )
+        return returned_memories
+
+    async def _collect_existing_vector_memories(self, new_retrieved_facts, effective_filters):
         retrieved_old_memory = []
         new_message_embeddings = {}
         search_filters = _build_session_search_filters(effective_filters)
@@ -2116,111 +2395,115 @@ class AsyncMemory(MemoryBase):
             )
             return [{"id": mem.id, "text": mem.payload.get("data", "")} for mem in existing_mems]
 
-        search_tasks = [process_fact_for_search(fact) for fact in new_retrieved_facts]
-        search_results_list = await asyncio.gather(*search_tasks)
+        search_results_list = await asyncio.gather(
+            *(process_fact_for_search(fact) for fact in new_retrieved_facts)
+        )
         for result_group in search_results_list:
             retrieved_old_memory.extend(result_group)
 
-        unique_data = {}
-        for item in retrieved_old_memory:
-            unique_data[item["id"]] = item
-        retrieved_old_memory = list(unique_data.values())
+        retrieved_old_memory = _deduplicate_memory_entries(retrieved_old_memory)
         logger.info(f"Total existing memories: {len(retrieved_old_memory)}")
-        temp_uuid_mapping = _remap_old_memory_ids_for_llm(retrieved_old_memory)
+        return retrieved_old_memory, new_message_embeddings
 
-        new_memories_with_actions = await self._resolve_memory_actions(
-            retrieved_old_memory,
-            new_retrieved_facts,
-            custom_update_memory_prompt=custom_update_memory_prompt,
-            response_error_log="Error in new memory actions response",
-            empty_response_warning="Empty response from LLM, no memories to extract",
-            invalid_json_error="Invalid JSON response",
-        )
-
-        returned_memories = []
+    async def _process_vector_memory_actions(
+        self,
+        memory_actions,
+        temp_uuid_mapping,
+        new_message_embeddings,
+        metadata,
+    ):
         try:
-            memory_tasks = []
-            for resp in new_memories_with_actions.get("memory", []):
-                logger.info(resp)
-                try:
-                    action_text = resp.get("text")
-                    if not action_text:
-                        continue
-                    event_type = resp.get("event")
-
-                    if event_type == "ADD":
-                        task = asyncio.create_task(
-                            self._create_memory(
-                                data=action_text,
-                                existing_embeddings=new_message_embeddings,
-                                metadata=deepcopy(metadata),
-                            )
-                        )
-                        memory_tasks.append((task, resp, "ADD", None))
-                    elif event_type == "UPDATE":
-                        task = asyncio.create_task(
-                            self._update_memory(
-                                memory_id=temp_uuid_mapping[resp["id"]],
-                                data=action_text,
-                                existing_embeddings=new_message_embeddings,
-                                metadata=deepcopy(metadata),
-                            )
-                        )
-                        memory_tasks.append((task, resp, "UPDATE", temp_uuid_mapping[resp["id"]]))
-                    elif event_type == "DELETE":
-                        task = asyncio.create_task(self._delete_memory(memory_id=temp_uuid_mapping[resp.get("id")]))
-                        memory_tasks.append((task, resp, "DELETE", temp_uuid_mapping[resp.get("id")]))
-                    elif event_type == "NONE":
-                        # Even if content doesn't need updating, update session IDs if provided
-                        memory_id = temp_uuid_mapping.get(resp.get("id"))
-                        if memory_id and (metadata.get("agent_id") or metadata.get("run_id")):
-                            # Create async task to update only the session identifiers
-                            async def update_session_ids(mem_id, meta):
-                                existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=mem_id)
-                                updated_metadata = deepcopy(existing_memory.payload)
-                                if meta.get("agent_id"):
-                                    updated_metadata["agent_id"] = meta["agent_id"]
-                                if meta.get("run_id"):
-                                    updated_metadata["run_id"] = meta["run_id"]
-                                updated_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
-
-                                await asyncio.to_thread(
-                                    self.vector_store.update,
-                                    vector_id=mem_id,
-                                    vector=None,  # Keep same embeddings
-                                    payload=updated_metadata,
-                                )
-                                logger.info(f"Updated session IDs for memory {mem_id} (async)")
-
-                            task = asyncio.create_task(update_session_ids(memory_id, metadata))
-                            memory_tasks.append((task, resp, "NONE", memory_id))
-                        else:
-                            logger.info("NOOP for Memory (async).")
-                except Exception as e:
-                    logger.error(f"Error processing memory action (async): {resp}, Error: {e}")
-
-            for task, resp, event_type, mem_id in memory_tasks:
-                try:
-                    result_id = await task
-                    if event_type == "ADD":
-                        returned_memories.append({"id": result_id, "memory": resp.get("text"), "event": event_type})
-                    elif event_type == "UPDATE":
-                        returned_memories.append(
-                            {
-                                "id": mem_id,
-                                "memory": resp.get("text"),
-                                "event": event_type,
-                                "previous_memory": resp.get("old_memory"),
-                            }
-                        )
-                    elif event_type == "DELETE":
-                        returned_memories.append({"id": mem_id, "memory": resp.get("text"), "event": event_type})
-                except Exception as e:
-                    logger.error(f"Error awaiting memory task (async): {e}")
+            actions = list(memory_actions or [])
         except Exception as e:
             logger.error(f"Error in memory processing loop (async): {e}")
+            return []
 
+        returned_memories = []
+        for resp in actions:
+            logger.info(resp)
+            try:
+                result = await self._process_single_vector_memory_action(
+                    resp,
+                    temp_uuid_mapping,
+                    new_message_embeddings,
+                    metadata,
+                )
+            except Exception as e:
+                logger.error(f"Error processing memory action (async): {resp}, Error: {e}")
+                continue
+
+            if result is not None:
+                returned_memories.append(result)
         return returned_memories
+
+    async def _process_single_vector_memory_action(
+        self,
+        resp,
+        temp_uuid_mapping,
+        new_message_embeddings,
+        metadata,
+    ):
+        action_text = resp.get("text")
+        if not action_text:
+            return None
+
+        event_type = resp.get("event")
+        if event_type == "ADD":
+            memory_id = await self._create_memory(
+                data=action_text,
+                existing_embeddings=new_message_embeddings,
+                metadata=deepcopy(metadata),
+            )
+            return {"id": memory_id, "memory": action_text, "event": event_type}
+
+        if event_type == "UPDATE":
+            memory_id = temp_uuid_mapping[resp["id"]]
+            await self._update_memory(
+                memory_id=memory_id,
+                data=action_text,
+                existing_embeddings=new_message_embeddings,
+                metadata=deepcopy(metadata),
+            )
+            return {
+                "id": memory_id,
+                "memory": action_text,
+                "event": event_type,
+                "previous_memory": resp.get("old_memory"),
+            }
+
+        if event_type == "DELETE":
+            memory_id = temp_uuid_mapping[resp.get("id")]
+            await self._delete_memory(memory_id=memory_id)
+            return {
+                "id": memory_id,
+                "memory": action_text,
+                "event": event_type,
+            }
+
+        if event_type == "NONE":
+            memory_id = temp_uuid_mapping.get(resp.get("id"))
+            if memory_id and _has_session_identifier_updates(metadata):
+                await self._update_vector_session_identifiers(memory_id, metadata)
+            else:
+                logger.info("NOOP for Memory (async).")
+        return None
+
+    async def _update_vector_session_identifiers(self, memory_id, metadata) -> None:
+        existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=memory_id)
+        updated_metadata = deepcopy(existing_memory.payload)
+        if metadata.get("agent_id"):
+            updated_metadata["agent_id"] = metadata["agent_id"]
+        if metadata.get("run_id"):
+            updated_metadata["run_id"] = metadata["run_id"]
+        updated_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+
+        await asyncio.to_thread(
+            self.vector_store.update,
+            vector_id=memory_id,
+            vector=None,
+            payload=updated_metadata,
+        )
+        logger.info(f"Updated session IDs for memory {memory_id} (async)")
 
     async def _ensure_llm_for_inference(self) -> bool:
         if self.llm is not None:

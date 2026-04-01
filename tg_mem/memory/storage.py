@@ -681,6 +681,72 @@ class MySQLManager:
             logger.error(f"Failed to create memory record: {e}")
             raise
 
+    def _resolve_existing_memory_record_values(
+        self,
+        existing: MemoryModel,
+        *,
+        memory_data: Optional[Any],
+        user_id: Optional[str],
+        agent_id: Optional[str],
+        run_id: Optional[str],
+        memory_type: Optional[str],
+        status: Optional[Any],
+        created_at: Optional[str],
+        updated_at: Optional[str],
+    ) -> Dict[str, str]:
+        resolved_content = (
+            self._serialize_content(memory_data) if memory_data is not None else existing.memory_data
+        ) or ""
+        resolved_user_id = self._normalize_identifier(user_id or agent_id or run_id) or existing.user_id
+        resolved_memory_type = memory_type or existing.memory_type
+        resolved_status = self._normalize_status(status, default=existing.status) if status is not None else existing.status
+        resolved_created_at = self._normalize_datetime(created_at or existing.created_at)
+        resolved_updated_at = self._normalize_datetime(updated_at or self._utc_now_iso())
+        return {
+            "user_id": resolved_user_id,
+            "memory_data": resolved_content,
+            "memory_type": resolved_memory_type,
+            "status": resolved_status,
+            "created_at": resolved_created_at,
+            "updated_at": resolved_updated_at,
+        }
+
+    @staticmethod
+    def _apply_memory_record_values(record: MemoryModel, values: Dict[str, str]) -> None:
+        record.user_id = values["user_id"]
+        record.memory_data = values["memory_data"]
+        record.memory_type = values["memory_type"]
+        record.status = values["status"]
+        record.created_at = values["created_at"]
+        record.updated_at = values["updated_at"]
+
+    def _build_new_memory_record(
+        self,
+        *,
+        memory_data: Optional[Any],
+        user_id: Optional[str],
+        agent_id: Optional[str],
+        run_id: Optional[str],
+        memory_type: Optional[str],
+        status: Any,
+        created_at: Optional[str],
+        updated_at: Optional[str],
+    ) -> MemoryModel:
+        now = self._utc_now_iso()
+        resolved_created_at = self._normalize_datetime(created_at or now)
+        resolved_updated_at = self._normalize_datetime(updated_at or now)
+        resolved_user_id = self._normalize_identifier(user_id or agent_id or run_id or "unknown") or "unknown"
+        resolved_memory_type = memory_type or MemoryType.SEMANTIC.value
+        resolved_status = self._normalize_status(status, default="ACTE")
+        return MemoryModel(
+            user_id=resolved_user_id,
+            memory_data=self._serialize_content(memory_data) or "",
+            memory_type=resolved_memory_type,
+            status=resolved_status,
+            created_at=resolved_created_at,
+            updated_at=resolved_updated_at,
+        )
+
     def update_memory_record(
         self,
         memory_id: Any,
@@ -706,24 +772,18 @@ class MySQLManager:
                     if existing is None:
                         raise ValueError(f"Memory record with id={normalized_memory_id} not found")
 
-                    resolved_content = (
-                        self._serialize_content(memory_data) if memory_data is not None else existing.memory_data
-                    ) or ""
-
-                    resolved_user_id = self._normalize_identifier(user_id or agent_id or run_id) or existing.user_id
-                    resolved_memory_type = memory_type or existing.memory_type
-                    resolved_status = (
-                        self._normalize_status(status, default=existing.status) if status is not None else existing.status
+                    values = self._resolve_existing_memory_record_values(
+                        existing,
+                        memory_data=memory_data,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        run_id=run_id,
+                        memory_type=memory_type,
+                        status=status,
+                        created_at=created_at,
+                        updated_at=updated_at,
                     )
-                    resolved_created_at = self._normalize_datetime(created_at or existing.created_at)
-                    resolved_updated_at = self._normalize_datetime(updated_at or self._utc_now_iso())
-
-                    existing.user_id = resolved_user_id
-                    existing.memory_data = resolved_content
-                    existing.memory_type = resolved_memory_type
-                    existing.status = resolved_status
-                    existing.created_at = resolved_created_at
-                    existing.updated_at = resolved_updated_at
+                    self._apply_memory_record_values(existing, values)
         except Exception as e:
             logger.error(f"Failed to update memory record: {e}")
             raise
@@ -746,40 +806,31 @@ class MySQLManager:
         SessionFactory = self._require_session_factory()
         with SessionFactory() as session:
             with session.begin():
-                if normalized_memory_id is not None:
-                    existing = session.get(MemoryModel, normalized_memory_id)
-                    if existing is not None:
-                        resolved_content = (self._serialize_content(memory_data) or existing.memory_data) or ""
-                        resolved_user_id = self._normalize_identifier(user_id or agent_id or run_id) or existing.user_id
-                        resolved_memory_type = memory_type or existing.memory_type
-                        resolved_status = self._normalize_status(status, default=existing.status)
-                        resolved_created_at = self._normalize_datetime(created_at or existing.created_at)
-                        resolved_updated_at = self._normalize_datetime(updated_at or self._utc_now_iso())
+                existing = session.get(MemoryModel, normalized_memory_id) if normalized_memory_id is not None else None
+                if existing is not None:
+                    values = self._resolve_existing_memory_record_values(
+                        existing,
+                        memory_data=memory_data,
+                        user_id=user_id,
+                        agent_id=agent_id,
+                        run_id=run_id,
+                        memory_type=memory_type,
+                        status=status,
+                        created_at=created_at,
+                        updated_at=updated_at,
+                    )
+                    self._apply_memory_record_values(existing, values)
+                    return normalized_memory_id
 
-                        existing.user_id = resolved_user_id
-                        existing.memory_data = resolved_content
-                        existing.memory_type = resolved_memory_type
-                        existing.status = resolved_status
-                        existing.created_at = resolved_created_at
-                        existing.updated_at = resolved_updated_at
-                        return normalized_memory_id
-
-                # Not found (or no id provided) -> create
-                now = self._utc_now_iso()
-                resolved_created_at = self._normalize_datetime(created_at or now)
-                resolved_updated_at = self._normalize_datetime(updated_at or now)
-
-                resolved_user_id = self._normalize_identifier(user_id or agent_id or run_id or "unknown") or "unknown"
-                resolved_memory_type = memory_type or MemoryType.SEMANTIC.value
-                resolved_status = self._normalize_status(status, default="ACTE")
-
-                record = MemoryModel(
-                    user_id=resolved_user_id,
-                    memory_data=self._serialize_content(memory_data) or "",
-                    memory_type=resolved_memory_type,
-                    status=resolved_status,
-                    created_at=resolved_created_at,
-                    updated_at=resolved_updated_at,
+                record = self._build_new_memory_record(
+                    memory_data=memory_data,
+                    user_id=user_id,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    memory_type=memory_type,
+                    status=status,
+                    created_at=created_at,
+                    updated_at=updated_at,
                 )
                 session.add(record)
                 session.flush()
