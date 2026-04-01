@@ -54,6 +54,7 @@ build-backend = "hatchling.build"
 "ralph_loop.py" = "tg_agent_cli/ralph_loop.py"
 "template" = "tg_agent_cli/template"
 ".devagent" = "tg_agent_cli/.devagent"
+"skills" = "tg_agent_cli/skills"
 "plugins" = "tg_agent_cli/plugins"
 "gateway" = "tg_agent_cli/gateway"
 "tg_agent_cli.pth" = "tg_agent_cli.pth"
@@ -71,6 +72,7 @@ include = [
     "ralph_loop.py",
     "template/**",
     ".devagent/**",
+    "skills/**",
     ".env.example",
     "README.md",
     "plugins/**",

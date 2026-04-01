@@ -31,6 +31,32 @@ def _load_module(module_name: str):
         pytest.fail(f"Expected module '{module_name}' to exist: {exc}")
 
 
+def _write_skill(
+    skills_root: Path,
+    directory_name: str,
+    *,
+    name: str | None = None,
+    description: str = "A test skill",
+) -> Path:
+    skill_dir = skills_root / directory_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name or directory_name}",
+                f"description: {description}",
+                "---",
+                "",
+                f"# {name or directory_name}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return skill_path
+
+
 def test_build_system_prompt_uses_packaged_skills_outside_workspace(tmp_path: Path) -> None:
     module = _load_module("agent_core.bootstrap.agent_factory")
 
@@ -38,6 +64,55 @@ def test_build_system_prompt_uses_packaged_skills_outside_workspace(tmp_path: Pa
 
     assert "brainstorming" in prompt
     assert str(tmp_path) in prompt
+
+
+def test_build_system_prompt_includes_user_and_workspace_skills(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    builtin_skills = tmp_path / "builtin_skills"
+    home_dir = tmp_path / "home"
+    user_skills = home_dir / ".tgagent" / "skills"
+    project_skills = workspace / "skills"
+
+    _write_skill(builtin_skills, "builtin-only", description="builtin skill")
+    _write_skill(user_skills, "user-only", description="user skill")
+    _write_skill(project_skills, "project-only", description="project skill")
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    prompt = module.build_system_prompt(workspace, builtin_skills_dir=builtin_skills)
+
+    assert "builtin-only" in prompt
+    assert "user-only" in prompt
+    assert "project-only" in prompt
+
+
+def test_build_system_prompt_prefers_project_skill_metadata(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    builtin_skills = tmp_path / "builtin_skills"
+    home_dir = tmp_path / "home"
+    user_skills = home_dir / ".tgagent" / "skills"
+    project_skills = workspace / "skills"
+
+    _write_skill(builtin_skills, "builtin-shared", name="shared", description="builtin override")
+    _write_skill(user_skills, "user-shared", name="shared", description="user override")
+    _write_skill(project_skills, "project-shared", name="shared", description="project override")
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    prompt = module.build_system_prompt(workspace, builtin_skills_dir=builtin_skills)
+
+    assert "project override" in prompt
+    assert "builtin override" not in prompt
 
 
 def test_sync_workspace_agents_md_deduplicates_and_replaces_content(tmp_path: Path) -> None:

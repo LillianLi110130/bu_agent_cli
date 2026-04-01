@@ -13,6 +13,7 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
+from agent_core.skill.discovery import discover_skill_files
 
 # =============================================================================
 # AtCommand - Represents a single skill that can be invoked with @
@@ -23,7 +24,7 @@ from prompt_toolkit.document import Document
 class AtCommand:
     """Metadata and content loader for a skill invoked via @.
 
-    Skills are stored in agent_core/skills/*/skill.md files with YAML frontmatter.
+    Skills are stored in skills/*/skill.md files with YAML frontmatter.
     """
 
     name: str
@@ -98,42 +99,52 @@ class AtCommand:
 class AtCommandRegistry:
     """Registry for auto-discovering and managing @ commands.
 
-    Scans skills directory for skill.md files and caches them for quick lookup.
+    Scans one or more skills directories for skill.md files and caches them for
+    quick lookup.
     """
 
-    def __init__(self, skills_dir: Path | None = None):
+    def __init__(
+        self,
+        skills_dir: Path | None = None,
+        skill_dirs: list[Path] | None = None,
+    ):
         self.commands: dict[str, AtCommand] = {}
-        self._skills_dir = skills_dir or (
-            Path(__file__).resolve().parent.parent / "agent_core" / "skills"
+        default_skills_dir = Path(__file__).resolve().parent.parent / "skills"
+        self._skill_dirs = (
+            list(skill_dirs) if skill_dirs is not None else [skills_dir or default_skills_dir]
         )
-        self.discover_skills(self._skills_dir)
+        self.discover_skills(skill_dirs=self._skill_dirs)
 
-    def discover_skills(self, skills_dir: Path | None = None) -> None:
-        """Auto-discover skills from a directory.
+    def discover_skills(
+        self,
+        skills_dir: Path | None = None,
+        skill_dirs: list[Path] | None = None,
+    ) -> None:
+        """Auto-discover skills from one or more directories.
 
         Looks for subdirectories containing skill.md files.
 
         Args:
-            skills_dir: Path to the skills directory (e.g., agent_core/skills)
+            skills_dir: Path to a single skills directory.
+            skill_dirs: Paths to multiple skills directories ordered from low to
+                high precedence.
         """
-        if skills_dir is not None:
-            self._skills_dir = skills_dir
+        if skill_dirs is not None:
+            self._skill_dirs = list(skill_dirs)
+        elif skills_dir is not None:
+            self._skill_dirs = [skills_dir]
 
         self.commands = {}
-        if not self._skills_dir.exists():
-            return
 
-        discovered_paths: set[Path] = set()
-        for pattern in ("*/skill.md", "*/SKILL.md"):
-            discovered_paths.update(self._skills_dir.glob(pattern))
-
-        for skill_path in sorted(discovered_paths):
-            try:
-                cmd = AtCommand.from_file(skill_path)
-                self.register(cmd)
-            except (ValueError, FileNotFoundError, OSError):
-                # Skip invalid skill files silently
-                continue
+        for skill in discover_skill_files(self._skill_dirs):
+            self.register(
+                AtCommand(
+                    name=skill.name,
+                    description=skill.description,
+                    path=skill.path,
+                    category=skill.category,
+                )
+            )
 
     def register(self, command: AtCommand) -> None:
         """Register a skill command."""

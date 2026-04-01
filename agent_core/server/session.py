@@ -14,6 +14,7 @@ from uuid import uuid4
 from agent_core.agent import Agent
 from agent_core.agent.events import FinalResponseEvent as AgentFinalResponseEvent
 from agent_core.llm.messages import BaseMessage, DeveloperMessage, SystemMessage
+from agent_core.server.request_context import bind_request_context
 
 logger = logging.getLogger("agent_core.server.session")
 
@@ -131,7 +132,8 @@ class AgentSession:
             await self._ensure_history_loaded()
             await self._ensure_user_memory_context_injected()
             self.last_used_at = datetime.now(UTC)
-            response_text = await self.agent.query(message)
+            with bind_request_context(session_id=self.session_id, user_id=self.user_id):
+                response_text = await self.agent.query(message)
             await self._append_round(message, response_text)
             return response_text
 
@@ -141,10 +143,11 @@ class AgentSession:
             await self._ensure_history_loaded()
             await self._ensure_user_memory_context_injected()
             self.last_used_at = datetime.now(UTC)
-            async for event in self.agent.query_stream(message):
-                if isinstance(event, AgentFinalResponseEvent):
-                    await self._append_round(message, event.content)
-                yield event
+            with bind_request_context(session_id=self.session_id, user_id=self.user_id):
+                async for event in self.agent.query_stream(message):
+                    if isinstance(event, AgentFinalResponseEvent):
+                        await self._append_round(message, event.content)
+                    yield event
 
     async def query_stream_delta(self, message: str):
         """Execute a token-level streaming query on this session's agent."""
@@ -152,10 +155,11 @@ class AgentSession:
             await self._ensure_history_loaded()
             await self._ensure_user_memory_context_injected()
             self.last_used_at = datetime.now(UTC)
-            async for event in self.agent.query_stream_delta(message):
-                if isinstance(event, AgentFinalResponseEvent):
-                    await self._append_round(message, event.content)
-                yield event
+            with bind_request_context(session_id=self.session_id, user_id=self.user_id):
+                async for event in self.agent.query_stream_delta(message):
+                    if isinstance(event, AgentFinalResponseEvent):
+                        await self._append_round(message, event.content)
+                    yield event
 
     async def get_usage(self):
         """Get usage statistics for this session."""

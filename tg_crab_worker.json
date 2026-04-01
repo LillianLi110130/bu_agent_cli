@@ -1,5 +1,5 @@
 {
-  "enable_auth": true,
+  "enable_auth": false,
   "auth_host": "http://127.0.0.1:8788/oauth/authorize",
   "server_host": "http://127.0.0.1:8788",
   "gateway_base_url": "http://127.0.0.1:8765",

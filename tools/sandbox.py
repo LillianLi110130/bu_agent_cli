@@ -13,8 +13,6 @@ from typing import Any
 
 
 _IGNORE_FILE_NAME = ".tgagentignore"
-
-
 class SecurityError(Exception):
     """Raised when a path escapes the sandbox."""
 
@@ -43,6 +41,11 @@ def _normalize_pattern(pattern: str) -> str:
     if normalized.startswith("./"):
         normalized = normalized[2:]
     return normalized
+
+
+def _default_user_tgagent_dir() -> Path:
+    """Return the user's ~/.tg_agent directory using the current environment."""
+    return Path("~/.tg_agent").expanduser()
 
 
 @dataclass(frozen=True)
@@ -141,7 +144,16 @@ class SandboxContext:
         root = Path.cwd().resolve() if root_dir is None else Path(root_dir).resolve()
         if not root.exists():
             root.mkdir(parents=True, exist_ok=True)
-        ctx = cls(root_dir=root, working_dir=root, allowed_dirs=[root], session_id=session_id)
+        allowed_dirs = [root]
+        user_tgagent_dir = _default_user_tgagent_dir().resolve()
+        if user_tgagent_dir.exists() and user_tgagent_dir.is_dir():
+            allowed_dirs.append(user_tgagent_dir)
+        ctx = cls(
+            root_dir=root,
+            working_dir=root,
+            allowed_dirs=allowed_dirs,
+            session_id=session_id,
+        )
         ctx.load_ignore_rules()
         return ctx
 
