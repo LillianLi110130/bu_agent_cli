@@ -44,8 +44,14 @@ from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
-from cli.worker.auth import authenticate_startup, load_auth_config
+from cli.worker.auth import (
+    _get_package_config_dir,
+    _resolve_auth_config_path,
+    authenticate_startup,
+    load_auth_config,
+)
 from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
@@ -292,6 +298,11 @@ def parse_args():
     )
     args = parser.parse_args()
     args.config_dir = Path.cwd().resolve()
+    resolved_config_path = _resolve_auth_config_path(base_dir=args.config_dir)
+    if resolved_config_path is not None:
+        args.config_source_dir = resolved_config_path.parent.resolve()
+    else:
+        args.config_source_dir = _get_package_config_dir().resolve()
     auth_config = load_auth_config(base_dir=args.config_dir)
     if args.im_enable:
         args.local_bridge = True
@@ -545,6 +556,7 @@ async def main():
         model=args.model,
         root_dir=args.root_dir,
     )
+    session_runtime = CLISessionRuntime.create_for_context(ctx)
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
     if bridge_store is not None:
@@ -574,6 +586,7 @@ async def main():
             agent_registry=runtime.agent_registry,
         ),
         bridge_store=bridge_store,
+        session_runtime=session_runtime,
     )
 
     try:
