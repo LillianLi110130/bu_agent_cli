@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
@@ -14,10 +16,50 @@ class DiscoveredSkill:
     category: str = "General"
 
 
+def user_tgagent_dir() -> Path:
+    home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
+    if home:
+        return Path(home).expanduser() / ".tg_agent"
+    return Path("~/.tg_agent").expanduser()
+
+
+def user_skills_dir() -> Path:
+    return user_tgagent_dir() / "skills"
+
+
+def builtin_skills_dir() -> Path:
+    return user_skills_dir() / ".builtin"
+
+
+def sync_builtin_skills(packaged_skills_dir: Path) -> Path:
+    runtime_skills_root = user_skills_dir()
+    runtime_skills_root.mkdir(parents=True, exist_ok=True)
+
+    builtin_root = builtin_skills_dir()
+    temp_root = runtime_skills_root / ".builtin.__sync__"
+    if temp_root.exists():
+        shutil.rmtree(temp_root, ignore_errors=True)
+    temp_root.mkdir(parents=True, exist_ok=True)
+
+    packaged_root = packaged_skills_dir.resolve()
+    if packaged_root.exists() and packaged_root.is_dir():
+        for item in sorted(packaged_root.iterdir(), key=lambda path: path.name.lower()):
+            if not item.is_dir():
+                continue
+            shutil.copytree(item, temp_root / item.name)
+
+    if builtin_root.exists():
+        shutil.rmtree(builtin_root, ignore_errors=True)
+    temp_root.replace(builtin_root)
+    return builtin_root
+
+
 def default_skill_dirs(workspace_root: Path, builtin_skills_dir: Path) -> list[Path]:
+    builtin_root = sync_builtin_skills(builtin_skills_dir)
+    user_root = user_skills_dir()
     return [
-        builtin_skills_dir,
-        Path("~/.tgagent/skills").expanduser(),
+        builtin_root,
+        user_root,
         workspace_root / "skills",
     ]
 

@@ -57,8 +57,12 @@ def _write_skill(
     return skill_path
 
 
-def test_build_system_prompt_uses_packaged_skills_outside_workspace(tmp_path: Path) -> None:
+def test_build_system_prompt_uses_packaged_skills_outside_workspace(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     module = _load_module("agent_core.bootstrap.agent_factory")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
 
     prompt = module.build_system_prompt(tmp_path)
 
@@ -76,7 +80,7 @@ def test_build_system_prompt_includes_user_and_workspace_skills(
     workspace.mkdir()
     builtin_skills = tmp_path / "builtin_skills"
     home_dir = tmp_path / "home"
-    user_skills = home_dir / ".tgagent" / "skills"
+    user_skills = home_dir / ".tg_agent" / "skills"
     project_skills = workspace / "skills"
 
     _write_skill(builtin_skills, "builtin-only", description="builtin skill")
@@ -89,6 +93,7 @@ def test_build_system_prompt_includes_user_and_workspace_skills(
     assert "builtin-only" in prompt
     assert "user-only" in prompt
     assert "project-only" in prompt
+    assert str(home_dir / ".tg_agent" / "skills" / ".builtin" / "builtin-only").lower() in prompt.lower()
 
 
 def test_build_system_prompt_prefers_project_skill_metadata(
@@ -101,7 +106,7 @@ def test_build_system_prompt_prefers_project_skill_metadata(
     workspace.mkdir()
     builtin_skills = tmp_path / "builtin_skills"
     home_dir = tmp_path / "home"
-    user_skills = home_dir / ".tgagent" / "skills"
+    user_skills = home_dir / ".tg_agent" / "skills"
     project_skills = workspace / "skills"
 
     _write_skill(builtin_skills, "builtin-shared", name="shared", description="builtin override")

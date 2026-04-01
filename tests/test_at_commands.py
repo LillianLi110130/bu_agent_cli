@@ -5,7 +5,7 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
-from agent_core.skill.discovery import discover_skill_files
+from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
 from claude_code import create_runtime_registries
 from cli.at_commands import (
     AtCommand,
@@ -194,6 +194,24 @@ def test_discover_skill_files_returns_highest_priority_version(tmp_path: Path):
     assert discovered[0].path == project_path
 
 
+def test_default_skill_dirs_syncs_packaged_skills_to_user_builtin_root(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    packaged_skills = tmp_path / "packaged_skills"
+    home_dir = tmp_path / "home"
+
+    write_skill(packaged_skills, "builtin-only", description="builtin skill")
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    resolved_dirs = default_skill_dirs(workspace, packaged_skills)
+
+    builtin_root = home_dir / ".tg_agent" / "skills" / ".builtin"
+    assert resolved_dirs[0] == builtin_root
+    assert resolved_dirs[1] == home_dir / ".tg_agent" / "skills"
+    assert resolved_dirs[2] == workspace / "skills"
+    assert (builtin_root / "builtin-only" / "SKILL.md").exists()
+
+
 def test_create_runtime_registries_loads_workspace_and_user_skills(
     tmp_path: Path,
     monkeypatch,
@@ -202,7 +220,7 @@ def test_create_runtime_registries_loads_workspace_and_user_skills(
     workspace.mkdir()
     builtin_skills = tmp_path / "builtin_skills"
     home_dir = tmp_path / "home"
-    user_skills = home_dir / ".tgagent" / "skills"
+    user_skills = home_dir / ".tg_agent" / "skills"
     project_skills = workspace / "skills"
     empty_plugins = tmp_path / "plugins"
     empty_agents = tmp_path / "agents"
@@ -224,6 +242,9 @@ def test_create_runtime_registries_loads_workspace_and_user_skills(
     assert runtime.skill_registry.get("builtin-only") is not None
     assert runtime.skill_registry.get("user-only") is not None
     assert runtime.skill_registry.get("project-only") is not None
+    builtin_path = runtime.skill_registry.get("builtin-only").path
+    assert builtin_path.parent == (home_dir / ".tg_agent" / "skills" / ".builtin" / "builtin-only")
+    assert builtin_path.name.lower() == "skill.md"
 
 
 def test_registry_skips_invalid_yaml_skill_files(tmp_path: Path):

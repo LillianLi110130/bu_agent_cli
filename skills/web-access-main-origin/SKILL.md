@@ -1,5 +1,5 @@
 ---
-name: web-access
+name: web-access-origin
 license: MIT
 github: https://github.com/eze-is/web-access
 description:

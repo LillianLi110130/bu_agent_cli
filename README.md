@@ -27,7 +27,7 @@
 - 工具层：`tools/`
   - Bash、文件、搜索、todo、subagent
 - 扩展层：
-  - Skills：系统内置 `skills/`，用户级 `~/.tgagent/skills/`，项目级 `<workspace_root>/skills/`
+- Skills：运行时从 `~/.tg_agent/skills/.builtin/`、`~/.tg_agent/skills/`、`<workspace_root>/skills/` 加载；包内 `skills/` 仅作为内置技能同步源
   - 子代理配置：`agent_core/prompts/agents/*.md`
   - 规划插件：`plugins/`
 
@@ -211,8 +211,9 @@ docs/spec/<spec_name>/
 - `@<skill-name> <message>`：显式加载技能并执行任务
 - `@` + `Tab`：补全可用技能
 - `/skills`：按分类查看全部技能
-- 自定义 skill 目录：`~/.tgagent/skills/`、`<workspace_root>/skills/`
-- 同名 skill 覆盖优先级：`项目级 > 用户级 > 系统内置`
+- 自定义 skill 目录：`~/.tg_agent/skills/`、`<workspace_root>/skills/`
+- 内置 skill 会在启动时同步到 `~/.tg_agent/skills/.builtin/`
+- 同名 skill 覆盖优先级：`项目级 > 用户级 > 系统内置(.builtin)`
 
 示例：
 
