@@ -63,7 +63,30 @@ def test_parse_args_root_dir_does_not_change_startup_config_dir(monkeypatch):
         args = claude_code.parse_args()
 
         assert args.config_dir == startup_dir_resolved
+        assert args.config_source_dir == startup_dir_resolved
         assert args.im_gateway_base_url == "http://127.0.0.1:9765"
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
+
+
+def test_parse_args_falls_back_to_packaged_worker_config(monkeypatch):
+    root = Path(".pytest_tmp") / f"cli-packaged-config-{uuid.uuid4().hex}"
+    if root.exists():
+        shutil.rmtree(root)
+    startup_dir = root / "startup"
+    startup_dir.mkdir(parents=True)
+    startup_dir_resolved = startup_dir.resolve()
+
+    try:
+        monkeypatch.chdir(startup_dir)
+        monkeypatch.setattr(sys, "argv", ["claude_code.py"])
+
+        args = claude_code.parse_args()
+
+        assert args.config_dir == startup_dir_resolved
+        assert args.config_source_dir == Path(claude_code._SCRIPT_DIR).resolve()
+        assert args.im_gateway_base_url == "http://127.0.0.1:8765"
     finally:
         if root.exists():
             shutil.rmtree(root)
