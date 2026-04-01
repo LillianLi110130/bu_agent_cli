@@ -13,6 +13,8 @@ from typing import Any
 
 
 _IGNORE_FILE_NAME = ".tgagentignore"
+
+
 class SecurityError(Exception):
     """Raised when a path escapes the sandbox."""
 
@@ -110,8 +112,7 @@ class IgnoreRule:
         if fnmatch.fnmatchcase(rel_path, self.pattern):
             return True
         return any(
-            fnmatch.fnmatchcase(partial, self.pattern)
-            for partial in _iter_suffix_paths(rel_path)
+            fnmatch.fnmatchcase(partial, self.pattern) for partial in _iter_suffix_paths(rel_path)
         )
 
 
@@ -334,7 +335,7 @@ class SandboxContext:
             if child_str == parent_str:
                 return True
             if child_str.startswith(parent_str):
-                remainder = child_str[len(parent_str):]
+                remainder = child_str[len(parent_str) :]
                 return not remainder or remainder[0] in ("/", "\\")
             return False
 

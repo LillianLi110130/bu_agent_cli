@@ -82,6 +82,7 @@ from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
+from cli.session_runtime import CLISessionRuntime
 from config.model_config import (
     ModelPreset,
     get_auto_vision_preset,
@@ -269,6 +270,7 @@ class TGAgentCLI:
         plugin_manager: PluginManager | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
         bridge_store: FileBridgeStore | None = None,
+        session_runtime: CLISessionRuntime | None = None,
     ):
         """Initialize CLI with pre-configured agent and context.
 
@@ -295,6 +297,7 @@ class TGAgentCLI:
         self._plugin_executor = PluginCommandExecutor()
         self._system_prompt_builder = system_prompt_builder
         self._bridge_store = bridge_store
+        self._session_runtime = session_runtime
         self._model_presets_path = (
             Path(__file__).resolve().parent.parent / "config" / "model_presets.json"
         )
@@ -1014,12 +1017,11 @@ class TGAgentCLI:
         if not ok:
             self._store_command_final_content(error)
             self._console.print(f"[red]{error}[/red]")
-            return final_response
-
-        self._maybe_inject_agents_md()
-        success_message = "已生成并注入 TGAGENTS.md"
-        self._store_command_final_content(final_response or success_message)
-        self._console.print(f"[yellow]{success_message}[/yellow]")
+        else:
+            self._maybe_inject_agents_md()
+            success_message = "已生成并注入 TGAGENTS.md"
+            self._store_command_final_content(final_response or success_message)
+            self._console.print(f"[yellow]{success_message}[/yellow]")
         return final_response
 
     async def _run_agent(
@@ -1271,6 +1273,9 @@ class TGAgentCLI:
         user_input = user_input.strip()
         if not user_input:
             return _ExecutionOutcome()
+
+        if self._session_runtime is not None:
+            self._session_runtime.touch()
 
         # Handle numbered model picker mode
         if self._model_pick_active:
@@ -1538,6 +1543,8 @@ class TGAgentCLI:
 
         self._console.print()
         self._console.print(f"[dim]工作目录：[/] {self._ctx.working_dir}")
+        if self._session_runtime is not None:
+            self._console.print(f"[dim]CLI 会话目录：[/] {self._session_runtime.rollout_dir}")
         self._console.print(f"[dim]模型：[/] {self._agent.llm.model}")
         self._console.print(
             f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"

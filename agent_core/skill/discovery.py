@@ -60,7 +60,7 @@ def default_skill_dirs(workspace_root: Path, builtin_skills_dir: Path) -> list[P
     return [
         builtin_root,
         user_root,
-        workspace_root / "skills",
+        workspace_root / ".tg_agent" / "skills",
     ]
 
 
