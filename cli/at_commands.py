@@ -24,7 +24,7 @@ from agent_core.skill.discovery import discover_skill_files
 class AtCommand:
     """Metadata and content loader for a skill invoked via @.
 
-    Skills are stored in agent_core/skills/*/skill.md files with YAML frontmatter.
+    Skills are stored in skills/*/skill.md files with YAML frontmatter.
     """
 
     name: str
@@ -109,11 +109,9 @@ class AtCommandRegistry:
         skill_dirs: list[Path] | None = None,
     ):
         self.commands: dict[str, AtCommand] = {}
-        default_skills_dir = Path(__file__).resolve().parent.parent / "agent_core" / "skills"
+        default_skills_dir = Path(__file__).resolve().parent.parent / "skills"
         self._skill_dirs = (
-            list(skill_dirs)
-            if skill_dirs is not None
-            else [skills_dir or default_skills_dir]
+            list(skill_dirs) if skill_dirs is not None else [skills_dir or default_skills_dir]
         )
         self.discover_skills(skill_dirs=self._skill_dirs)
 

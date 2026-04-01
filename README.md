@@ -27,7 +27,7 @@
 - 工具层：`tools/`
   - Bash、文件、搜索、todo、subagent
 - 扩展层：
-  - Skills：系统内置 `agent_core/skills/`，用户级 `~/.tgagent/skills/`，项目级 `<workspace_root>/skills/`
+  - Skills：系统内置 `skills/`，用户级 `~/.tgagent/skills/`，项目级 `<workspace_root>/skills/`
   - 子代理配置：`agent_core/prompts/agents/*.md`
   - 规划插件：`plugins/`
 
