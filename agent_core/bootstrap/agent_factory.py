@@ -17,7 +17,7 @@ from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 _PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
-_SKILLS_DIR = _PACKAGE_ROOT / "skills"
+_SKILLS_DIR = _PACKAGE_ROOT.parent / "skills"
 
 
 def _format_skills(skills: list[Skill]) -> str:

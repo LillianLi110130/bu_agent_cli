@@ -38,7 +38,7 @@ def test_at_command_creation():
 
 
 def test_at_command_load_content_with_real_file():
-    skill_path = Path(__file__).parent.parent / "agent_core" / "skills" / "calculator" / "SKILL.md"
+    skill_path = Path(__file__).parent.parent / "skills" / "calculator" / "SKILL.md"
     cmd = AtCommand(
         name="calculator",
         description="Test",
@@ -80,7 +80,7 @@ category: Test Category
 
 
 def test_registry_discovery_from_skills_directory():
-    skills_dir = Path(__file__).parent.parent / "agent_core" / "skills"
+    skills_dir = Path(__file__).parent.parent / "skills"
 
     registry = AtCommandRegistry(skills_dir)
 

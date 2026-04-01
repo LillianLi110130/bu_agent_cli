@@ -57,7 +57,7 @@ from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 # Directory paths
 _SCRIPT_DIR = Path(__file__).parent.resolve()
 _PROMPTS_DIR = _SCRIPT_DIR / "agent_core" / "prompts"
-_SKILLS_DIR = _SCRIPT_DIR / "agent_core" / "skills"
+_SKILLS_DIR = _SCRIPT_DIR / "skills"
 _AGENTS_DIR = _PROMPTS_DIR / "agents"
 _PLUGINS_DIR = _SCRIPT_DIR / "plugins"
 

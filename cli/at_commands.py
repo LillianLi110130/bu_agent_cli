@@ -23,7 +23,7 @@ from prompt_toolkit.document import Document
 class AtCommand:
     """Metadata and content loader for a skill invoked via @.
 
-    Skills are stored in agent_core/skills/*/skill.md files with YAML frontmatter.
+    Skills are stored in skills/*/skill.md files with YAML frontmatter.
     """
 
     name: str
@@ -103,9 +103,7 @@ class AtCommandRegistry:
 
     def __init__(self, skills_dir: Path | None = None):
         self.commands: dict[str, AtCommand] = {}
-        self._skills_dir = skills_dir or (
-            Path(__file__).resolve().parent.parent / "agent_core" / "skills"
-        )
+        self._skills_dir = skills_dir or (Path(__file__).resolve().parent.parent / "skills")
         self.discover_skills(self._skills_dir)
 
     def discover_skills(self, skills_dir: Path | None = None) -> None:
@@ -114,7 +112,7 @@ class AtCommandRegistry:
         Looks for subdirectories containing skill.md files.
 
         Args:
-            skills_dir: Path to the skills directory (e.g., agent_core/skills)
+            skills_dir: Path to the skills directory (e.g., skills)
         """
         if skills_dir is not None:
             self._skills_dir = skills_dir

@@ -27,7 +27,7 @@
 - 工具层：`tools/`
   - Bash、文件、搜索、todo、subagent
 - 扩展层：
-  - Skills：`agent_core/skills/`
+  - Skills：`skills/`
   - 子代理配置：`agent_core/prompts/agents/*.md`
   - 规划插件：`plugins/`
 
