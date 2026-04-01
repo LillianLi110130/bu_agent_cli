@@ -44,8 +44,8 @@ def _normalize_pattern(pattern: str) -> str:
 
 
 def _default_user_tgagent_dir() -> Path:
-    """Return the user's ~/.tgagent directory using the current environment."""
-    return Path("~/.tgagent").expanduser()
+    """Return the user's ~/.tg_agent directory using the current environment."""
+    return Path("~/.tg_agent").expanduser()
 
 
 @dataclass(frozen=True)

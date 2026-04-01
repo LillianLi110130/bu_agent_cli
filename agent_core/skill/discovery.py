@@ -17,8 +17,8 @@ class DiscoveredSkill:
 def default_skill_dirs(workspace_root: Path, builtin_skills_dir: Path) -> list[Path]:
     return [
         builtin_skills_dir,
-        Path("~/.tgagent/skills").expanduser(),
-        workspace_root / "skills",
+        Path("~/.tg_agent/skills").expanduser(),
+        workspace_root / ".tg_agent" / "skills",
     ]
 
 
