@@ -13,7 +13,7 @@ from pathlib import Path
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
-from agent_core.skill.discovery import discover_skill_files
+from agent_core.skill.discovery import builtin_skills_dir, discover_skill_files, user_skills_dir
 
 # =============================================================================
 # AtCommand - Represents a single skill that can be invoked with @
@@ -109,10 +109,16 @@ class AtCommandRegistry:
         skill_dirs: list[Path] | None = None,
     ):
         self.commands: dict[str, AtCommand] = {}
-        default_skills_dir = Path(__file__).resolve().parent.parent / "skills"
-        self._skill_dirs = (
-            list(skill_dirs) if skill_dirs is not None else [skills_dir or default_skills_dir]
-        )
+        if skill_dirs is not None:
+            self._skill_dirs = list(skill_dirs)
+        elif skills_dir is not None:
+            self._skill_dirs = [skills_dir]
+        else:
+            self._skill_dirs = [
+                builtin_skills_dir(),
+                user_skills_dir(),
+                Path.cwd().resolve() / "skills",
+            ]
         self.discover_skills(skill_dirs=self._skill_dirs)
 
     def discover_skills(

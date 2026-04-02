@@ -38,6 +38,13 @@
 - 用户可以手动开启 Chrome remote debugging
 - 在 Windows 下 shell 命令统一使用 `curl.exe`
 
+补充说明：
+
+- `web-access` 是内置 skill
+- 它的文件通常跟随 CLI 安装在包目录里
+- 不应假设这些文件位于当前工作区
+- 运行命令前应先从当前 `SKILL.md` 的实际路径推导出 `<skill_root>`
+
 ## 第一阶段包含什么
 
 这一阶段已经实现：

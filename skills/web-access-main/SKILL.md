@@ -30,18 +30,29 @@ metadata:
 
 这个技能已经针对当前 BU Agent CLI 仓库做了适配。
 
-- 脚本位于 `agent_core/skills/web-access-main/scripts/`
-- 参考文档位于 `agent_core/skills/web-access-main/references/`
+- 对当前内置 `web-access` 技能，默认运行时目录是 `~/.tg_agent/skills/.builtin/web-access-main`
+- 默认脚本目录是 `~/.tg_agent/skills/.builtin/web-access-main/scripts/`
+- 默认参考文档目录是 `~/.tg_agent/skills/.builtin/web-access-main/references/`
 - shell 命令通过 CLI 的 `bash` 工具执行
 - 在 Windows 下优先使用 `curl.exe`，不要使用 `curl`
 
 在使用任何命令模板之前，先确认 skill 目录。
 
-默认使用这个仓库内相对路径：
+不要假设当前工作目录就是仓库根目录，也不要把源码树里的固定路径写死到命令里。
 
-`agent_core/skills/web-access-main`
+默认按下面这个运行时位置理解这个内置 skill：
 
-如果当前工作区不是这个仓库，就根据系统提示里显示的 skill 文件路径，推导出该技能目录的绝对路径，然后在 shell 命令中使用这个绝对路径。
+- `~/.tg_agent/skills/.builtin/web-access-main`
+
+如果系统提示或 skills 列表里显示的这个 skill 的实际 `Path` 与上面不同，则一律以实际 `Path` 为准，再据此推导 skill 目录的绝对路径：
+
+- `SKILL.md` 所在目录就是 skill 根目录
+- 脚本目录是 `<skill_root>/scripts/`
+- 参考目录是 `<skill_root>/references/`
+
+这个 skill 是内置 skill。当前 CLI 会在启动时把它同步到 `~/.tg_agent/skills/.builtin/` 下，所以通常不需要去当前工作区或安装包目录里搜索它。
+
+如果系统提示中给出的当前 `SKILL.md` 实际路径与默认位置不同，必须以该实际路径为准解析出 `<skill_root>`，然后在 shell 命令里使用这个绝对路径。
 
 ## 核心规则
 
@@ -72,7 +83,7 @@ metadata:
 在开始浏览器操作前，先运行依赖检查：
 
 ```powershell
-node "agent_core/skills/web-access-main/scripts/check-deps.mjs"
+node "<skill_root>/scripts/check-deps.mjs"
 ```
 
 这一步会检查：

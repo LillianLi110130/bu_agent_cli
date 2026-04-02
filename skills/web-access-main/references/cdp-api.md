@@ -5,14 +5,15 @@
 ## 基础信息
 
 - 基础地址：`http://127.0.0.1:3456`
-- Proxy 脚本：`agent_core/skills/web-access-main/scripts/cdp-proxy.mjs`
-- 依赖检查脚本：`agent_core/skills/web-access-main/scripts/check-deps.mjs`
+- 默认 Proxy 脚本：`~/.tg_agent/skills/.builtin/web-access-main/scripts/cdp-proxy.mjs`
+- 默认依赖检查脚本：`~/.tg_agent/skills/.builtin/web-access-main/scripts/check-deps.mjs`
+- 如果当前 skill 的实际 `Path` 与默认位置不同，则以实际 `Path` 推导出的 `<skill_root>` 为准
 - Windows 下 shell 命令统一使用：`curl.exe`
 
 先运行依赖检查：
 
 ```powershell
-node "agent_core/skills/web-access-main/scripts/check-deps.mjs"
+node "<skill_root>/scripts/check-deps.mjs"
 ```
 
 ## 常用端点

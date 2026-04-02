@@ -62,6 +62,7 @@ from cli.slash_commands import (
     is_slash_command,
     parse_slash_command,
 )
+from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from cli.at_commands import (
     AtCommandCompleter,
     AtCommandRegistry,
@@ -285,7 +286,11 @@ class TGAgentCLI:
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
-            Path(__file__).resolve().parent.parent / "agent_core" / "skills"
+            skill_dirs=[
+                builtin_skills_dir(),
+                user_skills_dir(),
+                self._ctx.working_dir / "skills",
+            ]
         )
         self._agent_registry = agent_registry
         self._plugin_manager = plugin_manager

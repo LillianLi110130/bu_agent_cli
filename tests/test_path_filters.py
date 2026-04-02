@@ -153,3 +153,18 @@ async def test_grep_skips_ignored_patterns() -> None:
         assert result == "No matches for: needle"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_sandbox_context_allows_user_tgagent_even_before_directory_exists(
+    monkeypatch,
+) -> None:
+    workspace = _make_workspace()
+    home_dir = workspace / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        assert ctx.is_allowed(home_dir / ".tg_agent" / "skills" / "demo" / "SKILL.md")
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
