@@ -12,6 +12,8 @@ from cli.app import TGAgentCLI
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.runtime_factory import EchoLLM
+from agent_core.llm.messages import Function, ToolCall
+from agent_core.tools.decorator import tool
 from tools import SandboxContext
 
 
@@ -44,6 +46,11 @@ async def test_cli_session_runtime_creates_rollout_dir_and_meta(
     assert runtime.root_dir == (tmp_path / ".tg_agent").resolve()
     assert runtime.rollout_dir == expected_rollout
     assert runtime.rollout_dir.exists()
+    assert runtime.checkpoints_dir == expected_rollout / "checkpoints"
+    assert runtime.artifacts_dir == expected_rollout / "artifacts"
+    assert runtime.checkpoints_dir.exists()
+    assert runtime.artifacts_dir.exists()
+    assert runtime.working_state_path == expected_rollout / "working_state.json"
     assert runtime.meta_path.exists()
     assert runtime.root_dir.resolve() in {path.resolve() for path in ctx.allowed_dirs}
 
@@ -89,3 +96,36 @@ async def test_cli_input_touches_bound_session_runtime(
     assert touched == [runtime.session_id]
     assert outcome.continue_running is True
     assert str(workspace) in outcome.final_content
+    assert runtime.working_state_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_bound_session_runtime_persists_large_tool_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+
+    @tool("Emit a large output payload")
+    async def emit_large_output() -> str:
+        return "x" * 1600
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(sandbox)
+    agent = Agent(llm=EchoLLM(prefix="echo:"), tools=[emit_large_output], system_prompt="test")
+    agent.bind_session_runtime(runtime)
+
+    tool_message = await agent._execute_tool_call(
+        ToolCall(
+            id="call-large",
+            function=Function(name="emit_large_output", arguments="{}"),
+        )
+    )
+
+    artifact_path = runtime.artifacts_dir / "tool" / "call-large.json"
+    assert artifact_path.exists()
+    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert artifact_payload["tool_name"] == "emit_large_output"
+    assert artifact_payload["content"] == tool_message.content

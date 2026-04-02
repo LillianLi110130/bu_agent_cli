@@ -297,6 +297,7 @@ class CompactionService:
             "Recent History Notes:",
             *self._render_list(working_state.recent_history_notes),
             f"Checkpoint Ref: {result.checkpoint_ref or '(none)'}",
+            f"Checkpoint Path: {result.checkpoint_path or '(none)'}",
         ]
         return "\n".join(lines).strip()
 
@@ -486,6 +487,7 @@ class CompactionService:
             summary="\n\n".join(self._dedupe_preserve_order(summary_parts)),
             working_state=merged_state,
             checkpoint_ref=current.checkpoint_ref or previous.checkpoint_ref,
+            checkpoint_path=current.checkpoint_path or previous.checkpoint_path,
         )
 
     def reset(self) -> None:

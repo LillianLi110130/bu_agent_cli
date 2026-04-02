@@ -17,7 +17,9 @@ from agent_core.agent.compaction import (
     CompactionConfig,
     CompactionResult,
     CompactionService,
+    CompactionWorkingState,
 )
+from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
 import re
 
 logger = logging.getLogger("agent_core.agent")
@@ -55,6 +57,10 @@ class ContextManager:
         self._budget_engine: ContextBudgetEngine | None = None
         self._compacted_result: CompactionResult | None = None
         self._summarized_boundary: int = 0
+        self._artifact_store: ArtifactStore | None = None
+        self._checkpoint_store: CheckpointStore | None = None
+        self._working_state_store: WorkingStateStore | None = None
+        self._artifact_refs: list[str] = []
         if messages:
             self.replace_messages(messages)
 
@@ -106,6 +112,76 @@ class ContextManager:
         """Forget the current compacted working set and summarized boundary."""
         self._compacted_result = None
         self._summarized_boundary = 0
+
+    @staticmethod
+    def _dedupe_preserve_order(values: Iterable[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            cleaned = str(value).strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.add(cleaned)
+            deduped.append(cleaned)
+        return deduped
+
+    def bind_filesystem_stores(
+        self,
+        *,
+        artifact_store: ArtifactStore | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        working_state_store: WorkingStateStore | None = None,
+    ) -> None:
+        """Attach rollout-local filesystem stores used by context engineering."""
+        self._artifact_store = artifact_store
+        self._checkpoint_store = checkpoint_store
+        self._working_state_store = working_state_store
+        if self._working_state_store is not None:
+            self._working_state_store.ensure_initialized()
+
+    def _register_artifact_ref(self, path: str) -> str:
+        self._artifact_refs = self._dedupe_preserve_order([*self._artifact_refs, path])
+        return path
+
+    def persist_tool_artifact(self, message: ToolMessage) -> str | None:
+        """Persist a large tool result to the rollout artifact store when configured."""
+        if self._artifact_store is None:
+            return None
+        saved_path = self._artifact_store.save_tool_message(message)
+        if saved_path is None:
+            return None
+        return self._register_artifact_ref(str(saved_path))
+
+    def persist_image_detail_artifact(
+        self,
+        detail_text: str,
+        *,
+        source_hint: str = "",
+    ) -> str | None:
+        """Persist detailed image extraction text for later recovery."""
+        if self._artifact_store is None:
+            return None
+        saved_path = self._artifact_store.save_image_detail(detail_text, source_hint=source_hint)
+        return self._register_artifact_ref(str(saved_path))
+
+    async def compact_messages(
+        self,
+        messages: Sequence[BaseMessage],
+        llm: "BaseChatModel",
+    ) -> CompactionResult:
+        """Compact a message segment, checkpointing the raw messages first when configured."""
+        if self._compaction_service is None:
+            raise RuntimeError("Compaction service unavailable.")
+
+        checkpoint_record = None
+        if self._checkpoint_store is not None and messages:
+            checkpoint_record = self._checkpoint_store.save_messages(messages)
+
+        result = await self._compaction_service.compact(list(messages), llm)
+        if checkpoint_record is not None:
+            result.checkpoint_ref = checkpoint_record.reference
+            result.checkpoint_path = str(checkpoint_record.path)
+        return result
 
     def strip_user_image_inputs(
         self,
@@ -493,12 +569,23 @@ class ContextManager:
             raise RuntimeError("Compaction service unavailable.")
 
         merged_result = self._compaction_service.merge_results(self._compacted_result, result)
+        working_state = getattr(merged_result, "working_state", None) or CompactionWorkingState()
+        if self._artifact_refs and hasattr(merged_result, "working_state"):
+            working_state.artifact_refs = self._dedupe_preserve_order(
+                [*working_state.artifact_refs, *self._artifact_refs]
+            )
+            merged_result.working_state = working_state
         prefix = self._instruction_prefix()
         compacted_messages = self._compaction_service.create_compacted_messages(merged_result)
         tail = list(recent_messages or [])
         self.replace_messages([*prefix, *compacted_messages, *tail])
         self._compacted_result = merged_result
         self._summarized_boundary = len(prefix) + len(compacted_messages)
+        if self._working_state_store is not None and isinstance(merged_result, CompactionResult):
+            self._working_state_store.write_result(
+                merged_result,
+                artifact_refs=self._artifact_refs,
+            )
 
     def _recent_keep_token_budget(self, assessment: BudgetAssessment) -> int:
         """Cap the preserved recent tail so it cannot dominate the compacted context."""
@@ -613,10 +700,7 @@ class ContextManager:
         if not compacted_indices:
             return False
 
-        result = await self._compaction_service.compact(
-            [self._messages[i] for i in compacted_indices],
-            llm,
-        )
+        result = await self.compact_messages([self._messages[i] for i in compacted_indices], llm)
         if not (result.summary or "").strip():
             return False
 
@@ -754,7 +838,7 @@ class ContextManager:
 
         head = [messages[i] for i in summarized_indices]
 
-        result = await self._compaction_service.compact(head, llm)
+        result = await self.compact_messages(head, llm)
         if not (result.summary or "").strip():
             return False
 
@@ -808,7 +892,7 @@ class ContextManager:
         tail_rounds = rounds[-keep_rounds:]
         head = [msg for r in head_rounds for msg in r]
 
-        result = await self._compaction_service.compact(head, llm)
+        result = await self.compact_messages(head, llm)
         if not (result.summary or "").strip():
             return False
 

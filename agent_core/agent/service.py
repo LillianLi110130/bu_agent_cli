@@ -61,9 +61,11 @@ from collections.abc import AsyncIterator
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from agent_core.agent.compaction import CompactionConfig
 from agent_core.agent.context import ContextManager
+from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
 from agent_core.agent.hitl import HumanInLoopConfig, HumanInLoopHandler
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.hooks import AgentHook, FinishGuardHook, HookManager
@@ -107,6 +109,9 @@ from agent_core.llm.views import ChatInvokeCompletion
 from agent_core.observability import Laminar, observe
 from agent_core.tokens import TokenCost, UsageSummary
 from agent_core.tools.decorator import Tool
+
+if TYPE_CHECKING:
+    from cli.session_runtime import CLISessionRuntime
 
 # think 标签常量
 _THINK_OPEN_TAG = "<think>"
@@ -318,6 +323,17 @@ class Agent:
         if self._context._compaction_service is not None:
             self._context._compaction_service.llm = llm
 
+    def bind_session_runtime(self, runtime: "CLISessionRuntime") -> None:
+        """Bind rollout-local filesystem stores used by CLI context engineering."""
+        self._context.bind_filesystem_stores(
+            artifact_store=ArtifactStore(runtime.artifacts_dir),
+            checkpoint_store=CheckpointStore(runtime.checkpoints_dir),
+            working_state_store=WorkingStateStore(
+                runtime.working_state_path,
+                session_id=runtime.session_id,
+            ),
+        )
+
     async def get_usage(self) -> UsageSummary:
         """Get usage summary for the agent.
 
@@ -508,6 +524,7 @@ class Agent:
                     is_error=False,
                     ephemeral=is_ephemeral,
                 )
+                self._context.persist_tool_artifact(tool_message)
 
                 # Set span output
                 if Laminar is not None:
@@ -814,7 +831,7 @@ Keep the summary brief but informative."""
             return False
 
         try:
-            result = await self._context._compaction_service.compact(compactable_messages, self.llm)
+            result = await self._context.compact_messages(compactable_messages, self.llm)
         except Exception as e:
             logger.warning(f"Failed to compact messages for recovery: {e}")
             return False

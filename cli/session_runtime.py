@@ -41,6 +41,9 @@ class CLISessionRuntime:
     root_dir: Path
     sessions_dir: Path
     rollout_dir: Path
+    checkpoints_dir: Path
+    artifacts_dir: Path
+    working_state_path: Path
     meta_path: Path
     started_at: str
     last_active_at: str
@@ -68,6 +71,10 @@ class CLISessionRuntime:
             / f"rollout-{resolved_now.strftime('%Y%m%d-%H%M%S')}-{ctx.session_id}"
         )
         rollout_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir = rollout_dir / "checkpoints"
+        artifacts_dir = rollout_dir / "artifacts"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         ctx.add_allowed_dir(resolved_root)
 
@@ -76,6 +83,9 @@ class CLISessionRuntime:
             root_dir=resolved_root,
             sessions_dir=sessions_dir,
             rollout_dir=rollout_dir,
+            checkpoints_dir=checkpoints_dir,
+            artifacts_dir=artifacts_dir,
+            working_state_path=rollout_dir / "working_state.json",
             meta_path=rollout_dir / "meta.json",
             started_at=_format_timestamp(resolved_now),
             last_active_at=_format_timestamp(resolved_now),
