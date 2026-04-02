@@ -408,11 +408,51 @@ class ContextManager:
         messages: Sequence[BaseMessage],
         countable_indices: Sequence[int],
         keep_count: int,
+        *,
+        token_budget: int | None = None,
     ) -> set[int]:
         if keep_count <= 0 or not countable_indices:
             return set()
-        keep_indices = set(countable_indices[-keep_count:])
-        return self._expand_keep_indices_for_tool_pairs(messages, keep_indices)
+        keep_indices: set[int] = set()
+        kept_count = 0
+        kept_tokens = 0
+
+        def estimate_subset_tokens(indices: Sequence[int]) -> int:
+            subset = [messages[i] for i in indices]
+            if self._budget_engine is not None:
+                return self._budget_engine.estimate_tokens_for_messages(subset)
+
+            total = 0
+            for item in subset:
+                try:
+                    serialized = item.model_dump_json()
+                except Exception:
+                    serialized = str(item)
+                total += max(1, len(serialized) // 4) + 4
+            return total
+
+        for index in reversed(countable_indices):
+            candidate_indices = self._expand_keep_indices_for_tool_pairs(
+                messages,
+                keep_indices | {index},
+            )
+            new_indices = [
+                i for i in candidate_indices if i not in keep_indices and i in countable_indices
+            ]
+            if not new_indices:
+                continue
+
+            candidate_tokens = kept_tokens + estimate_subset_tokens(new_indices)
+            if kept_count >= keep_count:
+                break
+            if token_budget is not None and candidate_tokens > token_budget:
+                break
+
+            keep_indices = candidate_indices
+            kept_count += len(new_indices)
+            kept_tokens = candidate_tokens
+
+        return keep_indices
 
     def _collect_recent_messages(
         self,
@@ -459,6 +499,17 @@ class ContextManager:
         self.replace_messages([*prefix, *compacted_messages, *tail])
         self._compacted_result = merged_result
         self._summarized_boundary = len(prefix) + len(compacted_messages)
+
+    def _recent_keep_token_budget(self, assessment: BudgetAssessment) -> int:
+        """Cap the preserved recent tail so it cannot dominate the compacted context."""
+        if self._compaction_service is None:
+            return 0
+
+        ratio = max(0.0, float(self._compaction_service.config.preserve_recent_token_ratio))
+        compact_budget = int(assessment.compact_threshold * ratio)
+        if assessment.warn_threshold > 0:
+            compact_budget = min(compact_budget, assessment.warn_threshold)
+        return max(0, compact_budget)
 
     async def assess_budget(
         self,
@@ -556,6 +607,7 @@ class ContextManager:
             self._messages,
             countable_indices,
             self._compaction_service.config.preserve_recent_messages,
+            token_budget=self._recent_keep_token_budget(assessment),
         )
         compacted_indices = [i for i in countable_indices if i not in keep_indices]
         if not compacted_indices:

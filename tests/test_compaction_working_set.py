@@ -101,7 +101,7 @@ async def test_check_and_compact_injects_working_set_plus_recent_history():
         ]
     )
     context.configure_compaction(
-        config=CompactionConfig(preserve_recent_messages=2),
+        config=CompactionConfig(preserve_recent_messages=2, preserve_recent_token_ratio=1.0),
         llm=llm,
         token_cost=None,
     )
@@ -133,6 +133,51 @@ async def test_check_and_compact_injects_working_set_plus_recent_history():
     assert "[Compacted Working Set]" in contents[0]
     assert contents[1:] == ["assistant-2", "user-3"]
     assert context.summarized_boundary == 1
+
+
+@pytest.mark.asyncio
+async def test_check_and_compact_limits_recent_tail_by_token_budget():
+    llm = FakeCompactionLLM([STRUCTURED_COMPACTION_RESPONSE])
+    huge_tool_like_tail = "x" * 1200
+    context = ContextManager(
+        messages=[
+            UserMessage(content="older-user"),
+            AssistantMessage(content="older-assistant"),
+            AssistantMessage(content=huge_tool_like_tail),
+        ]
+    )
+    context.configure_compaction(
+        config=CompactionConfig(preserve_recent_messages=2, preserve_recent_token_ratio=0.05),
+        llm=llm,
+        token_cost=None,
+    )
+
+    async def fake_assess_budget(self, *, model: str, usage=None, trigger=None):
+        return BudgetAssessment(
+            model=model,
+            context_limit=1000,
+            warn_threshold=600,
+            compact_threshold=200,
+            hard_threshold=900,
+            baseline_prompt_tokens=0,
+            incremental_tokens=400,
+            estimated_tokens=400,
+            message_count=len(self._messages),
+            warn_threshold_ratio=0.6,
+            compact_threshold_ratio=0.2,
+            hard_threshold_ratio=0.9,
+            threshold_utilization=2.0,
+            context_utilization=0.4,
+            trigger=trigger,
+        )
+
+    context.assess_budget = MethodType(fake_assess_budget, context)
+
+    changed = await context.check_and_compact(llm)
+
+    assert changed is True
+    assert len(context.get_messages()) == 1
+    assert "[Compacted Working Set]" in str(context.get_messages()[0].content)
 
 
 @pytest.mark.asyncio

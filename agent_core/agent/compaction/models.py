@@ -63,6 +63,10 @@ class CompactionConfig:
             warn_threshold: Ratio of context window at which sliding-window cleanup may start.
             compact_threshold: Ratio of context window at which compaction triggers.
             hard_threshold: Ratio of context window at which the context is in a danger zone.
+            preserve_recent_messages: Maximum count of recent active messages kept outside the
+                    compacted working set.
+            preserve_recent_token_ratio: Maximum share of the compact threshold reserved for that
+                    recent active tail.
             model: Optional model to use for generating summaries. If None, uses the agent's model.
             summary_prompt: Custom prompt for summary generation.
     """
@@ -73,6 +77,7 @@ class CompactionConfig:
     compact_threshold: float | None = None
     hard_threshold: float = DEFAULT_HARD_THRESHOLD
     preserve_recent_messages: int = 6
+    preserve_recent_token_ratio: float = 0.25
     model: str | None = None
     summary_prompt: str = DEFAULT_SUMMARY_PROMPT
 
