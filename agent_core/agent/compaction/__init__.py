@@ -8,6 +8,7 @@ approaches model's context window
 from agent_core.agent.compaction.models import (
     CompactionConfig,
     CompactionResult,
+    CompactionWorkingState,
     TokenUsage,
 )
 from agent_core.agent.compaction.service import CompactionService
@@ -15,6 +16,7 @@ from agent_core.agent.compaction.service import CompactionService
 __all__ = [
     "CompactionConfig",
     "CompactionResult",
+    "CompactionWorkingState",
     "CompactionService",
     "TokenUsage",
 ]

@@ -13,7 +13,11 @@ from typing import Iterable, Iterator, Sequence, TYPE_CHECKING
 import logging
 
 from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
-from agent_core.agent.compaction import CompactionConfig, CompactionService
+from agent_core.agent.compaction import (
+    CompactionConfig,
+    CompactionResult,
+    CompactionService,
+)
 import re
 
 logger = logging.getLogger("agent_core.agent")
@@ -49,6 +53,8 @@ class ContextManager:
         self.sliding_window_messages: int | None = sliding_window_messages
         self._compaction_service: CompactionService | None = None
         self._budget_engine: ContextBudgetEngine | None = None
+        self._compacted_result: CompactionResult | None = None
+        self._summarized_boundary: int = 0
         if messages:
             self.replace_messages(messages)
 
@@ -81,18 +87,25 @@ class ContextManager:
                 role_list.remove(msg)
             except ValueError:
                 pass
+        self.clear_compaction_state()
         self.invalidate_budget_baseline()
         return msg
 
     def clear_messages(self) -> None:
         self._messages.clear()
         self._by_role.clear()
+        self.clear_compaction_state()
         self.invalidate_budget_baseline()
 
     def invalidate_budget_baseline(self) -> None:
         """Drop incremental prompt baseline after in-place history rewrites."""
         if self._budget_engine is not None:
             self._budget_engine.reset()
+
+    def clear_compaction_state(self) -> None:
+        """Forget the current compacted working set and summarized boundary."""
+        self._compacted_result = None
+        self._summarized_boundary = 0
 
     def strip_user_image_inputs(
         self,
@@ -139,6 +152,7 @@ class ContextManager:
         self._by_role = defaultdict(list)
         for msg in self._messages:
             self._by_role[msg.role].append(msg)
+        self.clear_compaction_state()
         self.invalidate_budget_baseline()
 
     @staticmethod
@@ -230,6 +244,7 @@ class ContextManager:
         """Replace a slice [start:end] with new messages, keeping order."""
         self._messages[start:end] = list(new_messages)
         self.rebuild_role_index()
+        self.clear_compaction_state()
         self.invalidate_budget_baseline()
 
     def inject_message(
@@ -251,6 +266,7 @@ class ContextManager:
 
         self._messages.insert(insert_at, msg)
         self.rebuild_role_index()
+        self.clear_compaction_state()
         self.invalidate_budget_baseline()
 
     def prune_ephemeral(
@@ -353,6 +369,148 @@ class ContextManager:
         if self._budget_engine is not None:
             self._budget_engine.record_usage(model=model, messages=messages, usage=usage)
 
+    @property
+    def summarized_boundary(self) -> int:
+        """Return the prefix boundary that is already compacted."""
+        return self._summarized_boundary
+
+    def _instruction_prefix(self) -> list[BaseMessage]:
+        prefix: list[BaseMessage] = []
+        for message in self._messages:
+            if message.role in ("system", "developer"):
+                prefix.append(message)
+                continue
+            break
+        return prefix
+
+    def _countable_indices_from(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        start_index: int,
+        pin_roles: Iterable[str] = ("system", "developer"),
+    ) -> list[int]:
+        pinned_roles = set(pin_roles)
+        countable_indices: list[int] = []
+        for i, msg in enumerate(messages):
+            if i < start_index:
+                continue
+            if msg.role in pinned_roles:
+                continue
+            is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
+            if is_destroyed_tool:
+                continue
+            countable_indices.append(i)
+        return countable_indices
+
+    def _build_recent_keep_indices(
+        self,
+        messages: Sequence[BaseMessage],
+        countable_indices: Sequence[int],
+        keep_count: int,
+        *,
+        token_budget: int | None = None,
+    ) -> set[int]:
+        if keep_count <= 0 or not countable_indices:
+            return set()
+        keep_indices: set[int] = set()
+        kept_count = 0
+        kept_tokens = 0
+
+        def estimate_subset_tokens(indices: Sequence[int]) -> int:
+            subset = [messages[i] for i in indices]
+            if self._budget_engine is not None:
+                return self._budget_engine.estimate_tokens_for_messages(subset)
+
+            total = 0
+            for item in subset:
+                try:
+                    serialized = item.model_dump_json()
+                except Exception:
+                    serialized = str(item)
+                total += max(1, len(serialized) // 4) + 4
+            return total
+
+        for index in reversed(countable_indices):
+            candidate_indices = self._expand_keep_indices_for_tool_pairs(
+                messages,
+                keep_indices | {index},
+            )
+            new_indices = [
+                i for i in candidate_indices if i not in keep_indices and i in countable_indices
+            ]
+            if not new_indices:
+                continue
+
+            candidate_tokens = kept_tokens + estimate_subset_tokens(new_indices)
+            if kept_count >= keep_count:
+                break
+            if token_budget is not None and candidate_tokens > token_budget:
+                break
+
+            keep_indices = candidate_indices
+            kept_count += len(new_indices)
+            kept_tokens = candidate_tokens
+
+        return keep_indices
+
+    def _collect_recent_messages(
+        self,
+        messages: Sequence[BaseMessage],
+        *,
+        start_index: int,
+        keep_indices: set[int],
+    ) -> list[BaseMessage]:
+        if not keep_indices:
+            return []
+
+        cutoff_index = min(keep_indices)
+        recent_messages: list[BaseMessage] = []
+        for i, msg in enumerate(messages):
+            if i < start_index:
+                continue
+            if i in keep_indices:
+                recent_messages.append(msg)
+                continue
+
+            is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
+            if (
+                is_destroyed_tool
+                and i >= cutoff_index
+                and self._should_keep_destroyed_tool_message(messages, keep_indices, i)
+            ):
+                recent_messages.append(msg)
+        return recent_messages
+
+    def apply_compaction_result(
+        self,
+        result: CompactionResult,
+        *,
+        recent_messages: Sequence[BaseMessage] | None = None,
+    ) -> None:
+        """Replace older history with a merged compacted working set plus recent tail."""
+        if self._compaction_service is None:
+            raise RuntimeError("Compaction service unavailable.")
+
+        merged_result = self._compaction_service.merge_results(self._compacted_result, result)
+        prefix = self._instruction_prefix()
+        compacted_messages = self._compaction_service.create_compacted_messages(merged_result)
+        tail = list(recent_messages or [])
+        self.replace_messages([*prefix, *compacted_messages, *tail])
+        self._compacted_result = merged_result
+        self._summarized_boundary = len(prefix) + len(compacted_messages)
+
+    def _recent_keep_token_budget(self, assessment: BudgetAssessment) -> int:
+        """Cap the preserved recent tail so it cannot dominate the compacted context."""
+        if self._compaction_service is None:
+            return 0
+
+        ratio = max(0.0, float(self._compaction_service.config.preserve_recent_token_ratio))
+        compact_budget = int(assessment.compact_threshold * ratio)
+        if assessment.warn_threshold > 0:
+            compact_budget = min(compact_budget, assessment.warn_threshold)
+        return max(0, compact_budget)
+
     async def assess_budget(
         self,
         *,
@@ -438,14 +596,36 @@ class ContextManager:
         if not assessment.needs_compaction:
             return False
 
-        result = await self._compaction_service.compact(self._messages, llm)
-        summary_text = (result.summary or "").strip()
-        if not summary_text:
+        countable_indices = self._countable_indices_from(
+            self._messages,
+            start_index=self._summarized_boundary,
+        )
+        if not countable_indices:
             return False
 
-        pinned = [m for m in self._messages if m.role in ("system", "developer")]
-        summary_message = UserMessage(content=summary_text)
-        self.replace_messages([*pinned, summary_message])
+        keep_indices = self._build_recent_keep_indices(
+            self._messages,
+            countable_indices,
+            self._compaction_service.config.preserve_recent_messages,
+            token_budget=self._recent_keep_token_budget(assessment),
+        )
+        compacted_indices = [i for i in countable_indices if i not in keep_indices]
+        if not compacted_indices:
+            return False
+
+        result = await self._compaction_service.compact(
+            [self._messages[i] for i in compacted_indices],
+            llm,
+        )
+        if not (result.summary or "").strip():
+            return False
+
+        recent_messages = self._collect_recent_messages(
+            self._messages,
+            start_index=self._summarized_boundary,
+            keep_indices=keep_indices,
+        )
+        self.apply_compaction_result(result, recent_messages=recent_messages)
         if self._budget_engine is not None:
             self._budget_engine.note_trigger(trigger or "compact_threshold")
         return True
@@ -501,17 +681,11 @@ class ContextManager:
         if len(messages) <= keep_count:
             return False
 
-        pinned_roles = set(pin_roles)
-
-        # Countable messages exclude pinned roles and destroyed tool messages
-        countable_indices: list[int] = []
-        for i, msg in enumerate(messages):
-            if msg.role in pinned_roles:
-                continue
-            is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
-            if is_destroyed_tool:
-                continue
-            countable_indices.append(i)
+        countable_indices = self._countable_indices_from(
+            messages,
+            start_index=self._summarized_boundary,
+            pin_roles=pin_roles,
+        )
 
         if not countable_indices:
             return False
@@ -578,44 +752,18 @@ class ContextManager:
         ):
             return False
 
-        cutoff_index = min(keep_indices)
         head = [messages[i] for i in summarized_indices]
 
         result = await self._compaction_service.compact(head, llm)
-        summary_text = (result.summary or "").strip()
-        if not summary_text:
+        if not (result.summary or "").strip():
             return False
 
-        new_messages: list[BaseMessage] = []
-        summary_inserted = False
-        for i, msg in enumerate(messages):
-            if msg.role in pinned_roles:
-                new_messages.append(msg)
-                continue
-
-            if i in keep_indices:
-                new_messages.append(msg)
-                continue
-
-            is_destroyed_tool = msg.role == "tool" and bool(getattr(msg, "destroyed", False))
-            if (
-                is_destroyed_tool
-                and i >= cutoff_index
-                and self._should_keep_destroyed_tool_message(messages, keep_indices, i)
-            ):
-                new_messages.append(msg)
-                continue
-
-            # This message is summarized into the rolling summary
-            if not summary_inserted:
-                new_messages.append(UserMessage(content=summary_text))
-                summary_inserted = True
-            # Skip the original message
-
-        if not summary_inserted:
-            return False
-
-        self.replace_messages(new_messages)
+        recent_messages = self._collect_recent_messages(
+            messages,
+            start_index=self._summarized_boundary,
+            keep_indices=keep_indices,
+        )
+        self.apply_compaction_result(result, recent_messages=recent_messages)
         if self._budget_engine is not None:
             self._budget_engine.note_trigger("sliding_window")
         return True
@@ -638,8 +786,9 @@ class ContextManager:
             return False
 
         pinned_roles = set(pin_roles)
-        pinned: list[BaseMessage] = [m for m in messages if m.role in pinned_roles]
-        rest: list[BaseMessage] = [m for m in messages if m.role not in pinned_roles]
+        rest: list[BaseMessage] = [
+            m for i, m in enumerate(messages) if i >= self._summarized_boundary and m.role not in pinned_roles
+        ]
 
         # Build rounds: each round starts with a user message
         rounds: list[list[BaseMessage]] = []
@@ -660,14 +809,8 @@ class ContextManager:
         head = [msg for r in head_rounds for msg in r]
 
         result = await self._compaction_service.compact(head, llm)
-        summary_text = (result.summary or "").strip()
-        if not summary_text:
+        if not (result.summary or "").strip():
             return False
 
-        new_messages: list[BaseMessage] = []
-        new_messages.extend(pinned)
-        new_messages.append(UserMessage(content=summary_text))
-        new_messages.extend([msg for r in tail_rounds for msg in r])
-
-        self.replace_messages(new_messages)
+        self.apply_compaction_result(result, recent_messages=[msg for r in tail_rounds for msg in r])
         return True

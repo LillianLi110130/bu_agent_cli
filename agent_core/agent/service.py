@@ -809,7 +809,7 @@ Keep the summary brief but informative."""
         if not self._context.get_messages():
             return False
 
-        prefix_messages, compactable_messages = self._split_persistent_instruction_prefix()
+        _prefix_messages, compactable_messages = self._split_persistent_instruction_prefix()
         if not compactable_messages:
             return False
 
@@ -819,12 +819,7 @@ Keep the summary brief but informative."""
             logger.warning(f"Failed to compact messages for recovery: {e}")
             return False
 
-        self._context.replace_messages(
-            [
-                *prefix_messages,
-                *self._context._compaction_service.create_compacted_messages(result.summary or ""),
-            ]
-        )
+        self._context.apply_compaction_result(result, recent_messages=[])
         if self._context._budget_engine is not None:
             self._context._budget_engine.note_trigger("overflow_recovery")
         return True

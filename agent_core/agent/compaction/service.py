@@ -7,15 +7,18 @@ history when it approaches the model's context window limit.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from agent_core.agent.budget import ContextBudgetEngine
 from agent_core.agent.compaction.models import (
     CompactionConfig,
     CompactionResult,
+    CompactionWorkingState,
     TokenUsage,
 )
 from agent_core.llm.messages import (
@@ -24,7 +27,6 @@ from agent_core.llm.messages import (
     UserMessage,
 )
 if TYPE_CHECKING:
-    from agent_core.agent.budget import BudgetAssessment
     from agent_core.llm.base import BaseChatModel
     from agent_core.llm.views import ChatInvokeUsage
     from agent_core.tokens import TokenCost
@@ -199,6 +201,8 @@ class CompactionService:
 
         # Extract summary from tags if present
         extracted_summary = self._extract_summary(summary_text)
+        extracted_working_state = self._extract_working_state(summary_text)
+        checkpoint_ref = self._extract_checkpoint_ref(summary_text) or self._generate_checkpoint_ref()
 
         new_tokens = response.usage.completion_tokens if response.usage else 0
 
@@ -209,6 +213,8 @@ class CompactionService:
             original_tokens=original_tokens,
             new_tokens=new_tokens,
             summary=extracted_summary,
+            working_state=extracted_working_state,
+            checkpoint_ref=checkpoint_ref,
         )
 
     async def check_and_compact(
@@ -247,16 +253,52 @@ class CompactionService:
 
         return new_messages, result
 
-    def create_compacted_messages(self, summary: str) -> list[BaseMessage]:
+    def create_compacted_messages(self, result: CompactionResult | str) -> list[BaseMessage]:
         """Create a new message list from a summary.
 
         Args:
-                summary: The summary text to use as the new conversation start.
+                result: A compaction result or raw summary string.
 
         Returns:
-                A list containing a single user message with the summary.
+                A list containing a single user message with the structured working set.
         """
-        return [UserMessage(content=summary)]
+        if isinstance(result, str):
+            result = CompactionResult(
+                compacted=True,
+                summary=result,
+                working_state=CompactionWorkingState(),
+            )
+        return [UserMessage(content=self.render_compacted_working_set(result))]
+
+    def render_compacted_working_set(self, result: CompactionResult) -> str:
+        """Render a structured working set message for reinjection into context."""
+        working_state = result.working_state or CompactionWorkingState()
+        lines = [
+            "[Compacted Working Set]",
+            "",
+            "Summary:",
+            result.summary or "",
+            "",
+            f"User Goal: {working_state.user_goal or '(unknown)'}",
+            "User Constraints:",
+            *self._render_list(working_state.user_constraints),
+            "Confirmed Conclusions:",
+            *self._render_list(working_state.confirmed_conclusions),
+            "Files Reviewed:",
+            *self._render_list(working_state.files_reviewed),
+            "Files Modified:",
+            *self._render_list(working_state.files_modified),
+            "Failed Attempts:",
+            *self._render_list(working_state.failed_attempts),
+            "Remaining Actions:",
+            *self._render_list(working_state.remaining_actions),
+            "Artifact Refs:",
+            *self._render_list(working_state.artifact_refs),
+            "Recent History Notes:",
+            *self._render_list(working_state.recent_history_notes),
+            f"Checkpoint Ref: {result.checkpoint_ref or '(none)'}",
+        ]
+        return "\n".join(lines).strip()
 
     def _prepare_messages_for_summary(
         self,
@@ -318,6 +360,133 @@ class CompactionService:
 
         # No tags found, return original text
         return text.strip()
+
+    def _extract_working_state(self, text: str) -> CompactionWorkingState:
+        """Extract structured working-state JSON from a compaction response."""
+        raw_state = self._extract_tag_block(text, "working_state")
+        if not raw_state:
+            return CompactionWorkingState()
+
+        try:
+            payload = json.loads(raw_state)
+        except json.JSONDecodeError:
+            log.warning("Failed to parse compaction working_state JSON.")
+            return CompactionWorkingState()
+
+        return CompactionWorkingState(
+            user_goal=self._coerce_string(payload.get("user_goal")),
+            user_constraints=self._coerce_string_list(payload.get("user_constraints")),
+            confirmed_conclusions=self._coerce_string_list(
+                payload.get("confirmed_conclusions")
+            ),
+            files_reviewed=self._coerce_string_list(payload.get("files_reviewed")),
+            files_modified=self._coerce_string_list(payload.get("files_modified")),
+            failed_attempts=self._coerce_string_list(payload.get("failed_attempts")),
+            remaining_actions=self._coerce_string_list(payload.get("remaining_actions")),
+            artifact_refs=self._coerce_string_list(payload.get("artifact_refs")),
+            recent_history_notes=self._coerce_string_list(payload.get("recent_history_notes")),
+        )
+
+    def _extract_checkpoint_ref(self, text: str) -> str | None:
+        """Extract checkpoint ref from response text."""
+        checkpoint_ref = self._extract_tag_block(text, "checkpoint_ref")
+        if not checkpoint_ref:
+            return None
+        return checkpoint_ref.strip() or None
+
+    @staticmethod
+    def _extract_tag_block(text: str, tag: str) -> str | None:
+        pattern = rf"<{tag}>(.*?)</{tag}>"
+        match = re.search(pattern, text, re.DOTALL)
+        if not match:
+            return None
+        return match.group(1).strip()
+
+    @staticmethod
+    def _generate_checkpoint_ref() -> str:
+        return f"compaction-inline-{uuid4().hex[:8]}"
+
+    @staticmethod
+    def _coerce_string(value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @staticmethod
+    def _coerce_string_list(value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            items = [str(item).strip() for item in value if str(item).strip()]
+            return CompactionService._dedupe_preserve_order(items)
+        coerced = str(value).strip()
+        return [coerced] if coerced else []
+
+    @staticmethod
+    def _render_list(values: list[str]) -> list[str]:
+        if not values:
+            return ["- (none)"]
+        return [f"- {value}" for value in values]
+
+    @staticmethod
+    def _dedupe_preserve_order(values: list[str]) -> list[str]:
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def merge_results(
+        self,
+        previous: CompactionResult | None,
+        current: CompactionResult,
+    ) -> CompactionResult:
+        """Merge a newly compacted interval into the existing working set."""
+        if previous is None:
+            return current
+
+        previous_state = previous.working_state or CompactionWorkingState()
+        current_state = current.working_state or CompactionWorkingState()
+
+        merged_state = CompactionWorkingState(
+            user_goal=current_state.user_goal or previous_state.user_goal,
+            user_constraints=self._dedupe_preserve_order(
+                [*previous_state.user_constraints, *current_state.user_constraints]
+            ),
+            confirmed_conclusions=self._dedupe_preserve_order(
+                [*previous_state.confirmed_conclusions, *current_state.confirmed_conclusions]
+            ),
+            files_reviewed=self._dedupe_preserve_order(
+                [*previous_state.files_reviewed, *current_state.files_reviewed]
+            ),
+            files_modified=self._dedupe_preserve_order(
+                [*previous_state.files_modified, *current_state.files_modified]
+            ),
+            failed_attempts=self._dedupe_preserve_order(
+                [*previous_state.failed_attempts, *current_state.failed_attempts]
+            ),
+            remaining_actions=self._dedupe_preserve_order(
+                [*previous_state.remaining_actions, *current_state.remaining_actions]
+            ),
+            artifact_refs=self._dedupe_preserve_order(
+                [*previous_state.artifact_refs, *current_state.artifact_refs]
+            ),
+            recent_history_notes=self._dedupe_preserve_order(
+                [*previous_state.recent_history_notes, *current_state.recent_history_notes]
+            ),
+        )
+        summary_parts = [part.strip() for part in [previous.summary or "", current.summary or ""] if part.strip()]
+        return CompactionResult(
+            compacted=True,
+            original_tokens=current.original_tokens,
+            new_tokens=current.new_tokens,
+            summary="\n\n".join(self._dedupe_preserve_order(summary_parts)),
+            working_state=merged_state,
+            checkpoint_ref=current.checkpoint_ref or previous.checkpoint_ref,
+        )
 
     def reset(self) -> None:
         """Reset the service state.

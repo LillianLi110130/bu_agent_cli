@@ -6,6 +6,7 @@ from agent_core.agent.compaction import (
     CompactionConfig,
     CompactionResult,
     CompactionService,
+    CompactionWorkingState,
 )
 from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
 from agent_core.agent.context import ContextManager
@@ -76,6 +77,7 @@ __all__ = [
     "CompactionConfig",
     "CompactionResult",
     "CompactionService",
+    "CompactionWorkingState",
     "BudgetAssessment",
     "ContextBudgetEngine",
     # Config and Registry
