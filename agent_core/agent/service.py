@@ -609,9 +609,10 @@ class Agent:
                 raise asyncio.CancelledError("LLM invocation cancelled by user")
 
             try:
+                prompt_messages = self._context.get_messages()
                 response = await self._run_cancellable(
                     self.llm.ainvoke(
-                        messages=self._context.get_messages(),
+                        messages=prompt_messages,
                         tools=self.tool_definitions if self.tools else None,
                         tool_choice=self.tool_choice if self.tools else None,
                     )
@@ -620,6 +621,11 @@ class Agent:
                 # Track token usage
                 if response.usage:
                     self._token_cost.add_usage(self.llm.model, response.usage)
+                    self._context.record_prompt_usage(
+                        model=self.llm.model,
+                        messages=prompt_messages,
+                        usage=response.usage,
+                    )
 
                 return response
 
@@ -741,23 +747,12 @@ Keep the summary brief but informative."""
         return None
 
     async def _maintain_context(self, response: ChatInvokeCompletion) -> None:
-        """Apply sliding window and then compaction using the best token signal."""
-        did_slide = False
-        if self._context.sliding_window_messages is not None:
-            did_slide = await self._context.apply_sliding_window_by_messages(
-                keep_count=self._context.sliding_window_messages,
-                llm=self.llm,
-            )
-            # Alternative strategy (round-based):
-            # did_slide = await self._context.apply_sliding_window_by_rounds(
-            #     keep_rounds=self._context.sliding_window_messages,
-            #     llm=self.llm,
-            # )
+        """Run unified context maintenance after one model response."""
+        await self._maintain_context_from_budget(trigger="post_response")
 
-        if did_slide:
-            await self._context.check_and_compact_estimated(self.llm)
-        else:
-            await self._context.check_and_compact(self.llm, response.usage)
+    async def _maintain_context_from_budget(self, *, trigger: str | None = None) -> None:
+        """Run sliding-window cleanup and compaction from the shared budget engine."""
+        await self._context.maintain_budget(self.llm, trigger=trigger)
 
     def _split_persistent_instruction_prefix(
         self,
@@ -830,6 +825,8 @@ Keep the summary brief but informative."""
                 *self._context._compaction_service.create_compacted_messages(result.summary or ""),
             ]
         )
+        if self._context._budget_engine is not None:
+            self._context._budget_engine.note_trigger("overflow_recovery")
         return True
 
     async def preflight_model_switch(
@@ -853,15 +850,15 @@ Keep the summary brief but informative."""
                 reason="Compaction service unavailable; skipping preflight.",
             )
 
-        assessment = await self._context._compaction_service.assess_messages_for_model(
-            self._context.get_messages(),
-            target_model,
+        assessment = await self._context.assess_budget(
+            model=target_model,
+            trigger="model_switch_preflight",
         )
 
-        estimated_tokens = int(assessment["estimated_tokens"])
-        threshold = int(assessment["threshold"])
-        context_limit = int(assessment["context_limit"])
-        threshold_utilization = float(assessment["threshold_utilization"])
+        estimated_tokens = int(assessment.estimated_tokens)
+        threshold = int(assessment.compact_threshold)
+        context_limit = int(assessment.context_limit)
+        threshold_utilization = float(assessment.threshold_utilization)
 
         if threshold == 0 or threshold_utilization < utilization_limit:
             return ModelSwitchPreflightResult(
@@ -899,15 +896,15 @@ Keep the summary brief but informative."""
                 reason="Context too large and automatic compaction failed.",
             )
 
-        reassessment = await self._context._compaction_service.assess_messages_for_model(
-            self._context.get_messages(),
-            target_model,
+        reassessment = await self._context.assess_budget(
+            model=target_model,
+            trigger="model_switch_preflight_compacted",
         )
 
-        new_estimated_tokens = int(reassessment["estimated_tokens"])
-        new_threshold = int(reassessment["threshold"])
-        new_context_limit = int(reassessment["context_limit"])
-        new_utilization = float(reassessment["threshold_utilization"])
+        new_estimated_tokens = int(reassessment.estimated_tokens)
+        new_threshold = int(reassessment.compact_threshold)
+        new_context_limit = int(reassessment.context_limit)
+        new_utilization = float(reassessment.threshold_utilization)
 
         if new_threshold > 0 and new_utilization >= utilization_limit:
             return ModelSwitchPreflightResult(
@@ -1048,10 +1045,11 @@ Keep the summary brief but informative."""
             accumulated_tool_calls: list[ToolCall] = []
             response_usage = None
             think_parser = ThinkTagParser()
+            prompt_messages = self._context.get_messages()
 
             try:
                 stream_iter = self.llm.astream(
-                    messages=self._context.get_messages(),
+                    messages=prompt_messages,
                     tools=self.tool_definitions if self.tools else None,
                     tool_choice=self.tool_choice if self.tools else None,
                 )
@@ -1094,6 +1092,11 @@ Keep the summary brief but informative."""
             # Track token usage
             if response_usage:
                 self._token_cost.add_usage(self.llm.model, response_usage)
+                self._context.record_prompt_usage(
+                    model=self.llm.model,
+                    messages=prompt_messages,
+                    usage=response_usage,
+                )
 
             # Add assistant message to history
             assistant_msg = AssistantMessage(
@@ -1193,4 +1196,4 @@ Keep the summary brief but informative."""
 
     async def _check_and_compact_with_usage(self, usage):
         """Check and compact using provided usage info"""
-        await self._context.check_and_compact(self.llm, usage)
+        await self._maintain_context_from_budget(trigger="post_stream_response")

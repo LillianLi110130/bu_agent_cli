@@ -12,6 +12,7 @@ from typing import Iterable, Iterator, Sequence, TYPE_CHECKING
 
 import logging
 
+from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
 from agent_core.agent.compaction import CompactionConfig, CompactionService
 import re
 
@@ -47,6 +48,7 @@ class ContextManager:
         self._by_role: dict[str, list[BaseMessage]] = defaultdict(list)
         self.sliding_window_messages: int | None = sliding_window_messages
         self._compaction_service: CompactionService | None = None
+        self._budget_engine: ContextBudgetEngine | None = None
         if messages:
             self.replace_messages(messages)
 
@@ -79,11 +81,18 @@ class ContextManager:
                 role_list.remove(msg)
             except ValueError:
                 pass
+        self.invalidate_budget_baseline()
         return msg
 
     def clear_messages(self) -> None:
         self._messages.clear()
         self._by_role.clear()
+        self.invalidate_budget_baseline()
+
+    def invalidate_budget_baseline(self) -> None:
+        """Drop incremental prompt baseline after in-place history rewrites."""
+        if self._budget_engine is not None:
+            self._budget_engine.reset()
 
     def strip_user_image_inputs(
         self,
@@ -122,6 +131,7 @@ class ContextManager:
 
         if replaced_count:
             self.rebuild_role_index()
+            self.invalidate_budget_baseline()
         return replaced_count
 
     def replace_messages(self, messages: Iterable[BaseMessage]) -> None:
@@ -129,6 +139,7 @@ class ContextManager:
         self._by_role = defaultdict(list)
         for msg in self._messages:
             self._by_role[msg.role].append(msg)
+        self.invalidate_budget_baseline()
 
     @staticmethod
     def _find_matching_assistant_index(
@@ -219,6 +230,7 @@ class ContextManager:
         """Replace a slice [start:end] with new messages, keeping order."""
         self._messages[start:end] = list(new_messages)
         self.rebuild_role_index()
+        self.invalidate_budget_baseline()
 
     def inject_message(
         self,
@@ -239,6 +251,7 @@ class ContextManager:
 
         self._messages.insert(insert_at, msg)
         self.rebuild_role_index()
+        self.invalidate_budget_baseline()
 
     def prune_ephemeral(
         self,
@@ -306,6 +319,9 @@ class ContextManager:
                 # Mark as destroyed - serializers will use placeholder instead of content
                 msg.destroyed = True
 
+        if ephemeral_by_tool:
+            self.invalidate_budget_baseline()
+
     def configure_compaction(
         self,
         config: CompactionConfig,
@@ -313,38 +329,126 @@ class ContextManager:
         token_cost: "TokenCost | None",
     ) -> None:
         """Attach a compaction service to this context manager."""
+        self._budget_engine = ContextBudgetEngine(
+            config=config,
+            token_cost=token_cost,
+        )
         self._compaction_service = CompactionService(
             config=config,
             llm=llm,
             token_cost=token_cost,
+            budget_engine=self._budget_engine,
         )
+
+    def record_prompt_usage(
+        self,
+        *,
+        model: str,
+        messages: Sequence[BaseMessage],
+        usage: "ChatInvokeUsage | None",
+    ) -> None:
+        """Store the latest real prompt usage for later incremental estimates."""
+        if self._compaction_service is not None:
+            self._compaction_service.update_usage(usage)
+        if self._budget_engine is not None:
+            self._budget_engine.record_usage(model=model, messages=messages, usage=usage)
+
+    async def assess_budget(
+        self,
+        *,
+        model: str,
+        usage: "ChatInvokeUsage | None" = None,
+        trigger: str | None = None,
+    ) -> BudgetAssessment:
+        """Assess the current context budget for one model."""
+        if self._budget_engine is None:
+            return BudgetAssessment(
+                model=model,
+                context_limit=0,
+                warn_threshold=0,
+                compact_threshold=0,
+                hard_threshold=0,
+                baseline_prompt_tokens=0,
+                incremental_tokens=0,
+                estimated_tokens=0,
+                message_count=len(self._messages),
+                warn_threshold_ratio=0.0,
+                compact_threshold_ratio=0.0,
+                hard_threshold_ratio=0.0,
+                threshold_utilization=0.0,
+                context_utilization=0.0,
+                trigger=trigger,
+            )
+        return await self._budget_engine.assess(
+            model=model,
+            messages=self._messages,
+            usage=usage,
+            trigger=trigger,
+        )
+
+    async def maintain_budget(
+        self,
+        llm: "BaseChatModel",
+        *,
+        trigger: str | None = None,
+    ) -> BudgetAssessment:
+        """Apply sliding-window cleanup and compaction from one budget assessment path."""
+        assessment = await self.assess_budget(model=llm.model, trigger=trigger)
+
+        should_slide = self.sliding_window_messages is not None and (
+            assessment.needs_warning or len(self._messages) > self.sliding_window_messages
+        )
+        if should_slide:
+            did_slide = await self.apply_sliding_window_by_messages(
+                keep_count=self.sliding_window_messages or 0,
+                llm=llm,
+            )
+            if did_slide:
+                assessment = await self.assess_budget(
+                    model=llm.model,
+                    trigger="sliding_window",
+                )
+
+        if assessment.needs_compaction:
+            compacted = await self.check_and_compact(llm, trigger="compact_threshold")
+            if compacted:
+                assessment = await self.assess_budget(
+                    model=llm.model,
+                    trigger="post_compaction",
+                )
+
+        return assessment
 
     async def check_and_compact(
         self,
         llm: "BaseChatModel",
-        usage: "ChatInvokeUsage | None",
+        usage: "ChatInvokeUsage | None" = None,
+        *,
+        trigger: str | None = None,
     ) -> bool:
-        """Check token usage and compact if threshold exceeded."""
+        """Compact when the unified budget engine says the context is too large."""
         if self._compaction_service is None:
             return False
+        if not self._compaction_service.config.enabled:
+            return False
+        if usage is not None:
+            self._compaction_service.update_usage(usage)
 
-        self._compaction_service.update_usage(usage)
+        assessment = await self.assess_budget(model=llm.model, usage=usage, trigger=trigger)
+        if not assessment.needs_compaction:
+            return False
 
-        new_messages, result = await self._compaction_service.check_and_compact(
-            self._messages,
-            llm,
-        )
+        result = await self._compaction_service.compact(self._messages, llm)
+        summary_text = (result.summary or "").strip()
+        if not summary_text:
+            return False
 
-        if result.compacted:
-            summary_text = (result.summary or "").strip()
-            if not summary_text:
-                return False
-            pinned = [m for m in self._messages if m.role in ("system", "developer")]
-            summary_message = UserMessage(content=summary_text)
-            self.replace_messages([*pinned, summary_message])
-            return True
-
-        return False
+        pinned = [m for m in self._messages if m.role in ("system", "developer")]
+        summary_message = UserMessage(content=summary_text)
+        self.replace_messages([*pinned, summary_message])
+        if self._budget_engine is not None:
+            self._budget_engine.note_trigger(trigger or "compact_threshold")
+        return True
 
     def estimate_tokens_simple(self) -> int:
         """Very rough token estimate with basic CJK awareness."""
@@ -375,23 +479,7 @@ class ContextManager:
 
     async def check_and_compact_estimated(self, llm: "BaseChatModel") -> bool:
         """Estimate token usage and compact if threshold exceeded."""
-        if self._compaction_service is None:
-            return False
-
-        estimated = self.estimate_tokens_simple()
-        threshold = await self._compaction_service.get_threshold_for_model(llm.model)
-        if estimated < threshold:
-            return False
-
-        usage = ChatInvokeUsage(
-            prompt_tokens=estimated,
-            prompt_cached_tokens=0,
-            prompt_cache_creation_tokens=0,
-            prompt_image_tokens=0,
-            completion_tokens=0,
-            total_tokens=estimated,
-        )
-        return await self.check_and_compact(llm, usage)
+        return await self.check_and_compact(llm, trigger="estimated_compaction")
 
     async def apply_sliding_window_by_messages(
         self,
@@ -425,13 +513,73 @@ class ContextManager:
                 continue
             countable_indices.append(i)
 
-        if len(countable_indices) <= keep_count + max(0, buffer):
+        if not countable_indices:
             return False
 
-        keep_indices = set(countable_indices[-keep_count:])
-        keep_indices = self._expand_keep_indices_for_tool_pairs(messages, keep_indices)
+        tail_budget: int | None = None
+        if self._budget_engine is not None:
+            assessment = await self._budget_engine.assess(model=llm.model, messages=messages)
+            tail_budget = assessment.warn_threshold
+
+        if len(countable_indices) <= keep_count + max(0, buffer) and tail_budget is None:
+            return False
+
+        keep_indices: set[int] = set()
+        kept_count = 0
+        kept_tokens = 0
+        stopped_for_budget = False
+
+        def estimate_subset_tokens(indices: Sequence[int]) -> int:
+            subset = [messages[i] for i in indices]
+            if self._budget_engine is not None:
+                return self._budget_engine.estimate_tokens_for_messages(subset)
+            total = 0
+            for item in subset:
+                try:
+                    serialized = item.model_dump_json()
+                except Exception:
+                    serialized = str(item)
+                total += max(1, len(serialized) // 4) + 4
+            return total
+
+        for index in reversed(countable_indices):
+            candidate_indices = self._expand_keep_indices_for_tool_pairs(
+                messages,
+                keep_indices | {index},
+            )
+            new_indices = [i for i in candidate_indices if i not in keep_indices and i in countable_indices]
+            if not new_indices:
+                continue
+
+            candidate_tokens = kept_tokens + estimate_subset_tokens(new_indices)
+            if kept_count >= keep_count:
+                break
+            if tail_budget is not None and kept_count > 0 and candidate_tokens > tail_budget:
+                stopped_for_budget = True
+                break
+
+            keep_indices = candidate_indices
+            kept_count += len(new_indices)
+            kept_tokens = candidate_tokens
+
+        if not keep_indices:
+            keep_indices = {countable_indices[-1]}
+            keep_indices = self._expand_keep_indices_for_tool_pairs(messages, keep_indices)
+
+        summarized_indices = [i for i in countable_indices if i not in keep_indices]
+        if not summarized_indices:
+            return False
+
+        if (
+            len(countable_indices) <= keep_count + max(0, buffer)
+            and tail_budget is not None
+            and kept_tokens < tail_budget
+            and not stopped_for_budget
+        ):
+            return False
+
         cutoff_index = min(keep_indices)
-        head = [messages[i] for i in countable_indices if i not in keep_indices]
+        head = [messages[i] for i in summarized_indices]
 
         result = await self._compaction_service.compact(head, llm)
         summary_text = (result.summary or "").strip()
@@ -468,6 +616,8 @@ class ContextManager:
             return False
 
         self.replace_messages(new_messages)
+        if self._budget_engine is not None:
+            self._budget_engine.note_trigger("sliding_window")
         return True
 
     async def apply_sliding_window_by_rounds(

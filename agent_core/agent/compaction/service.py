@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from agent_core.agent.budget import ContextBudgetEngine
 from agent_core.agent.compaction.models import (
     CompactionConfig,
     CompactionResult,
@@ -22,17 +23,13 @@ from agent_core.llm.messages import (
     BaseMessage,
     UserMessage,
 )
-from config.model_config import get_model_limits
-
 if TYPE_CHECKING:
+    from agent_core.agent.budget import BudgetAssessment
     from agent_core.llm.base import BaseChatModel
     from agent_core.llm.views import ChatInvokeUsage
     from agent_core.tokens import TokenCost
 
 log = logging.getLogger(__name__)
-
-# Default context window if model info not available
-DEFAULT_CONTEXT_WINDOW = 128_000
 
 
 @dataclass
@@ -58,11 +55,17 @@ class CompactionService:
     config: CompactionConfig = field(default_factory=CompactionConfig)
     llm: BaseChatModel | None = None
     token_cost: TokenCost | None = None
+    budget_engine: ContextBudgetEngine | None = None
 
     # Internal state
     _last_usage: TokenUsage = field(default_factory=TokenUsage, repr=False)
-    _context_limit_cache: dict[str, int] = field(default_factory=dict, repr=False)
-    _threshold_cache: dict[str, int] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.budget_engine is None:
+            self.budget_engine = ContextBudgetEngine(
+                config=self.config,
+                token_cost=self.token_cost,
+            )
 
     def update_usage(self, usage: ChatInvokeUsage | None) -> None:
         """Update the tracked token usage from a response.
@@ -73,93 +76,56 @@ class CompactionService:
         self._last_usage = TokenUsage.from_usage(usage)
 
     def estimate_tokens_for_messages(self, messages: list[BaseMessage]) -> int:
-        """Estimate token usage for a message history.
-
-        This is a lightweight heuristic used for model-switch preflight checks.
-        It does not need to be exact; it only needs to be conservative enough
-        to trigger compaction when conversation history is likely too large.
-        """
-        if not messages:
+        """Estimate token usage for a message history."""
+        if self.budget_engine is None:
             return 0
-
-        total = 0
-        for msg in messages:
-            try:
-                serialized = msg.model_dump_json()
-            except Exception:
-                serialized = str(msg)
-
-            # Rough estimate: 1 token ~= 4 characters, plus small per-message overhead.
-            total += max(1, len(serialized) // 4) + 4
-
-        return total
+        return self.budget_engine.estimate_tokens_for_messages(messages)
 
     async def assess_messages_for_model(
         self,
         messages: list[BaseMessage],
         model: str,
-    ) -> dict[str, int | float | bool]:
+    ) -> dict[str, int | float | bool | str | None]:
         """Assess whether a message history is likely to fit a target model."""
-        context_limit = await self.get_model_context_limit(model)
-        threshold = await self.get_threshold_for_model(model)
-        estimated_tokens = self.estimate_tokens_for_messages(messages)
-
-        threshold_utilization = estimated_tokens / max(1, threshold)
-        context_utilization = estimated_tokens / max(1, context_limit)
-
+        if self.budget_engine is None:
+            return {
+                "context_limit": 0,
+                "threshold": 0,
+                "estimated_tokens": 0,
+                "threshold_utilization": 0.0,
+                "context_utilization": 0.0,
+                "exceeds_threshold": False,
+                "exceeds_context_limit": False,
+                "warn_threshold": 0,
+                "hard_threshold": 0,
+                "trigger": None,
+            }
+        assessment = await self.budget_engine.assess(model=model, messages=messages)
         return {
-            "context_limit": context_limit,
-            "threshold": threshold,
-            "estimated_tokens": estimated_tokens,
-            "threshold_utilization": threshold_utilization,
-            "context_utilization": context_utilization,
-            "exceeds_threshold": estimated_tokens >= threshold,
-            "exceeds_context_limit": estimated_tokens >= context_limit,
+            "context_limit": assessment.context_limit,
+            "threshold": assessment.compact_threshold,
+            "estimated_tokens": assessment.estimated_tokens,
+            "threshold_utilization": assessment.threshold_utilization,
+            "context_utilization": assessment.context_utilization,
+            "exceeds_threshold": assessment.needs_compaction,
+            "exceeds_context_limit": assessment.context_utilization >= 1.0,
+            "warn_threshold": assessment.warn_threshold,
+            "hard_threshold": assessment.hard_threshold,
+            "trigger": assessment.trigger,
         }
 
     async def get_model_context_limit(self, model: str) -> int:
         """Get the context window limit for a model."""
-        # Check cache first
-        if model in self._context_limit_cache:
-            return self._context_limit_cache[model]
-
-        context_limit = DEFAULT_CONTEXT_WINDOW
-        preset_max_input_tokens, _ = get_model_limits(model)
-        if preset_max_input_tokens is not None:
-            context_limit = preset_max_input_tokens
-
-        if context_limit == DEFAULT_CONTEXT_WINDOW and self.token_cost is not None:
-            try:
-                pricing = await self.token_cost.get_model_pricing(model)
-                if pricing:
-                    # Use max_input_tokens if available, otherwise max_tokens
-                    if pricing.max_input_tokens:
-                        context_limit = pricing.max_input_tokens
-                    elif pricing.max_tokens:
-                        context_limit = pricing.max_tokens
-            except Exception as e:
-                log.debug(f"Failed to fetch model pricing for {model}: {e}")
-
-        # Cache the result
-        self._context_limit_cache[model] = context_limit
-        log.debug(f"Model {model} context limit: {context_limit}")
-        return context_limit
+        if self.budget_engine is None:
+            return 0
+        return await self.budget_engine.get_model_context_limit(model)
 
     async def get_threshold_for_model(self, model: str) -> int:
         """Get the compaction threshold for a specific model."""
-        # Check cache first
-        if model in self._threshold_cache:
-            return self._threshold_cache[model]
-
-        context_limit = await self.get_model_context_limit(model)
-        threshold = int(context_limit * self.config.threshold_ratio)
-
-        # Cache the result
-        self._threshold_cache[model] = threshold
-        log.debug(
-            f"Model {model} compaction threshold: {threshold} ({self.config.threshold_ratio * 100:.0f}% of {context_limit})"
-        )
-        return threshold
+        if self.budget_engine is None:
+            return 0
+        assessment = await self.budget_engine.assess(model=model, messages=[])
+        return assessment.compact_threshold
 
     async def should_compact(self, model: str) -> bool:
         """Check if compaction should be triggered based on current token usage.
@@ -170,13 +136,17 @@ class CompactionService:
         if not self.config.enabled:
             return False
 
-        threshold = await self.get_threshold_for_model(model)
+        if self.budget_engine is None:
+            return False
+
+        assessment = await self.budget_engine.assess(model=model, messages=[])
+        threshold = assessment.compact_threshold
         should = self._last_usage.total_tokens >= threshold
 
         if should:
             log.info(
                 f"Compaction triggered: {self._last_usage.total_tokens} tokens >= {threshold} threshold "
-                f"(model: {model}, ratio: {self.config.threshold_ratio})"
+                f"(model: {model}, ratio: {self.budget_engine.compact_threshold_ratio})"
             )
 
         return should
@@ -355,5 +325,5 @@ class CompactionService:
         Clears tracked token usage and cached thresholds.
         """
         self._last_usage = TokenUsage()
-        self._context_limit_cache.clear()
-        self._threshold_cache.clear()
+        if self.budget_engine is not None:
+            self.budget_engine.reset()

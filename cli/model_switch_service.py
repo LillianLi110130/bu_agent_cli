@@ -375,6 +375,7 @@ class ModelSwitchService:
             fallback_count += message_fallback
             if changed:
                 self._agent._context.rebuild_role_index()
+                self._agent._context.invalidate_budget_baseline()
 
         stripped = self._agent._context.strip_user_image_inputs()
         if stripped:

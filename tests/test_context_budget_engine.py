@@ -1,0 +1,166 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from types import MethodType
+
+import pytest
+
+from agent_core.agent import Agent, CompactionConfig, ContextBudgetEngine
+from agent_core.llm.messages import AssistantMessage, BaseMessage, ToolMessage, UserMessage
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
+
+
+class FakeLLM:
+    def __init__(
+        self,
+        *,
+        responses: list[ChatInvokeCompletion] | None = None,
+        stream_chunks: list[ChatInvokeCompletionChunk] | None = None,
+        model: str = "fake-model",
+    ) -> None:
+        self.responses = list(responses or [])
+        self.stream_chunks = list(stream_chunks or [])
+        self.invocations: list[list[BaseMessage]] = []
+        self.stream_invocations: list[list[BaseMessage]] = []
+        self.model = model
+
+    @property
+    def provider(self) -> str:
+        return "fake"
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def ainvoke(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
+        self.invocations.append(list(messages))
+        if not self.responses:
+            raise AssertionError("No scripted response left for FakeLLM")
+        return self.responses.pop(0)
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        self.stream_invocations.append(list(messages))
+        for chunk in list(self.stream_chunks):
+            yield chunk
+
+
+def _usage(prompt_tokens: int, completion_tokens: int = 10) -> ChatInvokeUsage:
+    return ChatInvokeUsage(
+        prompt_tokens=prompt_tokens,
+        prompt_cached_tokens=0,
+        prompt_cache_creation_tokens=0,
+        prompt_image_tokens=0,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_budget_engine_uses_real_prompt_baseline_plus_appended_messages():
+    engine = ContextBudgetEngine(config=CompactionConfig())
+    prompt_messages = [UserMessage(content="analyze this file")]
+
+    engine.record_usage(model="baseline-model", messages=prompt_messages, usage=_usage(120))
+
+    current_messages = [
+        *prompt_messages,
+        AssistantMessage(content="I will inspect the code"),
+        ToolMessage(tool_call_id="call-1", tool_name="read", content="long tool output"),
+    ]
+    assessment = await engine.assess(model="target-model", messages=current_messages)
+
+    incremental = engine.estimate_tokens_for_messages(current_messages[len(prompt_messages) :])
+    assert assessment.baseline_prompt_tokens == 120
+    assert assessment.incremental_tokens == incremental
+    assert assessment.estimated_tokens == 120 + incremental
+
+
+@pytest.mark.asyncio
+async def test_query_runtime_loop_uses_unified_budget_maintenance_trigger():
+    llm = FakeLLM(responses=[ChatInvokeCompletion(content="done", usage=_usage(64))])
+    agent = Agent(llm=llm, tools=[])
+    triggers: list[str | None] = []
+
+    async def fake_maintain_budget(self, llm, *, trigger=None):
+        triggers.append(trigger)
+        return await self.assess_budget(model=llm.model, trigger=trigger)
+
+    agent._context.maintain_budget = MethodType(fake_maintain_budget, agent._context)
+
+    result = await agent.query("hello")
+
+    assert result == "done"
+    assert triggers == ["post_response"]
+
+
+@pytest.mark.asyncio
+async def test_query_stream_delta_uses_unified_budget_maintenance_trigger():
+    llm = FakeLLM(
+        stream_chunks=[
+            ChatInvokeCompletionChunk(delta="done"),
+            ChatInvokeCompletionChunk(usage=_usage(64)),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[])
+    triggers: list[str | None] = []
+
+    async def fake_maintain_budget(self, llm, *, trigger=None):
+        triggers.append(trigger)
+        return await self.assess_budget(model=llm.model, trigger=trigger)
+
+    agent._context.maintain_budget = MethodType(fake_maintain_budget, agent._context)
+
+    events = [event async for event in agent.query_stream_delta("hello")]
+
+    assert events[-1].content == "done"
+    assert triggers == ["post_stream_response"]
+
+
+@pytest.mark.asyncio
+async def test_preflight_model_switch_reuses_budget_engine_estimate(monkeypatch: pytest.MonkeyPatch):
+    llm = FakeLLM(model="current-model")
+    agent = Agent(llm=llm, tools=[], compaction=CompactionConfig(threshold_ratio=0.8))
+    prompt_messages = [UserMessage(content="inspect repo")]
+    agent.load_history(prompt_messages)
+    agent._context.record_prompt_usage(
+        model=agent.llm.model,
+        messages=prompt_messages,
+        usage=_usage(180),
+    )
+    agent._context.add_message(AssistantMessage(content="Inspecting"))
+    agent._context.add_message(
+        ToolMessage(tool_call_id="call-1", tool_name="read", content="tool output payload")
+    )
+
+    compact_calls: list[bool] = []
+
+    async def fake_compact_now() -> bool:
+        compact_calls.append(True)
+        return False
+
+    assert agent._context._budget_engine is not None
+    agent._context._budget_engine._context_limit_cache["target-model"] = 220
+    agent._compact_messages_now = fake_compact_now  # type: ignore[method-assign]
+
+    preflight = await agent.preflight_model_switch("target-model", utilization_limit=0.5)
+
+    expected_incremental = agent._context._budget_engine.estimate_tokens_for_messages(
+        agent.messages[len(prompt_messages) :]
+    )
+    assert preflight.ok is False
+    assert preflight.estimated_tokens == 180 + expected_incremental
+    assert preflight.threshold == int(220 * 0.8)
+    assert compact_calls == [True]
+    assert "automatic compaction failed" in (preflight.reason or "")

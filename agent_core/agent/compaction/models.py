@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from agent_core.llm.views import ChatInvokeUsage
 
-# Default ratio of context window to use before triggering compaction
+# Default ratios of context window to use for budget stages.
 DEFAULT_THRESHOLD_RATIO = 0.80
+DEFAULT_WARN_THRESHOLD = 0.65
+DEFAULT_HARD_THRESHOLD = 0.92
 
 DEFAULT_SUMMARY_PROMPT = """You have been working on the task described above but have not yet completed it. Write a continuation summary that will allow you (or another instance of yourself) to resume work efficiently in a future context window where the conversation history will be replaced with this summary. Your summary should be structured, concise, and actionable. Include:
 
@@ -54,14 +56,19 @@ class CompactionConfig:
 
     Attributes:
             enabled: Whether compaction is enabled. Defaults to True.
-            threshold_ratio: Ratio of context window at which compaction triggers (0.0-1.0).
-                    E.g., 0.80 means compact when context reaches 80% of model's limit.
+            threshold_ratio: Backward-compatible alias for the compaction threshold.
+            warn_threshold: Ratio of context window at which sliding-window cleanup may start.
+            compact_threshold: Ratio of context window at which compaction triggers.
+            hard_threshold: Ratio of context window at which the context is in a danger zone.
             model: Optional model to use for generating summaries. If None, uses the agent's model.
             summary_prompt: Custom prompt for summary generation.
     """
 
     enabled: bool = True
     threshold_ratio: float = DEFAULT_THRESHOLD_RATIO
+    warn_threshold: float = DEFAULT_WARN_THRESHOLD
+    compact_threshold: float | None = None
+    hard_threshold: float = DEFAULT_HARD_THRESHOLD
     model: str | None = None
     summary_prompt: str = DEFAULT_SUMMARY_PROMPT
 

@@ -7,6 +7,7 @@ from agent_core.agent.compaction import (
     CompactionResult,
     CompactionService,
 )
+from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
 from agent_core.agent.context import ContextManager
 from agent_core.agent.hitl import (
     HumanApprovalDecision,
@@ -75,6 +76,8 @@ __all__ = [
     "CompactionConfig",
     "CompactionResult",
     "CompactionService",
+    "BudgetAssessment",
+    "ContextBudgetEngine",
     # Config and Registry
     "AgentConfig",
     "parse_agent_config",
