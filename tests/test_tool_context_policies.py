@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from agent_core import Agent
+from agent_core.tools import tool
 from agent_core.llm.messages import Function, ToolCall
 from cli.session_runtime import CLISessionRuntime
 from cli.worker.runtime_factory import EchoLLM
@@ -144,3 +145,94 @@ async def test_read_context_policy_keeps_small_output_inline(
 
     assert tool_message.text == raw_result
     assert "[Lines 1-3 of 3]" in tool_message.text
+
+
+@pytest.mark.asyncio
+async def test_read_excel_context_policy_summarizes_large_match_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+
+    @tool(
+        "Read workbook",
+        name="read_excel",
+        context_policy="summarize",
+        context_max_inline_chars=2200,
+    )
+    async def fake_read_excel() -> str:
+        payload = {
+            "resolved_path": "/workspace/orders.xlsx",
+            "sheet_names": ["Sheet1"],
+            "selected_sheet": "Sheet1",
+            "preview_limits": {
+                "find_text": "是",
+                "offset_row": 1,
+                "context_rows": 0,
+                "max_matches": 500,
+                "max_rows": 10,
+                "max_cols": 15,
+            },
+            "matches": [
+                {
+                    "sheet": "Sheet1",
+                    "row": index,
+                    "matched_columns": [7],
+                    "preview_rows": [
+                        {
+                            "row": index,
+                            "values": [
+                                f"工单{index}",
+                                "托管业务机房维护申请",
+                                "是",
+                                "定期提数",
+                                "2025-01-01",
+                                "附加说明" * 8,
+                            ],
+                        }
+                    ],
+                }
+                for index in range(2, 202)
+            ],
+            "sheets": [
+                {
+                    "name": "Sheet1",
+                    "row_count": 1955,
+                    "column_count": 42,
+                    "preview_rows": [
+                        {"row": 1, "values": ["标题1", "标题2", "标题3"]},
+                        {"row": 2, "values": ["示例", "是", "定期提数"]},
+                    ],
+                }
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(sandbox)
+    agent = Agent(
+        llm=EchoLLM(prefix="echo:"),
+        tools=[fake_read_excel],
+        system_prompt="test",
+    )
+    agent.bind_session_runtime(runtime)
+
+    tool_message = await agent._execute_tool_call(
+        ToolCall(
+            id="call-excel",
+            function=Function(name="read_excel", arguments="{}"),
+        )
+    )
+
+    assert "Excel workbook: /workspace/orders.xlsx" in tool_message.text
+    assert "Matches returned: 200" in tool_message.text
+    assert "Sheet summary: Sheet1 rows=1955, cols=42" in tool_message.text
+    assert "Top matches:" in tool_message.text
+    assert "Full workbook result:" in tool_message.text
+
+    artifact_path = runtime.artifacts_dir / "tool" / "call-excel.json"
+    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    assert artifact_payload["tool_name"] == "read_excel"
+    assert "\"matches\"" in str(artifact_payload["content"])

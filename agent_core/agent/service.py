@@ -579,6 +579,74 @@ class Agent:
             )
         return "\n".join(summary_lines)
 
+    def _summarize_excel_output(
+        self,
+        raw_text: str,
+        *,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        try:
+            payload = json.loads(raw_text)
+        except Exception:
+            return self._summarize_generic_tool_output(
+                "read_excel",
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+
+        sheet_names = payload.get("sheet_names", [])
+        selected_sheet = payload.get("selected_sheet")
+        preview_limits = payload.get("preview_limits", {})
+        matches = payload.get("matches", [])
+        sheets = payload.get("sheets", [])
+
+        summary_lines = [
+            f"Excel workbook: {payload.get('resolved_path', '(unknown)')}",
+            f"Sheets: {', '.join(str(name) for name in sheet_names) if sheet_names else '(none)'}",
+            f"Selected sheet: {selected_sheet or 'all sheets'}",
+            (
+                "Preview limits: "
+                f"offset_row={preview_limits.get('offset_row')}, "
+                f"context_rows={preview_limits.get('context_rows')}, "
+                f"max_matches={preview_limits.get('max_matches')}, "
+                f"max_rows={preview_limits.get('max_rows')}, "
+                f"max_cols={preview_limits.get('max_cols')}"
+            ),
+            f"Matches returned: {len(matches)}",
+        ]
+
+        for sheet in sheets[:3]:
+            preview_rows = sheet.get("preview_rows", [])
+            summary_lines.append(
+                "Sheet summary: "
+                f"{sheet.get('name', '(unknown)')} "
+                f"rows={sheet.get('row_count', '?')}, "
+                f"cols={sheet.get('column_count', '?')}, "
+                f"preview_rows={len(preview_rows)}"
+            )
+
+        if matches:
+            summary_lines.append("Top matches:")
+            for match in matches[:5]:
+                preview_rows = match.get("preview_rows", [])
+                preview_parts: list[str] = []
+                for row in preview_rows[:2]:
+                    values = row.get("values", [])
+                    if isinstance(values, list):
+                        preview_parts.append(" | ".join(str(value) for value in values[:6]))
+                preview_text = " || ".join(preview_parts) if preview_parts else "(no preview rows)"
+                preview_text = self._truncate_tool_text(preview_text, max_chars=240)
+                summary_lines.append(
+                    f"- sheet={match.get('sheet')} row={match.get('row')} "
+                    f"cols={match.get('matched_columns')} preview={preview_text}"
+                )
+
+        if artifact_path:
+            summary_lines.append(f"Full workbook result: {artifact_path}")
+        return "\n".join(summary_lines)
+
     def _summarize_generic_tool_output(
         self,
         tool_name: str,
@@ -662,6 +730,12 @@ class Agent:
         if normalized_policy == "summarize":
             if tool.name == "bash":
                 summarized = self._summarize_bash_output(
+                    raw_result,
+                    artifact_path=artifact_path,
+                    max_inline_chars=max_inline_chars,
+                )
+            elif tool.name == "read_excel":
+                summarized = self._summarize_excel_output(
                     raw_result,
                     artifact_path=artifact_path,
                     max_inline_chars=max_inline_chars,

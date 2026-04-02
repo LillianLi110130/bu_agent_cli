@@ -523,6 +523,8 @@ def _format_workbook_error(path_name: str, error: Exception) -> str:
 @tool(
     "Read an Excel workbook from a resolved path and return sheet names, preview rows, "
     "and optional text matches.",
+    context_policy="summarize",
+    context_max_inline_chars=2200,
     args_schema=ReadExcelParams,
 )
 async def read_excel(
