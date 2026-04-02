@@ -4,7 +4,7 @@ Models for the compaction subservice.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -15,36 +15,39 @@ DEFAULT_THRESHOLD_RATIO = 0.80
 DEFAULT_WARN_THRESHOLD = 0.65
 DEFAULT_HARD_THRESHOLD = 0.92
 
-DEFAULT_SUMMARY_PROMPT = """You have been working on the task described above but have not yet completed it. Write a continuation summary that will allow you (or another instance of yourself) to resume work efficiently in a future context window where the conversation history will be replaced with this summary. Your summary should be structured, concise, and actionable. Include:
+DEFAULT_SUMMARY_PROMPT = """You are compacting an unfinished coding-agent conversation into a working set that will replace older history.
 
-1. Task Overview
-The user's core request and success criteria
-Any clarifications or constraints they specified
+Return exactly three blocks in this order and do not include markdown fences:
 
-2. Current State
-What has been completed so far
-Files created, modified, or analyzed (with paths if relevant)
-Key outputs or artifacts produced
+<summary>
+A concise continuation summary for another coding agent. Focus on what the user wants, what has already been done, key technical findings, and the next concrete steps.
+</summary>
 
-3. Important Discoveries
-Technical constraints or requirements uncovered
-Decisions made and their rationale
-Errors encountered and how they were resolved
-What approaches were tried that didn't work (and why)
+<working_state>
+{
+  "user_goal": "string",
+  "user_constraints": ["string"],
+  "confirmed_conclusions": ["string"],
+  "files_reviewed": ["string"],
+  "files_modified": ["string"],
+  "failed_attempts": ["string"],
+  "remaining_actions": ["string"],
+  "artifact_refs": ["string"],
+  "recent_history_notes": ["string"]
+}
+</working_state>
 
-4. Next Steps
-Specific actions needed to complete the task
-Any blockers or open questions to resolve
-Priority order if multiple steps remain
+<checkpoint_ref>
+compaction-inline-short-id
+</checkpoint_ref>
 
-5. Context to Preserve
-User preferences or style requirements
-Domain-specific details that aren't obvious
-Any promises made to the user
-
-Be concise but complete - err on the side of including information that would prevent duplicate work or repeated mistakes. Write in a way that enables immediate resumption of the task.
-
-Wrap your summary in <summary></summary> tags."""
+Rules:
+- The task is usually a coding task. Preserve concrete file paths, decisions, unresolved bugs, and pending implementation steps.
+- Keep the summary compact but sufficient to continue work without repeating already-completed investigation.
+- In working_state, use empty strings or empty arrays when information is unavailable.
+- Do not invent files, refs, or decisions.
+- recent_history_notes should only capture a few very recent active threads that matter if the preserved tail is lost.
+"""
 
 
 @dataclass
@@ -69,8 +72,24 @@ class CompactionConfig:
     warn_threshold: float = DEFAULT_WARN_THRESHOLD
     compact_threshold: float | None = None
     hard_threshold: float = DEFAULT_HARD_THRESHOLD
+    preserve_recent_messages: int = 6
     model: str | None = None
     summary_prompt: str = DEFAULT_SUMMARY_PROMPT
+
+
+@dataclass
+class CompactionWorkingState:
+    """Structured working set extracted from a compaction response."""
+
+    user_goal: str = ""
+    user_constraints: list[str] = field(default_factory=list)
+    confirmed_conclusions: list[str] = field(default_factory=list)
+    files_reviewed: list[str] = field(default_factory=list)
+    files_modified: list[str] = field(default_factory=list)
+    failed_attempts: list[str] = field(default_factory=list)
+    remaining_actions: list[str] = field(default_factory=list)
+    artifact_refs: list[str] = field(default_factory=list)
+    recent_history_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -82,12 +101,16 @@ class CompactionResult:
             original_tokens: Token count before compaction.
             new_tokens: Token count after compaction (estimated from summary output tokens).
             summary: The generated summary text (if compaction was performed).
+            working_state: Structured working set extracted from the summary.
+            checkpoint_ref: Logical checkpoint ref for the compacted interval.
     """
 
     compacted: bool
     original_tokens: int = 0
     new_tokens: int = 0
     summary: str | None = None
+    working_state: CompactionWorkingState | None = None
+    checkpoint_ref: str | None = None
 
 
 @dataclass

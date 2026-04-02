@@ -16,6 +16,13 @@ class FakeCompactionService:
         self.compact_llms.append(llm)
         return SimpleNamespace(summary="summary")
 
+    def merge_results(self, previous, current):
+        return current
+
+    def create_compacted_messages(self, result):
+        summary = result.summary if hasattr(result, "summary") else str(result)
+        return [UserMessage(content=summary)]
+
 
 @pytest.mark.asyncio
 async def test_sliding_window_keeps_assistant_tool_pair_together():
