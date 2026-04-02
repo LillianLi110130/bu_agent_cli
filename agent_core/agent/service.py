@@ -519,14 +519,41 @@ class Agent:
         artifact_path: str | None,
         max_inline_chars: int,
     ) -> str:
+        payload = self._parse_json_tool_output(raw_text)
+        if payload is None:
+            return self._build_fallback_bash_summary(
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+
+        summary_lines = self._build_bash_summary_lines(payload)
+        if artifact_path:
+            summary_lines.append(f"Full output: {artifact_path}")
+        return "\n".join(summary_lines)
+
+    @staticmethod
+    def _parse_json_tool_output(raw_text: str) -> dict | None:
         try:
             payload = json.loads(raw_text)
         except Exception:
-            summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
-            if artifact_path:
-                return f"Bash output summary:\n{summary}\nFull output: {artifact_path}"
-            return f"Bash output summary:\n{summary}"
+            return None
+        return payload if isinstance(payload, dict) else None
 
+    def _build_fallback_bash_summary(
+        self,
+        raw_text: str,
+        *,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
+        summary_lines = ["Bash output summary:", summary]
+        if artifact_path:
+            summary_lines.append(f"Full output: {artifact_path}")
+        return "\n".join(summary_lines)
+
+    def _build_bash_summary_lines(self, payload: dict) -> list[str]:
         stdout = str(payload.get("stdout", "") or "")
         stderr = str(payload.get("stderr", "") or "")
         command = str(payload.get("command", "") or "")
@@ -541,19 +568,24 @@ class Agent:
             f"Exit code: {returncode if returncode is not None else 'timeout'}",
             f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
         ]
-        if stdout:
-            summary_lines.append(
-                f"Stdout ({len(stdout)} chars):\n{self._collect_signal_lines(stdout)}"
-            )
-        if stderr:
-            summary_lines.append(
-                f"Stderr ({len(stderr)} chars):\n{self._collect_signal_lines(stderr)}"
-            )
+        self._append_bash_stream_summary(summary_lines, label="Stdout", stream_text=stdout)
+        self._append_bash_stream_summary(summary_lines, label="Stderr", stream_text=stderr)
         if not stdout and not stderr:
             summary_lines.append("No stdout or stderr.")
-        if artifact_path:
-            summary_lines.append(f"Full output: {artifact_path}")
-        return "\n".join(summary_lines)
+        return summary_lines
+
+    def _append_bash_stream_summary(
+        self,
+        summary_lines: list[str],
+        *,
+        label: str,
+        stream_text: str,
+    ) -> None:
+        if not stream_text:
+            return
+        summary_lines.append(
+            f"{label} ({len(stream_text)} chars):\n{self._collect_signal_lines(stream_text)}"
+        )
 
     def _summarize_read_output(
         self,
@@ -672,10 +704,7 @@ class Agent:
         raw_result,
         is_error: bool,
     ) -> ToolMessage:
-        policy = tool.context_config.policy
-        is_ephemeral = bool(tool.ephemeral or policy == "ephemeral")
-        normalized_policy = "raw" if policy == "ephemeral" else policy
-
+        normalized_policy, is_ephemeral = self._normalize_tool_context_policy(tool)
         raw_message = ToolMessage(
             tool_call_id=tool_call.id,
             tool_name=tool.name,
@@ -683,73 +712,170 @@ class Agent:
             is_error=is_error,
             ephemeral=is_ephemeral,
         )
-
-        max_inline_chars = tool.context_config.max_inline_chars
-        content_size = self._estimate_tool_content_size(raw_result)
-        force_artifact = normalized_policy in {"summarize", "store_only"} or (
-            normalized_policy == "trim" and content_size > max_inline_chars
+        artifact_path = self._persist_tool_context_artifact(
+            raw_message,
+            raw_result=raw_result,
+            normalized_policy=normalized_policy,
+            max_inline_chars=tool.context_config.max_inline_chars,
         )
-        artifact_path = self._context.persist_tool_artifact(raw_message, force=force_artifact)
 
         if not isinstance(raw_result, str):
-            if normalized_policy == "store_only" and artifact_path:
-                return raw_message.model_copy(
-                    update={
-                        "content": f"{tool.name} output stored at {artifact_path}.",
-                    }
-                )
-            return raw_message
+            return self._apply_non_string_tool_context_policy(
+                tool=tool,
+                raw_message=raw_message,
+                normalized_policy=normalized_policy,
+                artifact_path=artifact_path,
+            )
 
+        return self._apply_string_tool_context_policy(
+            tool=tool,
+            raw_message=raw_message,
+            raw_result=raw_result,
+            normalized_policy=normalized_policy,
+            artifact_path=artifact_path,
+            max_inline_chars=tool.context_config.max_inline_chars,
+        )
+
+    def _normalize_tool_context_policy(self, tool: Tool) -> tuple[str, bool]:
+        policy = tool.context_config.policy
+        is_ephemeral = bool(tool.ephemeral or policy == "ephemeral")
+        normalized_policy = "raw" if policy == "ephemeral" else policy
+        return normalized_policy, is_ephemeral
+
+    def _persist_tool_context_artifact(
+        self,
+        raw_message: ToolMessage,
+        *,
+        raw_result,
+        normalized_policy: str,
+        max_inline_chars: int,
+    ) -> str | None:
+        content_size = self._estimate_tool_content_size(raw_result)
+        should_force_artifact = normalized_policy in {"summarize", "store_only"} or (
+            normalized_policy == "trim" and content_size > max_inline_chars
+        )
+        return self._context.persist_tool_artifact(raw_message, force=should_force_artifact)
+
+    def _apply_non_string_tool_context_policy(
+        self,
+        *,
+        tool: Tool,
+        raw_message: ToolMessage,
+        normalized_policy: str,
+        artifact_path: str | None,
+    ) -> ToolMessage:
+        if normalized_policy == "store_only" and artifact_path:
+            return raw_message.model_copy(
+                update={"content": f"{tool.name} output stored at {artifact_path}."}
+            )
+        return raw_message
+
+    def _apply_string_tool_context_policy(
+        self,
+        *,
+        tool: Tool,
+        raw_message: ToolMessage,
+        raw_result: str,
+        normalized_policy: str,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> ToolMessage:
         if normalized_policy == "raw":
             return raw_message
-
         if normalized_policy == "store_only":
-            stored_note = f"{tool.name} output omitted from context."
-            if artifact_path:
-                stored_note = f"{stored_note} Full output: {artifact_path}"
-            return raw_message.model_copy(update={"content": stored_note})
-
+            return raw_message.model_copy(
+                update={"content": self._build_store_only_note(tool.name, artifact_path)}
+            )
         if normalized_policy == "trim":
-            if len(raw_result) <= max_inline_chars:
-                return raw_message
-            if tool.name == "read":
-                summarized = self._summarize_read_output(
-                    raw_result,
-                    artifact_path=artifact_path,
-                    max_inline_chars=max_inline_chars,
-                )
-            else:
-                summarized = self._summarize_generic_tool_output(
-                    tool.name,
-                    raw_result,
-                    artifact_path=artifact_path,
-                    max_inline_chars=max_inline_chars,
-                )
-            return raw_message.model_copy(update={"content": summarized})
-
+            return self._apply_trim_tool_context_policy(
+                raw_message=raw_message,
+                raw_result=raw_result,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
         if normalized_policy == "summarize":
-            if tool.name == "bash":
-                summarized = self._summarize_bash_output(
-                    raw_result,
-                    artifact_path=artifact_path,
-                    max_inline_chars=max_inline_chars,
-                )
-            elif tool.name == "read_excel":
-                summarized = self._summarize_excel_output(
-                    raw_result,
-                    artifact_path=artifact_path,
-                    max_inline_chars=max_inline_chars,
-                )
-            else:
-                summarized = self._summarize_generic_tool_output(
-                    tool.name,
-                    raw_result,
-                    artifact_path=artifact_path,
-                    max_inline_chars=max_inline_chars,
-                )
+            summarized = self._summarize_tool_output(
+                tool_name=tool.name,
+                raw_text=raw_result,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
             return raw_message.model_copy(update={"content": summarized})
-
         return raw_message
+
+    @staticmethod
+    def _build_store_only_note(tool_name: str, artifact_path: str | None) -> str:
+        stored_note = f"{tool_name} output omitted from context."
+        if artifact_path:
+            stored_note = f"{stored_note} Full output: {artifact_path}"
+        return stored_note
+
+    def _apply_trim_tool_context_policy(
+        self,
+        *,
+        raw_message: ToolMessage,
+        raw_result: str,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> ToolMessage:
+        if len(raw_result) <= max_inline_chars:
+            return raw_message
+
+        summarized = self._summarize_trimmed_tool_output(
+            tool_name=raw_message.tool_name,
+            raw_text=raw_result,
+            artifact_path=artifact_path,
+            max_inline_chars=max_inline_chars,
+        )
+        return raw_message.model_copy(update={"content": summarized})
+
+    def _summarize_trimmed_tool_output(
+        self,
+        *,
+        tool_name: str,
+        raw_text: str,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        if tool_name == "read":
+            return self._summarize_read_output(
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+        return self._summarize_generic_tool_output(
+            tool_name,
+            raw_text,
+            artifact_path=artifact_path,
+            max_inline_chars=max_inline_chars,
+        )
+
+    def _summarize_tool_output(
+        self,
+        *,
+        tool_name: str,
+        raw_text: str,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        if tool_name == "bash":
+            return self._summarize_bash_output(
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+        if tool_name == "read_excel":
+            return self._summarize_excel_output(
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+        return self._summarize_generic_tool_output(
+            tool_name,
+            raw_text,
+            artifact_path=artifact_path,
+            max_inline_chars=max_inline_chars,
+        )
 
     async def _execute_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         """Execute a single tool call and return the result as a ToolMessage."""
