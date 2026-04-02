@@ -471,6 +471,212 @@ class Agent:
             storage_path=self.ephemeral_storage_path,
         )
 
+    @staticmethod
+    def _estimate_tool_content_size(content: object) -> int:
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, list):
+            total = 0
+            for part in content:
+                if hasattr(part, "model_dump_json"):
+                    total += len(part.model_dump_json())
+                else:
+                    total += len(str(part))
+            return total
+        return len(str(content))
+
+    @staticmethod
+    def _truncate_tool_text(text: str, *, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 240:
+            return text[:max_chars]
+
+        head_budget = max_chars // 2
+        tail_budget = max_chars - head_budget - len("\n...\n")
+        return f"{text[:head_budget]}\n...\n{text[-tail_budget:]}"
+
+    @staticmethod
+    def _collect_signal_lines(text: str, *, max_lines: int = 6, max_chars: int = 500) -> str:
+        collected: list[str] = []
+        consumed = 0
+        for raw_line in text.splitlines():
+            line = " ".join(raw_line.split())
+            if not line:
+                continue
+            collected.append(line)
+            consumed += len(line)
+            if len(collected) >= max_lines or consumed >= max_chars:
+                break
+        if not collected:
+            return "(empty)"
+        return "\n".join(collected)
+
+    def _summarize_bash_output(
+        self,
+        raw_text: str,
+        *,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        try:
+            payload = json.loads(raw_text)
+        except Exception:
+            summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
+            if artifact_path:
+                return f"Bash output summary:\n{summary}\nFull output: {artifact_path}"
+            return f"Bash output summary:\n{summary}"
+
+        stdout = str(payload.get("stdout", "") or "")
+        stderr = str(payload.get("stderr", "") or "")
+        command = str(payload.get("command", "") or "")
+        cwd = str(payload.get("cwd", "") or "")
+        returncode = payload.get("returncode")
+        timed_out = bool(payload.get("timed_out", False))
+        ok = bool(payload.get("ok", False))
+
+        summary_lines = [
+            f"Bash command: {command or '(empty)'}",
+            f"Cwd: {cwd or '(unknown)'}",
+            f"Exit code: {returncode if returncode is not None else 'timeout'}",
+            f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
+        ]
+        if stdout:
+            summary_lines.append(
+                f"Stdout ({len(stdout)} chars):\n{self._collect_signal_lines(stdout)}"
+            )
+        if stderr:
+            summary_lines.append(
+                f"Stderr ({len(stderr)} chars):\n{self._collect_signal_lines(stderr)}"
+            )
+        if not stdout and not stderr:
+            summary_lines.append("No stdout or stderr.")
+        if artifact_path:
+            summary_lines.append(f"Full output: {artifact_path}")
+        return "\n".join(summary_lines)
+
+    def _summarize_read_output(
+        self,
+        raw_text: str,
+        *,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        lines = raw_text.splitlines()
+        header = lines[0] if lines else ""
+        body_lines = lines[1:] if len(lines) > 1 else []
+        preview = self._truncate_tool_text("\n".join(body_lines), max_chars=max_inline_chars)
+        summary_lines = [
+            f"Read result: {header or '(no line metadata)'}",
+            f"Body lines: {len(body_lines)}",
+            "Context preview:",
+            preview or "(empty)",
+        ]
+        if artifact_path:
+            summary_lines.append(
+                f"Full excerpt: {artifact_path}. "
+                "Use offset_line/n_lines to reread a narrower slice."
+            )
+        return "\n".join(summary_lines)
+
+    def _summarize_generic_tool_output(
+        self,
+        tool_name: str,
+        raw_text: str,
+        *,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        preview = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
+        summary_lines = [
+            f"{tool_name} output trimmed from {len(raw_text)} chars for context.",
+            preview or "(empty)",
+        ]
+        if artifact_path:
+            summary_lines.append(f"Full output: {artifact_path}")
+        return "\n".join(summary_lines)
+
+    def _apply_tool_context_policy(
+        self,
+        *,
+        tool: Tool,
+        tool_call: ToolCall,
+        raw_result,
+        is_error: bool,
+    ) -> ToolMessage:
+        policy = tool.context_config.policy
+        is_ephemeral = bool(tool.ephemeral or policy == "ephemeral")
+        normalized_policy = "raw" if policy == "ephemeral" else policy
+
+        raw_message = ToolMessage(
+            tool_call_id=tool_call.id,
+            tool_name=tool.name,
+            content=raw_result,
+            is_error=is_error,
+            ephemeral=is_ephemeral,
+        )
+
+        max_inline_chars = tool.context_config.max_inline_chars
+        content_size = self._estimate_tool_content_size(raw_result)
+        force_artifact = normalized_policy in {"summarize", "store_only"} or (
+            normalized_policy == "trim" and content_size > max_inline_chars
+        )
+        artifact_path = self._context.persist_tool_artifact(raw_message, force=force_artifact)
+
+        if not isinstance(raw_result, str):
+            if normalized_policy == "store_only" and artifact_path:
+                return raw_message.model_copy(
+                    update={
+                        "content": f"{tool.name} output stored at {artifact_path}.",
+                    }
+                )
+            return raw_message
+
+        if normalized_policy == "raw":
+            return raw_message
+
+        if normalized_policy == "store_only":
+            stored_note = f"{tool.name} output omitted from context."
+            if artifact_path:
+                stored_note = f"{stored_note} Full output: {artifact_path}"
+            return raw_message.model_copy(update={"content": stored_note})
+
+        if normalized_policy == "trim":
+            if len(raw_result) <= max_inline_chars:
+                return raw_message
+            if tool.name == "read":
+                summarized = self._summarize_read_output(
+                    raw_result,
+                    artifact_path=artifact_path,
+                    max_inline_chars=max_inline_chars,
+                )
+            else:
+                summarized = self._summarize_generic_tool_output(
+                    tool.name,
+                    raw_result,
+                    artifact_path=artifact_path,
+                    max_inline_chars=max_inline_chars,
+                )
+            return raw_message.model_copy(update={"content": summarized})
+
+        if normalized_policy == "summarize":
+            if tool.name == "bash":
+                summarized = self._summarize_bash_output(
+                    raw_result,
+                    artifact_path=artifact_path,
+                    max_inline_chars=max_inline_chars,
+                )
+            else:
+                summarized = self._summarize_generic_tool_output(
+                    tool.name,
+                    raw_result,
+                    artifact_path=artifact_path,
+                    max_inline_chars=max_inline_chars,
+                )
+            return raw_message.model_copy(update={"content": summarized})
+
+        return raw_message
+
     async def _execute_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         """Execute a single tool call and return the result as a ToolMessage."""
         tool_name = tool_call.function.name
@@ -513,23 +719,17 @@ class Agent:
                 result = await self._run_cancellable(
                     tool.execute(_overrides=self.dependency_overrides, **args)
                 )
-
-                # Check if the tool is marked as ephemeral (can be bool or int for keep count)
-                is_ephemeral = bool(tool.ephemeral)  # Convert int to bool (2 -> True)
-
-                tool_message = ToolMessage(
-                    tool_call_id=tool_call.id,
-                    tool_name=tool_name,
-                    content=result,
+                tool_message = self._apply_tool_context_policy(
+                    tool=tool,
+                    tool_call=tool_call,
+                    raw_result=result,
                     is_error=False,
-                    ephemeral=is_ephemeral,
                 )
-                self._context.persist_tool_artifact(tool_message)
 
                 # Set span output
                 if Laminar is not None:
                     Laminar.set_span_output(
-                        {"result": (result[:500] if isinstance(result, str) else str(result)[:500])}
+                        {"result": tool_message.text[:500]}
                     )
 
                 return tool_message

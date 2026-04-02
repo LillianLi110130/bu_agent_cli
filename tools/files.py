@@ -38,7 +38,7 @@ def _build_diff_error(old_text: str, content: str, file_path: str) -> str:
     return f"Error: old_string not found in {file_path}. No similar text found."
 
 
-@tool("Read contents of a file")
+@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=2200)
 async def read(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],

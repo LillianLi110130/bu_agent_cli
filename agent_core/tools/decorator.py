@@ -64,6 +64,15 @@ from agent_core.tools.depends import Depends
 
 # Type alias for tool return content
 ToolContent = str | list[ContentPartTextParam | ContentPartImageParam]
+ToolContextPolicy = Literal["raw", "trim", "summarize", "store_only", "ephemeral"]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolContextConfig:
+    """How a tool result should be represented in the main prompt context."""
+
+    policy: ToolContextPolicy = "raw"
+    max_inline_chars: int = 1600
 
 T = TypeVar("T")
 P = ParamSpec("P")
@@ -182,6 +191,8 @@ class Tool:
     name: str = field(default="")
     ephemeral: int | bool = False
     """How many outputs to keep in context. False=not ephemeral, True=keep 1, int=keep N."""
+    context_config: ToolContextConfig = field(default_factory=ToolContextConfig)
+    """Prompt-context policy applied to tool outputs before they enter message history."""
     args_schema: type[BaseModel] | None = field(default=None, repr=False)
     """Optional Pydantic BaseModel class for tool parameters (similar to langchain_core)."""
     _definition: ToolDefinition | None = field(default=None, repr=False)
@@ -265,7 +276,6 @@ class Tool:
         required: list[str] = []
 
         sig = inspect.signature(self.func)
-        hints = get_type_hints(self.func)
 
         for param_name, param_type in self._param_types.items():
             # Check if it's a Pydantic model (single model parameter pattern)
@@ -352,7 +362,6 @@ class Tool:
 
             # Handle Pydantic model parameters (when not using args_schema)
             sig = inspect.signature(self.func)
-            hints = get_type_hints(self.func)
 
             for param_name, param_type in self._param_types.items():
                 if inspect.isclass(param_type) and issubclass(param_type, BaseModel):
@@ -406,6 +415,8 @@ def tool(
     *,
     name: str | None = None,
     ephemeral: int | bool = False,
+    context_policy: ToolContextPolicy = "raw",
+    context_max_inline_chars: int = 1600,
     args_schema: type[BaseModel] | None = None,
 ) -> Callable[[Callable[P, Awaitable[T]]], Tool]:
     """
@@ -416,9 +427,17 @@ def tool(
         name: Optional custom name for the tool. Defaults to function name.
         ephemeral: How many outputs to keep in context before older ones are removed.
                    False = not ephemeral (keep all), True = keep last 1, int = keep last N.
+        context_policy: How tool output should enter the prompt context.
+                        raw = keep full output.
+                        trim = keep full output when small and trim when large.
+                        summarize = replace with a high-signal summary.
+                        store_only = artifact only.
+                        ephemeral = keep raw output but treat it as ephemeral.
+        context_max_inline_chars: Maximum inline characters to keep for trim/summarize helpers.
         args_schema: Optional Pydantic BaseModel class for tool parameters.
-                     When provided, the tool's input schema will be generated from this model
-                     instead of the function signature. Similar to langchain_core.tools' args_schema.
+                     When provided, the tool's input schema will be generated from this
+                     model instead of the function signature. Similar to
+                     langchain_core.tools' args_schema.
 
     Returns:
         A Tool instance wrapping the decorated function.
@@ -450,7 +469,8 @@ def tool(
     def decorator(func: Callable[P, Awaitable[T]]) -> Tool:
         if not inspect.iscoroutinefunction(func):
             raise TypeError(
-                f"Tool '{func.__name__}' must be an async function. Use 'async def {func.__name__}(...)' instead."
+                f"Tool '{func.__name__}' must be an async function. "
+                f"Use 'async def {func.__name__}(...)' instead."
             )
 
         return Tool(
@@ -458,6 +478,10 @@ def tool(
             description=description,
             name=name or func.__name__,
             ephemeral=ephemeral,
+            context_config=ToolContextConfig(
+                policy=context_policy,
+                max_inline_chars=max(200, int(context_max_inline_chars)),
+            ),
             args_schema=args_schema,
         )
 
