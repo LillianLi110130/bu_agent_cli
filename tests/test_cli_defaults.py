@@ -75,10 +75,14 @@ def test_parse_args_falls_back_to_packaged_worker_config(monkeypatch):
     if root.exists():
         shutil.rmtree(root)
     startup_dir = root / "startup"
+    home_dir = root / "home"
     startup_dir.mkdir(parents=True)
+    home_dir.mkdir(parents=True)
     startup_dir_resolved = startup_dir.resolve()
 
     try:
+        monkeypatch.setenv("HOME", str(home_dir.resolve()))
+        monkeypatch.delenv("TG_AGENT_HOME", raising=False)
         monkeypatch.chdir(startup_dir)
         monkeypatch.setattr(sys, "argv", ["claude_code.py"])
 

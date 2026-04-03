@@ -93,3 +93,13 @@ def test_build_worker_process_command_uses_internal_flag_for_frozen(monkeypatch)
 
     assert command[:2] == [claude_code.sys.executable, claude_code._INTERNAL_WORKER_FLAG]
     assert "-m" not in command
+
+
+def test_cli_runtime_env_is_loaded_explicitly(monkeypatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.setattr(claude_code, "load_runtime_env", lambda: calls.append("loaded"))
+
+    claude_code._load_cli_runtime_env()
+
+    assert calls == ["loaded"]
