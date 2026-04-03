@@ -7,10 +7,6 @@ with first-class support for tool calling.
 
 from typing import TYPE_CHECKING
 
-from agent_core.runtime_paths import load_runtime_env
-
-load_runtime_env()
-
 # Core types - always imported
 from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition
 from agent_core.llm.messages import (

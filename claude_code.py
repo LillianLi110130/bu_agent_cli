@@ -40,7 +40,7 @@ from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
-from agent_core.runtime_paths import application_root, is_frozen_app
+from agent_core.runtime_paths import application_root, is_frozen_app, load_runtime_env
 from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
@@ -266,6 +266,11 @@ class WorkerProcessHandle:
 
     process: asyncio.subprocess.Process
     log_file: Any
+
+
+def _load_cli_runtime_env() -> None:
+    """Load CLI-only runtime env files."""
+    load_runtime_env()
 
 
 def _should_run_internal_worker(argv: list[str] | None = None) -> bool:
@@ -584,6 +589,7 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
 
 async def main():
     """Main entry point."""
+    _load_cli_runtime_env()
     args = parse_args()
     await _authenticate_worker_startup(args)
 
