@@ -1038,8 +1038,10 @@ class TGAgentCLI:
         final_response: str | None = None
         active_agent = agent or self._agent
 
-        # Inject TGAGENTS.md (if present) before each user query
-        # self._maybe_inject_agents_md()
+        # Keep workspace instructions synchronized for the main CLI agent.
+        # Dedicated helper agents like /init manage their own injection timing.
+        if active_agent is self._agent:
+            self._maybe_inject_agents_md()
 
         # Start loading animation
         self._loading = self._start_loading("思考中")

@@ -15,6 +15,7 @@ import pytest
 
 import cli.app as app_module
 from agent_core import Agent
+from agent_core.agent.events import FinalResponseEvent
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
 from cli.slash_commands import SlashCommandRegistry
@@ -119,6 +120,30 @@ async def test_init_command_uses_dedicated_agent_and_injects_immediately(
     ]
     assert "test" in system_contents
     assert "repo rules" in system_contents
+
+
+@pytest.mark.asyncio
+async def test_run_agent_preinjects_workspace_tgagents_for_main_agent(workspace_root, monkeypatch):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+    (workspace_root / "TGAGENTS.md").write_text("repo rules", encoding="utf-8")
+    seen_system_contents: list[str] = []
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del cancel_event
+        seen_system_contents.extend(
+            str(getattr(message, "content", ""))
+            for message in cli._agent.messages
+            if message.role == "system"
+        )
+        yield FinalResponseEvent(content=f"processed:{user_input}")
+
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+
+    final_content = await cli._run_agent("hello", has_image=False)
+
+    assert final_content == "processed:hello"
+    assert "test" in seen_system_contents
+    assert "repo rules" in seen_system_contents
 
 
 @pytest.mark.asyncio
