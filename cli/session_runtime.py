@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from agent_core.runtime_paths import tg_agent_home
 from tools.sandbox import SandboxContext
 
 CLI_SESSION_RUNTIME_VERSION = 1
@@ -15,10 +15,7 @@ CLI_SESSION_RUNTIME_VERSION = 1
 
 def default_cli_state_root() -> Path:
     """Return the CLI state root used for rollout-local context state."""
-    configured = os.getenv("TG_AGENT_HOME")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return Path("~/.tg_agent").expanduser().resolve()
+    return tg_agent_home()
 
 
 def _resolve_now(now: datetime | None = None) -> datetime:
@@ -41,6 +38,9 @@ class CLISessionRuntime:
     root_dir: Path
     sessions_dir: Path
     rollout_dir: Path
+    checkpoints_dir: Path
+    artifacts_dir: Path
+    working_state_path: Path
     meta_path: Path
     started_at: str
     last_active_at: str
@@ -68,6 +68,10 @@ class CLISessionRuntime:
             / f"rollout-{resolved_now.strftime('%Y%m%d-%H%M%S')}-{ctx.session_id}"
         )
         rollout_dir.mkdir(parents=True, exist_ok=True)
+        checkpoints_dir = rollout_dir / "checkpoints"
+        artifacts_dir = rollout_dir / "artifacts"
+        checkpoints_dir.mkdir(parents=True, exist_ok=True)
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         ctx.add_allowed_dir(resolved_root)
 
@@ -76,6 +80,9 @@ class CLISessionRuntime:
             root_dir=resolved_root,
             sessions_dir=sessions_dir,
             rollout_dir=rollout_dir,
+            checkpoints_dir=checkpoints_dir,
+            artifacts_dir=artifacts_dir,
+            working_state_path=rollout_dir / "working_state.json",
             meta_path=rollout_dir / "meta.json",
             started_at=_format_timestamp(resolved_now),
             last_active_at=_format_timestamp(resolved_now),

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import MethodType
 
 import pytest
@@ -10,6 +13,9 @@ from agent_core.agent.context import ContextManager
 from agent_core.agent.budget import BudgetAssessment
 from agent_core.llm.messages import AssistantMessage, BaseMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
+from cli.session_runtime import CLISessionRuntime
+from tools import SandboxContext
 
 
 STRUCTURED_COMPACTION_RESPONSE = """<summary>
@@ -223,3 +229,77 @@ async def test_sliding_window_does_not_recompact_existing_working_set():
         "[Compacted Working Set]" not in str(getattr(message, "content", ""))
         for message in compacted_input
     )
+
+
+@pytest.mark.asyncio
+async def test_compaction_with_filesystem_stores_persists_checkpoint_and_working_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    llm = FakeCompactionLLM([STRUCTURED_COMPACTION_RESPONSE])
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(
+        sandbox,
+        now=datetime(2026, 4, 1, 15, 30, 15, tzinfo=timezone(timedelta(hours=8))),
+    )
+    context = ContextManager(
+        messages=[
+            UserMessage(content="user-1"),
+            AssistantMessage(content="assistant-1"),
+            UserMessage(content="user-2"),
+            AssistantMessage(content="assistant-2"),
+            UserMessage(content="user-3"),
+        ]
+    )
+    context.bind_filesystem_stores(
+        artifact_store=ArtifactStore(runtime.artifacts_dir),
+        checkpoint_store=CheckpointStore(runtime.checkpoints_dir),
+        working_state_store=WorkingStateStore(
+            runtime.working_state_path,
+            session_id=runtime.session_id,
+        ),
+    )
+    context.configure_compaction(
+        config=CompactionConfig(preserve_recent_messages=2, preserve_recent_token_ratio=1.0),
+        llm=llm,
+        token_cost=None,
+    )
+
+    async def fake_assess_budget(self, *, model: str, usage=None, trigger=None):
+        return BudgetAssessment(
+            model=model,
+            context_limit=100,
+            warn_threshold=50,
+            compact_threshold=60,
+            hard_threshold=90,
+            baseline_prompt_tokens=0,
+            incremental_tokens=80,
+            estimated_tokens=80,
+            message_count=len(self._messages),
+            warn_threshold_ratio=0.5,
+            compact_threshold_ratio=0.6,
+            hard_threshold_ratio=0.9,
+            threshold_utilization=1.33,
+            context_utilization=0.8,
+            trigger=trigger,
+        )
+
+    context.assess_budget = MethodType(fake_assess_budget, context)
+    changed = await context.check_and_compact(llm)
+
+    assert changed is True
+    checkpoint_path = runtime.checkpoints_dir / "0001.jsonl"
+    assert checkpoint_path.exists()
+
+    working_state = json.loads(runtime.working_state_path.read_text(encoding="utf-8"))
+    assert working_state["session_id"] == runtime.session_id
+    assert working_state["goal"] == "Fix the failing parser flow"
+    assert working_state["checkpoint_refs"] == ["checkpoint://0001"]
+    assert working_state["checkpoint_paths"] == [str(checkpoint_path)]
+
+    compacted_content = str(context.get_messages()[0].content)
+    assert "Checkpoint Ref: checkpoint://0001" in compacted_content
+    assert f"Checkpoint Path: {checkpoint_path}" in compacted_content

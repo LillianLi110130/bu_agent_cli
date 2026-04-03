@@ -298,6 +298,8 @@ class TGAgentCLI:
         self._system_prompt_builder = system_prompt_builder
         self._bridge_store = bridge_store
         self._session_runtime = session_runtime
+        if self._session_runtime is not None:
+            self._agent.bind_session_runtime(self._session_runtime)
         self._model_presets_path = (
             Path(__file__).resolve().parent.parent / "config" / "model_presets.json"
         )

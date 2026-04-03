@@ -116,6 +116,7 @@ class CompactionResult:
     summary: str | None = None
     working_state: CompactionWorkingState | None = None
     checkpoint_ref: str | None = None
+    checkpoint_path: str | None = None
 
 
 @dataclass

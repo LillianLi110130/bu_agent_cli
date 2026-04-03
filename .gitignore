@@ -18,5 +18,7 @@ __pycache__/
 .pytest_tmp/
 .DS_Store
 .tg_agent
+.tg_agent_verify/
+.tmp_pyinstaller_runtime/
 tests/conftest.py
 AGENTS.md

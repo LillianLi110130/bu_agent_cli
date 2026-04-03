@@ -279,6 +279,13 @@ class ModelSwitchService:
                 True,
             )
 
+        artifact_path = self._agent._context.persist_image_detail_artifact(
+            detail_text,
+            source_hint=user_text_hint,
+        )
+        if artifact_path:
+            summary_text = f"{summary_text}\n详细视觉提取见 {artifact_path}"
+
         return f"[ImageSummary] {summary_text}", False
 
     async def _rewrite_message_image_memory(

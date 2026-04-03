@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from agent_core.runtime_paths import application_root, tg_agent_home
+
 logger = logging.getLogger("cli.worker.auth")
 
 DEFAULT_AUTH_CALLBACK_URL = "http://127.0.0.1:8088/callback"
@@ -194,6 +196,10 @@ def _iter_auth_config_paths(base_dir: Path | str | None = None) -> list[Path]:
     resolved_base_dir = Path(base_dir or Path.cwd()).resolve()
     search_paths = [resolved_base_dir / _PACKAGE_CONFIG_FILE_NAME]
 
+    home_config_path = tg_agent_home() / _PACKAGE_CONFIG_FILE_NAME
+    if home_config_path not in search_paths:
+        search_paths.append(home_config_path)
+
     package_config_path = _get_package_config_dir() / _PACKAGE_CONFIG_FILE_NAME
     if package_config_path not in search_paths:
         search_paths.append(package_config_path)
@@ -207,7 +213,7 @@ def _format_auth_config_search_paths(base_dir: Path | str | None = None) -> str:
 
 def _get_package_config_dir() -> Path:
     """Return the installed tg-agent package root directory."""
-    return Path(__file__).resolve().parents[2]
+    return application_root()
 
 
 async def authenticate_startup(

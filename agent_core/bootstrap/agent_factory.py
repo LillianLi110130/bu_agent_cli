@@ -11,12 +11,14 @@ from typing import Any
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
+from agent_core.runtime_paths import application_root
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
-_PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+_APP_ROOT = application_root()
+_PACKAGE_ROOT = _APP_ROOT / "agent_core"
 _PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
-_SKILLS_DIR = _PACKAGE_ROOT.parent / "skills"
+_SKILLS_DIR = _APP_ROOT / "skills"
 
 
 def _format_skills(skills: list[Any]) -> str:

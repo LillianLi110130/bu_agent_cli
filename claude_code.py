@@ -40,6 +40,7 @@ from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
+from agent_core.runtime_paths import application_root, is_frozen_app
 from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
@@ -60,11 +61,12 @@ from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 # =============================================================================
 
 # Directory paths
-_SCRIPT_DIR = Path(__file__).parent.resolve()
+_SCRIPT_DIR = application_root()
 _PROMPTS_DIR = _SCRIPT_DIR / "agent_core" / "prompts"
 _SKILLS_DIR = _SCRIPT_DIR / "skills"
 _AGENTS_DIR = _PROMPTS_DIR / "agents"
 _PLUGINS_DIR = _SCRIPT_DIR / "plugins"
+_INTERNAL_WORKER_FLAG = "--run-worker-internal"
 
 
 @dataclass(slots=True)
@@ -266,6 +268,47 @@ class WorkerProcessHandle:
     log_file: Any
 
 
+def _should_run_internal_worker(argv: list[str] | None = None) -> bool:
+    """Return whether the current process should dispatch to the worker entrypoint."""
+    return _INTERNAL_WORKER_FLAG in (argv or sys.argv[1:])
+
+
+def _strip_internal_worker_flag(argv: list[str] | None = None) -> list[str]:
+    """Return argv without the internal worker dispatch flag."""
+    return [arg for arg in (argv or sys.argv[1:]) if arg != _INTERNAL_WORKER_FLAG]
+
+
+def _build_worker_process_command(
+    *,
+    worker_id: str,
+    gateway_base_url: str,
+    config_dir: Path,
+    root_dir: Path,
+    model: str | None = None,
+) -> list[str]:
+    """Build the worker subprocess command for source and frozen runtimes."""
+    if is_frozen_app():
+        command = [sys.executable, _INTERNAL_WORKER_FLAG]
+    else:
+        command = [sys.executable, "-m", "cli.worker.main"]
+
+    command.extend(
+        [
+            "--worker-id",
+            worker_id,
+            "--gateway-base-url",
+            gateway_base_url,
+            "--config-dir",
+            str(config_dir),
+            "--root-dir",
+            str(root_dir),
+        ]
+    )
+    if model:
+        command.extend(["--model", model])
+    return command
+
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Claude Code CLI - Interactive coding assistant")
@@ -345,21 +388,13 @@ async def _start_im_worker_process(
         missing_str = ", ".join(missing)
         raise ValueError(f"IM worker mode requires: {missing_str}")
 
-    command = [
-        sys.executable,
-        "-m",
-        "cli.worker.main",
-        "--worker-id",
-        str(args.im_worker_id),
-        "--gateway-base-url",
-        str(args.im_gateway_base_url),
-        "--config-dir",
-        str(Path(getattr(args, "config_dir", Path.cwd())).resolve()),
-        "--root-dir",
-        str(ctx.working_dir),
-    ]
-    if args.model:
-        command.extend(["--model", str(args.model)])
+    command = _build_worker_process_command(
+        worker_id=str(args.im_worker_id),
+        gateway_base_url=str(args.im_gateway_base_url),
+        config_dir=Path(getattr(args, "config_dir", Path.cwd())).resolve(),
+        root_dir=ctx.working_dir,
+        model=str(args.model) if args.model else None,
+    )
 
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
     if bridge_store is None:
@@ -370,7 +405,7 @@ async def _start_im_worker_process(
 
     process = await asyncio.create_subprocess_exec(
         *command,
-        cwd=str(_SCRIPT_DIR),
+        cwd=str(_SCRIPT_DIR if not is_frozen_app() else Path.cwd().resolve()),
         stdout=worker_log_file,
         stderr=worker_log_file,
     )
@@ -603,6 +638,13 @@ async def main():
 
 def cli_main():
     """Console script entry point."""
+    if _should_run_internal_worker():
+        from cli.worker.main import cli_main as worker_cli_main
+
+        sys.argv = [sys.argv[0], *_strip_internal_worker_flag()]
+        worker_cli_main()
+        return
+
     asyncio.run(main())
 
 
