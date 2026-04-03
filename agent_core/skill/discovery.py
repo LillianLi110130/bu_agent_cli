@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import os
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+
+from agent_core.runtime_paths import tg_agent_home
 
 
 @dataclass(frozen=True)
@@ -17,10 +18,7 @@ class DiscoveredSkill:
 
 
 def user_tgagent_dir() -> Path:
-    home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
-    if home:
-        return Path(home).expanduser() / ".tg_agent"
-    return Path("~/.tg_agent").expanduser()
+    return tg_agent_home()
 
 
 def user_skills_dir() -> Path:
@@ -61,6 +59,7 @@ def default_skill_dirs(workspace_root: Path, builtin_skills_dir: Path) -> list[P
         builtin_root,
         user_root,
         workspace_root / ".tg_agent" / "skills",
+        workspace_root / "skills",
     ]
 
 

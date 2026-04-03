@@ -7,10 +7,9 @@ with first-class support for tool calling.
 
 from typing import TYPE_CHECKING
 
-# Auto-load .env file for API keys
-from dotenv import load_dotenv
+from agent_core.runtime_paths import load_runtime_env
 
-load_dotenv()
+load_runtime_env()
 
 # Core types - always imported
 from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition

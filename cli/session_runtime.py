@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from agent_core.runtime_paths import tg_agent_home
 from tools.sandbox import SandboxContext
 
 CLI_SESSION_RUNTIME_VERSION = 1
@@ -15,10 +15,7 @@ CLI_SESSION_RUNTIME_VERSION = 1
 
 def default_cli_state_root() -> Path:
     """Return the CLI state root used for rollout-local context state."""
-    configured = os.getenv("TG_AGENT_HOME")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return Path("~/.tg_agent").expanduser().resolve()
+    return tg_agent_home()
 
 
 def _resolve_now(now: datetime | None = None) -> datetime:

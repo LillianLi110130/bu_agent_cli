@@ -7,8 +7,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 from agent_core.bootstrap.agent_factory import create_agent, create_llm
 from agent_core.bus.queue import MessageBus
 from agent_core.channels.manager import ChannelManager
@@ -18,6 +16,7 @@ from agent_core.gateway.config import GatewaySettings
 from agent_core.gateway.dispatcher import GatewayDispatcher
 from agent_core.gateway.service import GatewayService
 from agent_core.heartbeat.service import HeartbeatService
+from agent_core.runtime_paths import load_runtime_env
 from agent_core.runtime.manager import RuntimeManager
 
 logger = logging.getLogger("agent_core.gateway.main")
@@ -96,8 +95,7 @@ async def run_gateway(settings: GatewaySettings) -> None:
 
 def load_settings_from_args(args: argparse.Namespace) -> GatewaySettings:
     """Load .env and resolve gateway settings from CLI arguments plus environment."""
-    dotenv_path = Path.cwd() / ".env"
-    load_dotenv(dotenv_path=dotenv_path, override=True)
+    load_runtime_env()
     root_dir = Path(args.root_dir).resolve() if args.root_dir else Path.cwd().resolve()
     settings = GatewaySettings.from_env(root_dir=root_dir, model=args.model)
     if args.heartbeat_interval_seconds is not None:
