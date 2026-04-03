@@ -73,12 +73,23 @@ def build_init_system_prompt() -> str:
         "If TGAGENTS.md already exists, read it first and update it instead of blindly "
         "rewriting it.\n"
         "If information cannot be verified from tool outputs, mark it as 未验证 or 推测.\n"
+        "Prefer high-signal files first, such as README, pyproject.toml, existing docs, and "
+        "project overview documents when they exist.\n"
+        "Do not repeatedly read the same file slice with identical parameters unless you are "
+        "verifying a specific detail that was not already captured.\n"
+        "Once you have enough verified information to fill the required sections, stop "
+        "exploring and draft the full TGAGENTS.md immediately.\n"
+        "Before each additional read or search, ask whether it is necessary to complete a "
+        "missing section. If not, move on to drafting or editing TGAGENTS.md.\n"
         "Execution procedure:\n"
         "1. Check whether TGAGENTS.md already exists at the workspace root.\n"
-        "2. Inspect the repository with read/search tools.\n"
-        "3. Draft the full TGAGENTS.md content.\n"
-        "4. Use `write` or `edit` to persist TGAGENTS.md.\n"
-        "5. Only after the file exists and is non-empty may you call `done`.\n"
+        "2. Inspect only the minimum set of files needed to verify the required sections.\n"
+        "3. Reuse high-signal overview documents when available instead of exhaustively reading "
+        "many files.\n"
+        "4. Draft the full TGAGENTS.md content as soon as the required sections can be "
+        "supported.\n"
+        "5. Use `write` or `edit` to persist TGAGENTS.md.\n"
+        "6. Only after the file exists and is non-empty may you call `done`.\n"
         "When the file is complete, Call the done tool with a short completion summary."
     )
 
@@ -104,6 +115,11 @@ def build_init_user_prompt(workspace_root: Path) -> str:
         "- Only include claims supported by files or search results you actually inspected.\n"
         "- Favor concise, actionable guidance over generic introduction text.\n"
         "- If a section cannot be verified, say so explicitly.\n"
+        "- Prefer high-signal files first, especially README, pyproject.toml, and overview docs.\n"
+        "- Do not repeat the same read or search with identical parameters unless it is required "
+        "to verify one specific missing detail.\n"
+        "- As soon as you can cover the required structure with verified facts, stop exploring "
+        "and write TGAGENTS.md.\n"
         "- Only modify TGAGENTS.md.\n"
         "- You must use write or edit to persist TGAGENTS.md before finishing.\n"
         "- Do not call done until TGAGENTS.md exists and is non-empty.\n"
@@ -116,7 +132,7 @@ def build_init_agent(
     llm: BaseChatModel,
     workspace_root: Path,
     dependency_overrides: dict | None = None,
-    max_iterations: int = 16,
+    max_iterations: int = 24,
 ) -> Agent:
     """Create the temporary agent used by `/init`."""
     return Agent(
