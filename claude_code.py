@@ -40,7 +40,12 @@ from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
-from agent_core.runtime_paths import application_root, is_frozen_app, load_runtime_env
+from agent_core.runtime_paths import (
+    application_root,
+    ensure_cli_runtime_state,
+    is_frozen_app,
+    load_runtime_env,
+)
 from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
@@ -270,6 +275,7 @@ class WorkerProcessHandle:
 
 def _load_cli_runtime_env() -> None:
     """Load CLI-only runtime env files."""
+    ensure_cli_runtime_state()
     load_runtime_env()
 
 
@@ -479,9 +485,9 @@ async def _authenticate_worker_startup(args: argparse.Namespace) -> None:
 
 def create_llm(model: str | None = None) -> ChatOpenAI:
     """Create LLM instance based on environment or model parameter."""
-    model = model or os.getenv("LLM_MODEL", "GLM-4.7")
-    base_url = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
-    api_key = os.getenv("OPENAI_API_KEY", "OPENAI_API_KEY")
+    model = model or (os.getenv("LLM_MODEL") or "").strip() or "GLM-4.7"
+    base_url = (os.getenv("LLM_BASE_URL") or "").strip() or "https://open.bigmodel.cn/api/coding/paas/v4"
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or "OPENAI_API_KEY"
 
     return ChatOpenAI(
         model=model,

@@ -119,9 +119,9 @@ def build_system_prompt(
 
 def create_llm(model: str | None = None) -> ChatOpenAI:
     """Create an LLM instance from a preset or environment variables."""
-    resolved_model = model or os.getenv("LLM_MODEL", "GLM-4.7")
-    base_url = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
-    api_key = os.getenv("OPENAI_API_KEY", "OPENAI_API_KEY")
+    resolved_model = model or (os.getenv("LLM_MODEL") or "").strip() or "GLM-4.7"
+    base_url = (os.getenv("LLM_BASE_URL") or "").strip() or "https://open.bigmodel.cn/api/coding/paas/v4"
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or "OPENAI_API_KEY"
 
     return ChatOpenAI(
         model=resolved_model,
