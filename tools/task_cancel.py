@@ -30,6 +30,9 @@ async def task_cancel(
     Examples:
         task_cancel(task_id="abc123")
     """
+    if ctx.shell_task_manager is not None and ctx.shell_task_manager.get_task(task_id) is not None:
+        return await ctx.shell_task_manager.cancel(task_id)
+
     if ctx.subagent_manager is None:
         return "Error: Subagent manager not initialized"
 

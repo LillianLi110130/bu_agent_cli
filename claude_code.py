@@ -641,6 +641,8 @@ async def main():
     except KeyboardInterrupt:
         console.print("\n[yellow]再见！[/yellow]")
     finally:
+        if ctx.shell_task_manager is not None:
+            await ctx.shell_task_manager.shutdown(cancel_running=True)
         await _mark_worker_offline(
             worker_id=args.im_worker_id,
             gateway_base_url=args.im_gateway_base_url,

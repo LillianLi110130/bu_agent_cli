@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from tools.shell_tasks import ShellTaskManager
+
 
 _IGNORE_FILE_NAME = ".tgagentignore"
 
@@ -135,11 +137,14 @@ class SandboxContext:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     subagent_executor: Any | None = None
     subagent_manager: Any | None = None
+    shell_task_manager: ShellTaskManager | None = None
     subagent_events: asyncio.Queue | None = field(default=None)
 
     def __post_init__(self) -> None:
         if self.subagent_events is None:
             self.subagent_events = asyncio.Queue()
+        if self.shell_task_manager is None:
+            self.shell_task_manager = ShellTaskManager(self.root_dir, self.session_id)
 
     @classmethod
     def create(cls, root_dir: Path | str | None = None) -> "SandboxContext":

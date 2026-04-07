@@ -561,6 +561,8 @@ class Agent:
         returncode = payload.get("returncode")
         timed_out = bool(payload.get("timed_out", False))
         ok = bool(payload.get("ok", False))
+        background_task_id = payload.get("backgroundTaskId")
+        persisted_output_path = payload.get("persistedOutputPath")
 
         summary_lines = [
             f"Bash command: {command or '(empty)'}",
@@ -568,6 +570,10 @@ class Agent:
             f"Exit code: {returncode if returncode is not None else 'timeout'}",
             f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
         ]
+        if background_task_id:
+            summary_lines.append(f"Background task id: {background_task_id}")
+        if persisted_output_path:
+            summary_lines.append(f"Output path: {persisted_output_path}")
         self._append_bash_stream_summary(summary_lines, label="Stdout", stream_text=stdout)
         self._append_bash_stream_summary(summary_lines, label="Stderr", stream_text=stderr)
         if not stdout and not stderr:

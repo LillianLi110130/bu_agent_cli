@@ -4,16 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import locale
-import os
-import signal
 import subprocess
-import sys
-from contextlib import suppress
 from typing import Annotated
 
 from agent_core.tools import Depends, tool
 
+from tools.shell_tasks import decode_process_stream, terminate_process_tree
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 
@@ -28,9 +24,26 @@ async def bash(
     command: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     timeout: int = 30,
+    run_in_background: bool = False,
 ) -> str:
     """Run a command in the current OS shell within the sandbox working directory."""
     try:
+        if run_in_background:
+            if ctx.shell_task_manager is None:
+                return "Error: Shell task manager not initialized"
+            task = await ctx.shell_task_manager.start(command=command, cwd=str(ctx.working_dir))
+            return _format_bash_result(
+                command=command,
+                cwd=str(ctx.working_dir),
+                returncode=0,
+                stdout="",
+                stderr="",
+                timed_out=False,
+                interrupted=False,
+                background_task_id=task.task_id,
+                persisted_output_path=str(task.log_path),
+            )
+
         result = await _run_shell_command(
             command,
             cwd=str(ctx.working_dir),
@@ -43,6 +56,7 @@ async def bash(
             stdout=result.stdout,
             stderr=result.stderr,
             timed_out=False,
+            interrupted=False,
         )
     except asyncio.TimeoutError:
         return _format_bash_result(
@@ -52,6 +66,7 @@ async def bash(
             stdout="",
             stderr=f"Command timed out after {timeout}s",
             timed_out=True,
+            interrupted=False,
         )
     except Exception as e:
         return f"Error: {e}"
@@ -70,8 +85,9 @@ async def _run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShel
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "cwd": cwd,
+        "stdin": subprocess.DEVNULL,
     }
-    if sys.platform == "win32":
+    if subprocess._mswindows:
         popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     else:
         popen_kwargs["start_new_session"] = True
@@ -86,19 +102,21 @@ async def _run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShel
             return_when=asyncio.FIRST_COMPLETED,
         )
         if wait_task not in done:
-            await _terminate_shell_process(process)
+            await terminate_process_tree(process)
             await asyncio.to_thread(process.wait)
             _close_process_pipes(process)
             raise asyncio.TimeoutError
     except asyncio.CancelledError:
-        await _terminate_shell_process(process)
+        await terminate_process_tree(process)
         await asyncio.to_thread(process.wait)
         _close_process_pipes(process)
         raise
     finally:
         if wait_task.done():
-            with suppress(Exception):
+            try:
                 await wait_task
+            except Exception:
+                pass
 
     stdout, stderr = await asyncio.to_thread(process.communicate)
     return _AsyncShellResult(
@@ -106,54 +124,6 @@ async def _run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShel
         stdout=_decode_process_stream(stdout),
         stderr=_decode_process_stream(stderr),
     )
-
-
-async def _terminate_shell_process(process: subprocess.Popen) -> None:
-    if process.returncode is not None:
-        return
-
-    try:
-        if sys.platform == "win32":
-            await _terminate_windows_process_tree(process.pid)
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-
-    try:
-        await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=1)
-        return
-    except (asyncio.TimeoutError, ProcessLookupError):
-        pass
-    except asyncio.CancelledError:
-        process.kill()
-        raise
-
-    try:
-        process.kill()
-    except ProcessLookupError:
-        return
-
-    try:
-        await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=1)
-    except (asyncio.TimeoutError, ProcessLookupError):
-        pass
-
-
-async def _terminate_windows_process_tree(pid: int | None) -> None:
-    if not pid:
-        return
-
-    killer = await asyncio.create_subprocess_exec(
-        "taskkill",
-        "/PID",
-        str(pid),
-        "/T",
-        "/F",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    await killer.wait()
 
 
 def _close_process_pipes(process: subprocess.Popen) -> None:
@@ -168,56 +138,7 @@ def _close_process_pipes(process: subprocess.Popen) -> None:
 
 
 def _decode_process_stream(data: bytes | str | None) -> str:
-    if data is None:
-        return ""
-    if isinstance(data, str):
-        return data
-    for encoding in _shell_output_encodings():
-        try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
-def _shell_output_encodings() -> list[str]:
-    encodings = ["utf-8", "utf-8-sig"]
-
-    preferred = locale.getpreferredencoding(False)
-    if preferred:
-        encodings.append(preferred)
-
-    if sys.platform == "win32":
-        codepage = _windows_console_encoding()
-        if codepage:
-            encodings.append(codepage)
-        encodings.extend(["gb18030", "gbk", "cp936"])
-
-    unique: list[str] = []
-    seen: set[str] = set()
-    for encoding in encodings:
-        lowered = encoding.lower()
-        if lowered in seen:
-            continue
-        seen.add(lowered)
-        unique.append(encoding)
-    return unique
-
-
-def _windows_console_encoding() -> str | None:
-    if sys.platform != "win32":
-        return None
-
-    try:
-        import ctypes
-
-        codepage = ctypes.windll.kernel32.GetConsoleOutputCP()
-    except Exception:
-        return None
-
-    if not codepage:
-        return None
-    return f"cp{codepage}"
+    return decode_process_stream(data)
 
 
 def _format_bash_result(
@@ -228,14 +149,20 @@ def _format_bash_result(
     stdout: str,
     stderr: str,
     timed_out: bool,
+    interrupted: bool,
+    background_task_id: str | None = None,
+    persisted_output_path: str | None = None,
 ) -> str:
     payload = {
-        "ok": returncode == 0 and not timed_out,
+        "ok": returncode == 0 and not timed_out and not interrupted,
         "command": command,
         "cwd": cwd,
         "returncode": returncode,
         "timed_out": timed_out,
+        "interrupted": interrupted,
         "stdout": stdout,
         "stderr": stderr,
+        "backgroundTaskId": background_task_id,
+        "persistedOutputPath": persisted_output_path,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

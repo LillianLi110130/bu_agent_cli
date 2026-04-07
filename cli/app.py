@@ -812,23 +812,41 @@ class TGAgentCLI:
             return True
 
         if command_name == "tasks":
-            if not self._ctx.subagent_manager:
-                self._console.print("[yellow]子智能体管理器未初始化。[/yellow]")
-                return True
-            tasks_info = self._ctx.subagent_manager.list_all_tasks()
+            shell_tasks = []
+            if self._ctx.shell_task_manager is not None:
+                shell_tasks = [task.to_dict() for task in self._ctx.shell_task_manager.list_tasks()]
+
+            subagent_tasks = None
+            if self._ctx.subagent_manager is not None:
+                subagent_tasks = self._ctx.subagent_manager.list_all_tasks()
+
+            tasks_info = json.dumps(
+                {
+                    "shell_tasks": shell_tasks,
+                    "subagent_tasks": json.loads(subagent_tasks) if subagent_tasks else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
             self._console.print("[bold cyan]后台任务：[/bold cyan]")
             self._console.print(tasks_info)
             return True
 
         if command_name == "task":
-            if not self._ctx.subagent_manager:
-                self._console.print("[yellow]子智能体管理器未初始化。[/yellow]")
-                return True
             if not args:
                 self._console.print("[red]用法：/task <task_id>[/red]")
                 return True
             task_id = args[0]
-            task_info = self._ctx.subagent_manager.get_task_status(task_id)
+
+            task_info = None
+            if self._ctx.shell_task_manager is not None:
+                shell_task = self._ctx.shell_task_manager.get_task(task_id)
+                if shell_task is not None:
+                    task_info = json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
+
+            if task_info is None and self._ctx.subagent_manager is not None:
+                task_info = self._ctx.subagent_manager.get_task_status(task_id)
+
             if task_info is None:
                 self._console.print(f"[red]未找到任务“{task_id}”。[/red]")
                 return True
@@ -837,14 +855,23 @@ class TGAgentCLI:
             return True
 
         if command_name == "task_cancel":
-            if not self._ctx.subagent_manager:
-                self._console.print("[yellow]子智能体管理器未初始化。[/yellow]")
-                return True
             if not args:
                 self._console.print("[red]用法：/task_cancel <task_id>[/red]")
                 return True
             task_id = args[0]
-            result = await self._ctx.subagent_manager.cancel_task(task_id)
+
+            result = None
+            if self._ctx.shell_task_manager is not None:
+                shell_task = self._ctx.shell_task_manager.get_task(task_id)
+                if shell_task is not None:
+                    result = await self._ctx.shell_task_manager.cancel(task_id)
+
+            if result is None:
+                if self._ctx.subagent_manager is None:
+                    self._console.print("[yellow]没有可用的后台任务管理器。[/yellow]")
+                    return True
+                result = await self._ctx.subagent_manager.cancel_task(task_id)
+
             self._console.print(result)
             return True
 

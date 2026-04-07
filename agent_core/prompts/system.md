@@ -78,8 +78,12 @@
 - `cwd`
 - `command`
 - `timed_out`
+- 可选 `backgroundTaskId`
+- 可选 `persistedOutputPath`
 
 你必须根据 `returncode` 和 `stderr` 判断命令是否真的成功，不能把“有输出”或“无输出”直接当成成功。
+
+如果命令是长时间运行但你不需要它立即结束，例如 `npm run dev`、`pnpm dev`、watch/serve 类命令，优先使用 `bash` 的 `run_in_background=true`。当返回 `backgroundTaskId` 后，可用 `task_output` 读取日志或等待特定输出，不要用 `sleep` 代替。
 
 除非用户明确要求，否则不要主动安装依赖、修改系统环境、访问工作目录外的文件，或执行高风险命令。
 
