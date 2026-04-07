@@ -1013,6 +1013,11 @@ class TGAgentCLI:
             workspace_root=self._ctx.working_dir,
             dependency_overrides=self._agent.dependency_overrides,
         )
+        init_runtime = CLISessionRuntime.create_helper_top_level_runtime(
+            self._ctx,
+            helper_name="init",
+        )
+        init_agent.bind_session_runtime(init_runtime)
         prompt = build_init_user_prompt(self._ctx.working_dir)
         final_response = await self._run_agent(prompt, has_image=False, agent=init_agent)
         ok, error = validate_init_output(self._ctx.working_dir)
@@ -1038,8 +1043,10 @@ class TGAgentCLI:
         final_response: str | None = None
         active_agent = agent or self._agent
 
-        # Inject TGAGENTS.md (if present) before each user query
-        # self._maybe_inject_agents_md()
+        # Keep workspace instructions synchronized for the main CLI agent.
+        # Dedicated helper agents like /init manage their own injection timing.
+        if active_agent is self._agent:
+            self._maybe_inject_agents_md()
 
         # Start loading animation
         self._loading = self._start_loading("思考中")

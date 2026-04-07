@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -34,9 +35,107 @@ def tg_agent_home() -> Path:
     return Path("~/.tg_agent").expanduser().resolve()
 
 
+def packaged_env_path() -> Path:
+    """Return the packaged .env path when present."""
+    return application_root() / ".env"
+
+
+def _load_packaged_env_values() -> dict[str, str]:
+    env_path = packaged_env_path()
+    if not env_path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for key, value in dotenv_values(env_path).items():
+        if key and value is not None:
+            values[key] = value
+    return values
+
+
+def _load_model_preset_api_key_env_names() -> list[str]:
+    try:
+        from config.model_config import load_model_presets
+    except Exception:
+        return []
+
+    env_names: list[str] = []
+    seen: set[str] = set()
+    for preset in load_model_presets().values():
+        raw_name = preset.get("api_key_env", "OPENAI_API_KEY")
+        if not isinstance(raw_name, str):
+            continue
+        env_name = raw_name.strip()
+        if not env_name or env_name in seen:
+            continue
+        seen.add(env_name)
+        env_names.append(env_name)
+    return env_names
+
+
+def default_runtime_env_values() -> dict[str, str]:
+    """Return default CLI runtime env values merged with packaged overrides."""
+    values = {
+        "OPENAI_API_KEY": "",
+        "LLM_MODEL": "GLM-4.7",
+        "LLM_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
+    }
+    values.update(_load_packaged_env_values())
+    for env_name in _load_model_preset_api_key_env_names():
+        values.setdefault(env_name, "")
+    return values
+
+
+def default_runtime_env_content() -> str:
+    """Return the default CLI runtime env template."""
+    lines = [
+        "# tg-agent runtime configuration",
+        "# Generated automatically on first CLI launch.",
+        "# Values from the packaged .env are merged here when available.",
+        "# Edit this file if you want to override the default model or API endpoint.",
+    ]
+    for key, value in default_runtime_env_values().items():
+        lines.append(f"{key}={value}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def ensure_cli_runtime_state() -> Path:
+    """Create default CLI runtime files under ~/.tg_agent when missing."""
+    home_dir = tg_agent_home()
+    home_dir.mkdir(parents=True, exist_ok=True)
+
+    env_path = home_dir / ".env"
+    if not env_path.exists():
+        env_path.write_text(default_runtime_env_content(), encoding="utf-8")
+    else:
+        existing_values = {
+            key: value
+            for key, value in dotenv_values(env_path).items()
+            if key is not None
+        }
+        missing_items: list[tuple[str, str]] = []
+        for key, value in default_runtime_env_values().items():
+            if key not in existing_values:
+                missing_items.append((key, value))
+        if missing_items:
+            with env_path.open("a", encoding="utf-8") as f:
+                if env_path.stat().st_size > 0:
+                    f.write("\n")
+                for key, value in missing_items:
+                    f.write(f"{key}={value}\n")
+
+    packaged_worker_config = application_root() / "tg_crab_worker.json"
+    user_worker_config = home_dir / "tg_crab_worker.json"
+    if packaged_worker_config.exists() and not user_worker_config.exists():
+        shutil.copyfile(packaged_worker_config, user_worker_config)
+
+    return home_dir
+
+
 def runtime_env_files(cwd: Path | None = None) -> list[Path]:
     """Return env files ordered from lowest to highest precedence."""
     candidate_paths = [
+        packaged_env_path(),
         tg_agent_home() / ".env",
         (cwd or Path.cwd()).resolve() / ".env",
     ]

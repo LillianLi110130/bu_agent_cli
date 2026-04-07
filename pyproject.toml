@@ -57,9 +57,9 @@ build-backend = "hatchling.build"
 ".devagent" = "tg_agent_cli/.devagent"
 "skills" = "tg_agent_cli/skills"
 "plugins" = "tg_agent_cli/plugins"
-"gateway" = "tg_agent_cli/gateway"
 "tg_agent_cli.pth" = "tg_agent_cli.pth"
 "tg_crab_worker.json" = "tg_agent_cli/tg_crab_worker.json"
+".env" = "tg_agent_cli/.env"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -74,6 +74,7 @@ include = [
     "template/**",
     ".devagent/**",
     "skills/**",
+    ".env",
     ".env.example",
     "README.md",
     "plugins/**",

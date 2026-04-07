@@ -56,6 +56,7 @@ def test_build_init_agent_requires_done_and_uses_restricted_tools() -> None:
 
     assert agent.require_done_tool is True
     assert agent.tool_choice == "required"
+    assert agent.max_iterations == 24
     assert [tool.name for tool in agent.tools] == [
         "resolve_path",
         "glob_search",
@@ -76,10 +77,16 @@ def test_init_prompts_contain_expected_constraints(tmp_path) -> None:
     assert "Only modify TGAGENTS.md" in system_prompt
     assert "Do not use shell commands" in system_prompt
     assert "Use `write` or `edit`" in system_prompt
+    assert "Prefer high-signal files first" in system_prompt
+    assert "Do not repeatedly read the same file slice" in system_prompt
+    assert "stop exploring and draft the full TGAGENTS.md immediately" in system_prompt
     assert "Call the done tool" in system_prompt
     assert str(tmp_path) in user_prompt
     assert "TGAGENTS.md" in user_prompt
     assert "1. 项目目标" in user_prompt
+    assert "Prefer high-signal files first" in user_prompt
+    assert "Do not repeat the same read or search with identical parameters" in user_prompt
+    assert "stop exploring and write TGAGENTS.md" in user_prompt
     assert "Do not call done until TGAGENTS.md exists and is non-empty" in user_prompt
 
 
