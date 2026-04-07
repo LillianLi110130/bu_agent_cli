@@ -529,7 +529,10 @@ class Agent:
 
         summary_lines = self._build_bash_summary_lines(payload)
         if artifact_path:
-            summary_lines.append(f"Full output: {artifact_path}")
+            summary_lines.append(
+                f"Artifact content: {artifact_path}\n"
+                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
+            )
         return "\n".join(summary_lines)
 
     @staticmethod
@@ -550,7 +553,10 @@ class Agent:
         summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
         summary_lines = ["Bash output summary:", summary]
         if artifact_path:
-            summary_lines.append(f"Full output: {artifact_path}")
+            summary_lines.append(
+                f"Artifact content: {artifact_path}\n"
+                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
+            )
         return "\n".join(summary_lines)
 
     def _build_bash_summary_lines(self, payload: dict) -> list[str]:
@@ -606,8 +612,8 @@ class Agent:
         ]
         if artifact_path:
             summary_lines.append(
-                f"Full excerpt: {artifact_path}. "
-                "Use offset_line/n_lines to reread a narrower slice."
+                f"Artifact content: {artifact_path}. "
+                "If more detail is needed, use read with explicit offset_line and n_lines."
             )
         return "\n".join(summary_lines)
 
@@ -676,7 +682,10 @@ class Agent:
                 )
 
         if artifact_path:
-            summary_lines.append(f"Full workbook result: {artifact_path}")
+            summary_lines.append(
+                f"Artifact content: {artifact_path}\n"
+                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
+            )
         return "\n".join(summary_lines)
 
     def _summarize_generic_tool_output(
@@ -693,7 +702,10 @@ class Agent:
             preview or "(empty)",
         ]
         if artifact_path:
-            summary_lines.append(f"Full output: {artifact_path}")
+            summary_lines.append(
+                f"Artifact content: {artifact_path}\n"
+                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
+            )
         return "\n".join(summary_lines)
 
     def _apply_tool_context_policy(
@@ -703,6 +715,7 @@ class Agent:
         tool_call: ToolCall,
         raw_result,
         is_error: bool,
+        execution_args: dict[str, object] | None = None,
     ) -> ToolMessage:
         normalized_policy, is_ephemeral = self._normalize_tool_context_policy(tool)
         raw_message = ToolMessage(
@@ -712,11 +725,21 @@ class Agent:
             is_error=is_error,
             ephemeral=is_ephemeral,
         )
+        if self._should_bypass_artifact_persistence(tool=tool, execution_args=execution_args):
+            return raw_message
+
+        artifact_summary = self._build_tool_artifact_summary(
+            tool=tool,
+            raw_result=raw_result,
+            normalized_policy=normalized_policy,
+            max_inline_chars=tool.context_config.max_inline_chars,
+        )
         artifact_path = self._persist_tool_context_artifact(
             raw_message,
             raw_result=raw_result,
             normalized_policy=normalized_policy,
             max_inline_chars=tool.context_config.max_inline_chars,
+            summary_text=artifact_summary,
         )
 
         if not isinstance(raw_result, str):
@@ -742,6 +765,92 @@ class Agent:
         normalized_policy = "raw" if policy == "ephemeral" else policy
         return normalized_policy, is_ephemeral
 
+    def _get_active_sandbox_context(self):
+        if not self.dependency_overrides:
+            return None
+        for dependency, override in self.dependency_overrides.items():
+            if getattr(dependency, "__name__", "") != "get_sandbox_context":
+                continue
+            try:
+                resolved = override()
+            except TypeError:
+                return None
+            has_expected_api = all(
+                hasattr(resolved, attr)
+                for attr in ("resolve_path", "is_runtime_artifact_path")
+            )
+            return resolved if has_expected_api else None
+        return None
+
+    def _is_runtime_artifact_read(
+        self,
+        *,
+        tool: Tool,
+        execution_args: dict[str, object] | None,
+    ) -> bool:
+        if tool.name != "read" or not execution_args:
+            return False
+        file_path = execution_args.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return False
+
+        sandbox = self._get_active_sandbox_context()
+        if sandbox is None:
+            return False
+
+        try:
+            resolved_path = sandbox.resolve_path(file_path)
+        except Exception:
+            return False
+        return sandbox.is_runtime_artifact_path(resolved_path)
+
+    def _should_bypass_artifact_persistence(
+        self,
+        *,
+        tool: Tool,
+        execution_args: dict[str, object] | None,
+    ) -> bool:
+        return self._is_runtime_artifact_read(tool=tool, execution_args=execution_args)
+
+    def _build_tool_artifact_summary(
+        self,
+        *,
+        tool: Tool,
+        raw_result,
+        normalized_policy: str,
+        max_inline_chars: int,
+    ) -> str | None:
+        if not isinstance(raw_result, str):
+            preview = self._truncate_tool_text(str(raw_result), max_chars=max_inline_chars)
+            return f"{tool.name} output persisted for later inspection.\n{preview}"
+
+        if normalized_policy == "summarize":
+            return self._summarize_tool_output(
+                tool_name=tool.name,
+                raw_text=raw_result,
+                artifact_path=None,
+                max_inline_chars=max_inline_chars,
+            )
+        if normalized_policy == "trim" and len(raw_result) > max_inline_chars:
+            return self._summarize_trimmed_tool_output(
+                tool_name=tool.name,
+                raw_text=raw_result,
+                artifact_path=None,
+                max_inline_chars=max_inline_chars,
+            )
+        if tool.name == "read":
+            return self._summarize_read_output(
+                raw_result,
+                artifact_path=None,
+                max_inline_chars=max_inline_chars,
+            )
+        return self._summarize_generic_tool_output(
+            tool.name,
+            raw_result,
+            artifact_path=None,
+            max_inline_chars=max_inline_chars,
+        )
+
     def _persist_tool_context_artifact(
         self,
         raw_message: ToolMessage,
@@ -749,12 +858,17 @@ class Agent:
         raw_result,
         normalized_policy: str,
         max_inline_chars: int,
+        summary_text: str | None = None,
     ) -> str | None:
         content_size = self._estimate_tool_content_size(raw_result)
         should_force_artifact = normalized_policy in {"summarize", "store_only"} or (
             normalized_policy == "trim" and content_size > max_inline_chars
         )
-        return self._context.persist_tool_artifact(raw_message, force=should_force_artifact)
+        return self._context.persist_tool_artifact(
+            raw_message,
+            force=should_force_artifact,
+            summary_text=summary_text,
+        )
 
     def _apply_non_string_tool_context_policy(
         self,
@@ -807,7 +921,10 @@ class Agent:
     def _build_store_only_note(tool_name: str, artifact_path: str | None) -> str:
         stored_note = f"{tool_name} output omitted from context."
         if artifact_path:
-            stored_note = f"{stored_note} Full output: {artifact_path}"
+            stored_note = (
+                f"{stored_note} Artifact content: {artifact_path} "
+                "Use read with explicit offset_line and n_lines if more detail is needed."
+            )
         return stored_note
 
     def _apply_trim_tool_context_policy(
@@ -924,6 +1041,7 @@ class Agent:
                     tool_call=tool_call,
                     raw_result=result,
                     is_error=False,
+                    execution_args=args,
                 )
 
                 # Set span output

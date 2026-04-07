@@ -58,9 +58,10 @@ async def test_bash_context_policy_summarizes_and_persists_raw_output(
     assert "fatal: repository has conflicts" in tool_message.text
     assert '"stdout"' not in tool_message.text
 
-    artifact_path = runtime.artifacts_dir / "tool" / "call-bash.json"
-    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    raw_payload = json.loads(str(artifact_payload["content"]))
+    artifact_meta = runtime.artifacts_dir / "tool" / "call-bash.meta.json"
+    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
+    assert artifact_payload["content_format"] == "json"
+    raw_payload = json.loads(Path(artifact_payload["content_path"]).read_text(encoding="utf-8"))
     assert raw_payload["command"] == "git status"
     assert raw_payload["returncode"] == 1
     assert raw_payload["stdout"] == "line one\nline two\nline three"
@@ -104,12 +105,14 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     assert tool_message.text != raw_result
     assert "Read result: [Lines 1-180 of 180]" in tool_message.text
     assert "Context preview:" in tool_message.text
-    assert "Full excerpt:" in tool_message.text
+    assert "Artifact content:" in tool_message.text
 
-    artifact_path = runtime.artifacts_dir / "tool" / "call-read-large.json"
-    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact_meta = runtime.artifacts_dir / "tool" / "call-read-large.meta.json"
+    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
     assert artifact_payload["tool_name"] == "read"
-    assert artifact_payload["content"] == raw_result
+    assert artifact_payload["content_format"] == "text"
+    artifact_content = Path(artifact_payload["content_path"]).read_text(encoding="utf-8")
+    assert artifact_content == raw_result
 
 
 @pytest.mark.asyncio
@@ -230,9 +233,71 @@ async def test_read_excel_context_policy_summarizes_large_match_payload(
     assert "Matches returned: 200" in tool_message.text
     assert "Sheet summary: Sheet1 rows=1955, cols=42" in tool_message.text
     assert "Top matches:" in tool_message.text
-    assert "Full workbook result:" in tool_message.text
+    assert "Artifact content:" in tool_message.text
 
-    artifact_path = runtime.artifacts_dir / "tool" / "call-excel.json"
-    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact_meta = runtime.artifacts_dir / "tool" / "call-excel.meta.json"
+    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
     assert artifact_payload["tool_name"] == "read_excel"
-    assert "\"matches\"" in str(artifact_payload["content"])
+    assert artifact_payload["content_format"] == "json"
+    assert "\"matches\"" in Path(artifact_payload["content_path"]).read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "large.txt"
+    target.write_text("".join(f"line {i:04d}\n" for i in range(1, 301)), "utf-8")
+
+    sandbox = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(sandbox)
+    agent = Agent(
+        llm=EchoLLM(prefix="echo:"),
+        tools=[read],
+        system_prompt="test",
+        dependency_overrides={get_sandbox_context: lambda: sandbox},
+    )
+    agent.bind_session_runtime(runtime)
+
+    first_tool_message = await agent._execute_tool_call(
+        ToolCall(
+            id="call-read-large-window",
+            function=Function(name="read", arguments=json.dumps({"file_path": "large.txt"})),
+        )
+    )
+    assert "Artifact content:" in first_tool_message.text
+
+    artifact_meta = runtime.artifacts_dir / "tool" / "call-read-large-window.meta.json"
+    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
+    artifact_content_path = artifact_payload["content_path"]
+
+    missing_window = await read.execute(
+        file_path=artifact_content_path,
+        _overrides={get_sandbox_context: lambda: sandbox},
+    )
+    assert "requires explicit offset_line and n_lines" in str(missing_window)
+
+    artifact_tool_message = await agent._execute_tool_call(
+        ToolCall(
+            id="call-read-artifact-slice",
+            function=Function(
+                name="read",
+                arguments=json.dumps(
+                    {
+                        "file_path": artifact_content_path,
+                        "offset_line": 10,
+                        "n_lines": 40,
+                    }
+                ),
+            ),
+        )
+    )
+
+    assert artifact_tool_message.text.startswith("[Lines 10-49")
+    assert "Artifact content:" not in artifact_tool_message.text
+    assert not (runtime.artifacts_dir / "tool" / "call-read-artifact-slice.meta.json").exists()

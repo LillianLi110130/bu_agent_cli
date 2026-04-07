@@ -122,6 +122,8 @@ class CLISessionRuntime:
         artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         ctx.add_allowed_dir(resolved_root)
+        ctx.add_runtime_managed_dir(checkpoints_dir)
+        ctx.add_runtime_managed_dir(artifacts_dir)
 
         runtime = cls(
             session_id=session_id,

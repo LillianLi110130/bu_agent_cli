@@ -163,11 +163,12 @@ async def test_bound_session_runtime_persists_large_tool_output(
         )
     )
 
-    artifact_path = runtime.artifacts_dir / "tool" / "call-large.json"
+    artifact_path = runtime.artifacts_dir / "tool" / "call-large.meta.json"
     assert artifact_path.exists()
     artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert artifact_payload["tool_name"] == "emit_large_output"
-    assert artifact_payload["content"] == tool_message.content
+    assert artifact_payload["content_format"] == "text"
+    assert Path(artifact_payload["content_path"]).read_text(encoding="utf-8") == tool_message.content
 
 
 @pytest.mark.asyncio
