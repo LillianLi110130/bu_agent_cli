@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from agent_core.runtime_paths import tg_agent_home
 from tools.sandbox import SandboxContext
@@ -56,6 +57,53 @@ class CLISessionRuntime:
     ) -> "CLISessionRuntime":
         """Create and bind a rollout directory for the current CLI process."""
         resolved_now = _resolve_now(now)
+        return cls._create_runtime(
+            session_id=ctx.session_id,
+            root_dir=root_dir,
+            now=resolved_now,
+            rollout_dir_name=f"rollout-{resolved_now.strftime('%Y%m%d-%H%M%S')}-{ctx.session_id}",
+            ctx=ctx,
+        )
+
+    @classmethod
+    def create_helper_top_level_runtime(
+        cls,
+        ctx: SandboxContext,
+        *,
+        helper_name: str,
+        root_dir: Path | None = None,
+        now: datetime | None = None,
+    ) -> "CLISessionRuntime":
+        """Create a helper-specific top-level rollout for a dedicated agent run."""
+        resolved_helper_name = str(helper_name).strip()
+        if not resolved_helper_name:
+            raise ValueError("helper_name must not be empty")
+
+        resolved_now = _resolve_now(now)
+        runtime_id = uuid4().hex[:8]
+        rollout_dir_name = (
+            f"rollout-{resolved_now.strftime('%Y%m%d-%H%M%S')}-{resolved_helper_name}-{runtime_id}"
+        )
+        return cls._create_runtime(
+            session_id=runtime_id,
+            root_dir=root_dir,
+            now=resolved_now,
+            rollout_dir_name=rollout_dir_name,
+            ctx=ctx,
+        )
+
+    @classmethod
+    def _create_runtime(
+        cls,
+        *,
+        session_id: str,
+        rollout_dir_name: str,
+        ctx: SandboxContext,
+        root_dir: Path | None = None,
+        now: datetime | None = None,
+    ) -> "CLISessionRuntime":
+        """Create one rollout runtime with a precomputed session id and directory name."""
+        resolved_now = _resolve_now(now)
         resolved_root = (root_dir or default_cli_state_root()).expanduser().resolve()
         resolved_root.mkdir(parents=True, exist_ok=True)
 
@@ -65,7 +113,7 @@ class CLISessionRuntime:
             / resolved_now.strftime("%Y")
             / resolved_now.strftime("%m")
             / resolved_now.strftime("%d")
-            / f"rollout-{resolved_now.strftime('%Y%m%d-%H%M%S')}-{ctx.session_id}"
+            / rollout_dir_name
         )
         rollout_dir.mkdir(parents=True, exist_ok=True)
         checkpoints_dir = rollout_dir / "checkpoints"
@@ -74,9 +122,11 @@ class CLISessionRuntime:
         artifacts_dir.mkdir(parents=True, exist_ok=True)
 
         ctx.add_allowed_dir(resolved_root)
+        ctx.add_runtime_managed_dir(checkpoints_dir)
+        ctx.add_runtime_managed_dir(artifacts_dir)
 
         runtime = cls(
-            session_id=ctx.session_id,
+            session_id=session_id,
             root_dir=resolved_root,
             sessions_dir=sessions_dir,
             rollout_dir=rollout_dir,

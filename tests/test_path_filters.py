@@ -21,8 +21,26 @@ def _make_workspace() -> Path:
     return workspace
 
 
+def _make_temp_dir(prefix: str) -> Path:
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    path = temp_root / f"{prefix}-{uuid.uuid4().hex[:8]}"
+    path.mkdir()
+    return path
+
+
 def _write_ignore_file(workspace: Path, lines: list[str]) -> None:
     (workspace / ".tgagentignore").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _set_fake_home(monkeypatch: pytest.MonkeyPatch, home_dir: Path) -> Path:
+    tg_agent_dir = home_dir / ".tg_agent"
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("USERPROFILE", str(home_dir))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    return tg_agent_dir
 
 
 def test_sandbox_context_loads_ignore_rules_from_workspace_file() -> None:
@@ -56,6 +74,27 @@ def test_resolve_path_blocks_paths_matched_by_ignore_pattern() -> None:
             ctx.resolve_path("target/note.txt")
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_sandbox_context_allows_user_tg_agent_directory_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _make_workspace()
+    home_dir = _make_temp_dir("home")
+    skill_file = _set_fake_home(monkeypatch, home_dir) / "skills" / "demo" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("demo", encoding="utf-8")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        resolved = ctx.resolve_path("~/.tg_agent/skills/demo/SKILL.md")
+
+        assert resolved == skill_file.resolve()
+        assert any(path == skill_file.parents[2].resolve() for path in ctx.allowed_dirs)
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(home_dir, ignore_errors=True)
 
 
 def test_resolve_target_path_skips_ignored_candidates() -> None:
@@ -132,6 +171,28 @@ async def test_glob_search_skips_ignored_patterns() -> None:
         assert "hidden.py" not in result
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_glob_search_allows_user_tg_agent_skills_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _make_workspace()
+    home_dir = _make_temp_dir("home")
+    skill_file = _set_fake_home(monkeypatch, home_dir) / "skills" / "demo" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("demo", encoding="utf-8")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        result = await glob_search.func("**/SKILL.md", ctx=ctx, path="~/.tg_agent/skills")
+
+        assert "SKILL.md" in result
+        assert "Security error:" not in result
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(home_dir, ignore_errors=True)
 
 
 @pytest.mark.anyio

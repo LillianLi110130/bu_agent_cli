@@ -70,6 +70,7 @@ class AgentRuntimeLoop:
         while queue and not self.state.done:
             # Check for cancellation
             if self.state.cancel_event and self.state.cancel_event.is_set():
+                self._append_cancelled_tool_results()
                 self.state.done = True
                 self.state.final_response = "[Cancelled by user]"
                 self.state.finished_at = datetime.now(timezone.utc)
@@ -246,6 +247,7 @@ class AgentRuntimeLoop:
         try:
             tool_result = await self.agent._execute_tool_call(event.tool_call)
         except asyncio.CancelledError:
+            self._append_cancelled_tool_results()
             return [self._cancelled_run_finished()], ui_events
         except self.agent.task_complete_exc_type as task_complete:
             terminal_tool_message = ToolMessage(
@@ -393,6 +395,43 @@ class AgentRuntimeLoop:
             final_response="[Cancelled by user]",
             iterations=self.state.iterations,
         )
+
+    def _append_cancelled_tool_results(self) -> None:
+        """Close the active assistant tool-call block with synthetic cancelled results."""
+        messages = self.agent._context.get_messages()
+        if not messages:
+            return
+
+        trailing_tool_messages: list[ToolMessage] = []
+        index = len(messages) - 1
+
+        while index >= 0 and isinstance(messages[index], ToolMessage):
+            trailing_tool_messages.append(messages[index])
+            index -= 1
+
+        if index < 0:
+            return
+
+        assistant_message = messages[index]
+        if not isinstance(assistant_message, AssistantMessage) or not assistant_message.tool_calls:
+            return
+
+        received_tool_ids = {message.tool_call_id for message in trailing_tool_messages}
+        missing_tool_calls = [
+            tool_call
+            for tool_call in assistant_message.tool_calls
+            if tool_call.id not in received_tool_ids
+        ]
+
+        for tool_call in missing_tool_calls:
+            self.agent._context.add_message(
+                ToolMessage(
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.function.name,
+                    content="Tool execution cancelled by user.",
+                    is_error=True,
+                )
+            )
 
     @staticmethod
     def _prepend_events(queue: deque[RuntimeEvent], events: list[RuntimeEvent]) -> None:

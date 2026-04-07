@@ -1040,6 +1040,11 @@ class TGAgentCLI:
             workspace_root=self._ctx.working_dir,
             dependency_overrides=self._agent.dependency_overrides,
         )
+        init_runtime = CLISessionRuntime.create_helper_top_level_runtime(
+            self._ctx,
+            helper_name="init",
+        )
+        init_agent.bind_session_runtime(init_runtime)
         prompt = build_init_user_prompt(self._ctx.working_dir)
         final_response = await self._run_agent(prompt, has_image=False, agent=init_agent)
         ok, error = validate_init_output(self._ctx.working_dir)

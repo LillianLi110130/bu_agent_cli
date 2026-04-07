@@ -36,9 +36,19 @@ def _iter_searchable_files(root: Path, ctx: SandboxContext) -> Iterable[Path]:
 def _matches_glob(root: Path, candidate: Path, pattern: str) -> bool:
     pattern_text = pattern.replace("\\", "/")
     relative = candidate.relative_to(root).as_posix()
-    return PurePosixPath(relative).match(pattern_text) or PurePosixPath(candidate.name).match(
-        pattern_text
-    )
+    relative_path = PurePosixPath(relative)
+    candidate_name = PurePosixPath(candidate.name)
+    # Keep pathlib's native glob semantics for the common case.
+    if relative_path.match(pattern_text) or candidate_name.match(pattern_text):
+        return True
+    if pattern_text.startswith("**/"):
+        # pathlib does not treat patterns like "**/*.docx" as matching files that
+        # live directly under the search root, so retry without the recursive prefix.
+        pattern_without_recursive_prefix = pattern_text[3:]
+        return relative_path.match(pattern_without_recursive_prefix) or candidate_name.match(
+            pattern_without_recursive_prefix
+        )
+    return False
 
 
 def _display_path(path: Path, ctx: SandboxContext) -> str:

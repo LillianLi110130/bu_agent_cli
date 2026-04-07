@@ -143,11 +143,21 @@ class ContextManager:
         self._artifact_refs = self._dedupe_preserve_order([*self._artifact_refs, path])
         return path
 
-    def persist_tool_artifact(self, message: ToolMessage, *, force: bool = False) -> str | None:
+    def persist_tool_artifact(
+        self,
+        message: ToolMessage,
+        *,
+        force: bool = False,
+        summary_text: str | None = None,
+    ) -> str | None:
         """Persist a large tool result to the rollout artifact store when configured."""
         if self._artifact_store is None:
             return None
-        saved_path = self._artifact_store.save_tool_message(message, force=force)
+        saved_path = self._artifact_store.save_tool_message(
+            message,
+            force=force,
+            summary_text=summary_text,
+        )
         if saved_path is None:
             return None
         return self._register_artifact_ref(str(saved_path))

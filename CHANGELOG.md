@@ -5,6 +5,7 @@
 ## [Unreleased]
 
 ### Added
+- 新增 `WebFetch` 本地网页抓取工具，支持获取文本与 HTML 页面内容，并对 HTML 做轻量正文提取。
 - 新增顶层 vendored 包 `tg_mem/`，裁剪集成 mem0 的 MySQL-only 和记忆提炼能力，用于当前 Agent server 的会话历史恢复与轮次记忆写入。
 - 新增 `bu_agent_sdk.server.memory_service`，支持从环境变量构建 tg_mem 适配器、按 `session_id` 恢复 `user/assistant` 历史、每轮注入当前 `user_id` 的全部 memory（带 20,000 字符安全上限），并在每轮对话后增量写入记忆。
 - 新增覆盖 server 记忆接入与 server client `user_id` 行为的测试用例。

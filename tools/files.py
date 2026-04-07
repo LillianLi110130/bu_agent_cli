@@ -10,6 +10,7 @@ from tools.text_encoding import read_text_with_fallback
 
 # Constants
 _MAX_FILE_CHARS = 128_000  # ~128KB - prevents OOM from reading huge files
+_MAX_ARTIFACT_WINDOW_LINES = 200
 
 
 def _build_diff_error(old_text: str, content: str, file_path: str) -> str:
@@ -38,6 +39,37 @@ def _build_diff_error(old_text: str, content: str, file_path: str) -> str:
     return f"Error: old_string not found in {file_path}. No similar text found."
 
 
+def _validate_artifact_window(
+    *,
+    path,
+    ctx: SandboxContext,
+    offset_line: Optional[int],
+    n_lines: Optional[int],
+) -> str | None:
+    if not ctx.is_runtime_artifact_path(path):
+        return None
+
+    if offset_line is None or n_lines is None:
+        return (
+            "Error: reading runtime artifact requires explicit offset_line and n_lines. "
+            "Use a narrow slice, for example offset_line=1, n_lines=80."
+        )
+
+    if n_lines <= 0:
+        return "Error: n_lines must be a positive integer when reading a runtime artifact."
+
+    if n_lines > _MAX_ARTIFACT_WINDOW_LINES:
+        return (
+            f"Error: runtime artifact reads are limited to {_MAX_ARTIFACT_WINDOW_LINES} lines per call. "
+            f"Requested n_lines={n_lines}."
+        )
+
+    if offset_line <= 0:
+        return "Error: offset_line must be a positive integer when reading a runtime artifact."
+
+    return None
+
+
 @tool("Read contents of a file", context_policy="trim", context_max_inline_chars=2200)
 async def read(
     file_path: str,
@@ -58,6 +90,15 @@ async def read(
         if isinstance(e, (PathNotFoundError, AmbiguousPathError)):
             return str(e)
         return f"Security error: {e}"
+
+    artifact_window_error = _validate_artifact_window(
+        path=path,
+        ctx=ctx,
+        offset_line=offset_line,
+        n_lines=n_lines,
+    )
+    if artifact_window_error:
+        return artifact_window_error
 
     try:
         # Only check file size if no line range is specified

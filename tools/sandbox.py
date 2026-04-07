@@ -134,6 +134,7 @@ class SandboxContext:
     ignore_rules: list[IgnoreRule] = field(default_factory=list)
     ignored_patterns: list[str] = field(default_factory=list)
     ignore_file_lines: list[str] = field(default_factory=list)
+    runtime_managed_dirs: list[Path] = field(default_factory=list)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     subagent_executor: Any | None = None
     subagent_manager: Any | None = None
@@ -208,6 +209,22 @@ class SandboxContext:
         if persist:
             self.save_ignore_rules()
         return cleaned
+
+    def add_runtime_managed_dir(self, path: Path | str) -> Path:
+        """Register a runtime-managed directory such as rollout artifacts/checkpoints."""
+        resolved = Path(path).resolve()
+        if not resolved.exists():
+            raise SecurityError(f"Path does not exist: {resolved}")
+        if not resolved.is_dir():
+            raise SecurityError(f"Path is not a directory: {resolved}")
+
+        for existing in self.runtime_managed_dirs:
+            if existing.resolve() == resolved:
+                return resolved
+
+        self.runtime_managed_dirs.append(resolved)
+        self.runtime_managed_dirs.sort(key=lambda item: str(item).lower())
+        return resolved
 
     def remove_ignore_pattern(self, pattern: str, *, persist: bool = True) -> str:
         """Remove one exact ignore pattern line from ``.tgagentignore``."""
@@ -293,6 +310,11 @@ class SandboxContext:
                 f"Edit {self.ignore_file.name} to inspect or change active rules."
             )
         return resolved
+
+    def is_runtime_artifact_path(self, path: Path | str) -> bool:
+        """Return True when a resolved path is under one of the runtime-managed dirs."""
+        resolved = Path(path).resolve()
+        return any(self._is_same_or_parent(root, resolved) for root in self.runtime_managed_dirs)
 
     def _resolve_user_path(self, path: str | Path) -> Path:
         """Resolve a user path without applying allow/ignore checks."""

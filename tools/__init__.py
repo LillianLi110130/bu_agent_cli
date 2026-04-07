@@ -6,6 +6,7 @@ from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, get_sandbox_context, SecurityError
 from tools.search import glob_search, grep
 from tools.todos import done, todo_read, todo_write
+from tools.web import web_fetch
 from tools.task_output import task_output
 from tools.task_status import task_status
 from tools.task_cancel import task_cancel
@@ -34,6 +35,7 @@ ALL_TOOLS = [
     todo_read,
     todo_write,
     done,
+    web_fetch,
     task_output,
     task_status,
     task_cancel,
@@ -57,6 +59,7 @@ __all__ = [
     "todo_read",
     "todo_write",
     "done",
+    "web_fetch",
     "task_output",
     "task_status",
     "task_cancel",
