@@ -11,7 +11,7 @@ from typing import Any
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
-from agent_core.runtime_paths import application_root
+from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
@@ -19,6 +19,7 @@ _APP_ROOT = application_root()
 _PACKAGE_ROOT = _APP_ROOT / "agent_core"
 _PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
 _SKILLS_DIR = _APP_ROOT / "skills"
+_PROJECT_CONTEXT_FILENAMES = ("SOUL.md", "IDENTITY.md", "USER.md")
 
 
 def _format_skills(skills: list[Any]) -> str:
@@ -38,6 +39,49 @@ def _load_prompt_template(template_name: str = "system.md") -> str:
     if not template_path.exists():
         raise FileNotFoundError(f"Prompt template not found: {template_path}")
     return template_path.read_text(encoding="utf-8")
+
+
+def _resolve_project_context_paths(prompts_dir: Path | None = None) -> list[Path]:
+    """Resolve project context files with ~/.tg_agent priority and prompts fallback."""
+    resolved_prompts_dir = prompts_dir or _PROMPTS_DIR
+    user_home_dir = tg_agent_home()
+    resolved_paths: list[Path] = []
+
+    for filename in _PROJECT_CONTEXT_FILENAMES:
+        home_path = user_home_dir / filename
+        prompt_path = resolved_prompts_dir / filename
+        if home_path.exists():
+            resolved_paths.append(home_path)
+        elif prompt_path.exists():
+            resolved_paths.append(prompt_path)
+
+    return resolved_paths
+
+
+def build_project_context(prompts_dir: Path | None = None) -> str:
+    """Render project context files into a dedicated prompt section."""
+    existing_paths = _resolve_project_context_paths(prompts_dir=prompts_dir)
+
+    lines = [
+        "## Project Context",
+        "The following project context files have been loaded:",
+    ]
+    if any(path.name == "SOUL.md" for path in existing_paths):
+        lines.append(
+            "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic "
+            "replies; follow its guidance unless higher-priority instructions override it."
+        )
+
+    for path in existing_paths:
+        lines.extend(
+            [
+                "",
+                f"### {path}",
+                path.read_text(encoding="utf-8").rstrip(),
+            ]
+        )
+
+    return "\n".join(lines)
 
 
 def _get_system_info() -> str:
@@ -114,6 +158,7 @@ def build_system_prompt(
         WORKING_DIR=str(working_dir),
         SUBAGENTS=agents_text,
         SYSTEM_INFO=_get_system_info(),
+        PROJECT_CONTEXT=build_project_context(),
     )
 
 
