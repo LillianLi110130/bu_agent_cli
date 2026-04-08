@@ -234,7 +234,7 @@ class ToolPolicyHook(BaseAgentHook):
 class ExcelReadGuardHook(BaseAgentHook):
     """Block Excel-related shell retries after a successful read_excel call."""
 
-    priority: int = 19
+    priority: int = 16
     state_attr: str = "_successful_excel_reads"
 
     async def before_event(
@@ -320,7 +320,7 @@ class ExcelReadGuardHook(BaseAgentHook):
 class BashFileTaskGuardHook(BaseAgentHook):
     """Block bash when the agent tries to use it as a file inspection tool."""
 
-    priority: int = 19
+    priority: int = 17
 
     async def before_event(
         self,
@@ -556,10 +556,13 @@ class HookManager:
                     current_event = decision.replacement_event
                 continue
             if decision.action == HookAction.OVERRIDE_RESULT:
-                if override_result is not None:
-                    raise ValueError("Multiple hooks attempted to override the same result.")
                 override_result = decision.override_result
-                continue
+                return HookDispatchResult(
+                    event=current_event,
+                    emitted_events=queued_events,
+                    override_result=override_result,
+                    aborted=False,
+                )
             if decision.action == HookAction.ABORT:
                 return HookDispatchResult(
                     event=current_event,

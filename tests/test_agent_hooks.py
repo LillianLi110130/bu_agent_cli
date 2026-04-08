@@ -493,6 +493,70 @@ async def test_excel_read_guard_hook_allows_non_excel_bash_after_read_excel():
 
 
 @pytest.mark.asyncio
+async def test_excel_and_bash_guards_do_not_conflict_on_excel_file_listing_command():
+    called = {"value": False}
+
+    @tool("Read excel")
+    async def read_excel(file_path: str) -> str:
+        return json.dumps(
+            {
+                "resolved_path": file_path,
+                "sheet_names": ["Sheet1"],
+                "selected_sheet": None,
+                "preview_limits": {"max_rows": 20, "max_cols": 20},
+                "sheets": [],
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(
+                            name="read_excel",
+                            arguments='{"file_path":"D:/workspace/demo.xlsx"}',
+                        ),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-2",
+                        function=Function(name="bash", arguments='{"command":"dir demo.xlsx"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[read_excel, bash],
+        hooks=[BashFileTaskGuardHook(), ExcelReadGuardHook()],
+    )
+
+    result = await agent.query("analyze workbook")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 2
+    assert tool_messages[1].is_error is True
+    assert "read_excel" in tool_messages[1].text
+    assert "Do not use `bash`" in tool_messages[1].text
+    assert "file discovery or directory listing" not in tool_messages[1].text
+
+
+@pytest.mark.asyncio
 async def test_bash_file_task_guard_hook_blocks_directory_listing_commands():
     called = {"value": False}
 
