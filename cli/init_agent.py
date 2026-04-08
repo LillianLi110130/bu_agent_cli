@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from agent_core import Agent
 from agent_core.agent.hooks import BaseAgentHook, HookAction, HookDecision
-from agent_core.agent.runtime_events import ToolCallRequested
+from agent_core.agent.runtime_events import ToolCallRequested, ToolResultReceived
+from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
 from agent_core.llm.base import BaseChatModel
 from agent_core.llm.messages import ToolMessage
 from tools import done, edit, glob_search, grep, read, resolve_path, write
@@ -46,6 +48,79 @@ class InitOutputGuardHook(BaseAgentHook):
             ),
             reason="blocked init completion before TGAGENTS.md exists",
         )
+
+
+@dataclass
+class InitRepeatedToolCallGuardHook(BaseAgentHook):
+    """Block repeated identical file-inspection calls during `/init`."""
+
+    priority: int = 16
+    watched_tool_names: tuple[str, ...] = ("read", "glob_search", "grep", "resolve_path")
+    _last_signature: tuple[str, str] | None = None
+
+    async def before_event(self, event, ctx) -> HookDecision | None:
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        tool_name = event.tool_call.function.name
+        if tool_name not in self.watched_tool_names:
+            return None
+
+        signature = self._build_signature(event)
+        if signature is None:
+            return None
+
+        if signature != self._last_signature:
+            return None
+
+        return HookDecision(
+            action=HookAction.OVERRIDE_RESULT,
+            override_result=ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name=tool_name,
+                content=(
+                    "Error: You just called the same tool with identical parameters and already "
+                    "received the result.\n"
+                    "Do not repeat the same file-inspection step.\n"
+                    "Reuse the previous output, change the file/range/query, or move on to "
+                    "`write`, `edit`, or `done` if you already have enough information."
+                ),
+                is_error=True,
+            ),
+            reason="blocked repeated identical init tool call",
+        )
+
+    async def after_event(self, event, ctx, emitted_events) -> HookDecision | None:
+        del ctx, emitted_events
+        if not isinstance(event, ToolResultReceived):
+            return None
+
+        tool_name = event.tool_call.function.name
+        if tool_name not in self.watched_tool_names:
+            self._last_signature = None
+            return None
+
+        signature = self._build_signature_from_call(event.tool_call)
+        if signature is not None:
+            self._last_signature = signature
+        return None
+
+    def _build_signature(self, event: ToolCallRequested) -> tuple[str, str] | None:
+        return self._build_signature_from_call(event.tool_call)
+
+    @staticmethod
+    def _build_signature_from_call(tool_call) -> tuple[str, str] | None:
+        tool_name = tool_call.function.name
+        arguments = tool_call.function.arguments
+        try:
+            parsed = parse_tool_arguments_for_execution(arguments)
+        except ToolArgumentsError:
+            normalized_args = arguments.strip()
+        else:
+            normalized_args = json.dumps(parsed, ensure_ascii=False, sort_keys=True, default=str)
+        if not normalized_args:
+            return None
+        return (tool_name, normalized_args)
 
 
 def build_init_tools() -> list[Any]:
@@ -143,7 +218,10 @@ def build_init_agent(
         max_iterations=max_iterations,
         tool_choice="required",
         require_done_tool=True,
-        hooks=[InitOutputGuardHook(workspace_root=workspace_root)],
+        hooks=[
+            InitOutputGuardHook(workspace_root=workspace_root),
+            InitRepeatedToolCallGuardHook(),
+        ],
     )
 
 
