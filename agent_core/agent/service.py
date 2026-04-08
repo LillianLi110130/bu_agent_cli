@@ -528,10 +528,15 @@ class Agent:
             )
 
         summary_lines = self._build_bash_summary_lines(payload)
-        if artifact_path:
+        if artifact_path and self._bash_artifact_has_recoverable_output(payload):
             summary_lines.append(
                 f"Artifact content: {artifact_path}\n"
                 "If more detail is needed, read the artifact with explicit offset_line and n_lines."
+            )
+        elif artifact_path:
+            summary_lines.append(
+                "This artifact only contains bash execution metadata because stdout/stderr were empty. "
+                "Do not read the artifact for additional command output."
             )
         return "\n".join(summary_lines)
 
@@ -559,6 +564,12 @@ class Agent:
             )
         return "\n".join(summary_lines)
 
+    @staticmethod
+    def _bash_artifact_has_recoverable_output(payload: dict) -> bool:
+        stdout = str(payload.get("stdout", "") or "").strip()
+        stderr = str(payload.get("stderr", "") or "").strip()
+        return bool(stdout or stderr)
+
     def _build_bash_summary_lines(self, payload: dict) -> list[str]:
         stdout = str(payload.get("stdout", "") or "")
         stderr = str(payload.get("stderr", "") or "")
@@ -583,7 +594,12 @@ class Agent:
         self._append_bash_stream_summary(summary_lines, label="Stdout", stream_text=stdout)
         self._append_bash_stream_summary(summary_lines, label="Stderr", stream_text=stderr)
         if not stdout and not stderr:
-            summary_lines.append("No stdout or stderr.")
+            summary_lines.append(
+                "No stdout or stderr. The command may have succeeded without printing anything."
+            )
+            summary_lines.append(
+                "If this command was expected to produce a result, the script likely did not write to stdout/stderr."
+            )
         return summary_lines
 
     def _append_bash_stream_summary(

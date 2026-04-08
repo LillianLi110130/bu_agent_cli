@@ -68,6 +68,52 @@ async def test_bash_context_policy_summarizes_and_persists_raw_output(
 
 
 @pytest.mark.asyncio
+async def test_bash_summary_hides_artifact_path_when_no_command_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+
+    async def fake_run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
+        del command, cwd, timeout
+        return _AsyncShellResult(
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    bash_module = importlib.import_module("tools.bash")
+    monkeypatch.setattr(bash_module, "_run_shell_command", fake_run_shell_command)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    sandbox = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(sandbox)
+    agent = Agent(
+        llm=EchoLLM(prefix="echo:"),
+        tools=[bash],
+        system_prompt="test",
+        dependency_overrides={get_sandbox_context: lambda: sandbox},
+    )
+    agent.bind_session_runtime(runtime)
+
+    tool_message = await agent._execute_tool_call(
+        ToolCall(
+            id="call-bash-no-output",
+            function=Function(name="bash", arguments=json.dumps({"command": "python demo.py"})),
+        )
+    )
+
+    assert "No stdout or stderr. The command may have succeeded without printing anything." in tool_message.text
+    assert "did not write to stdout/stderr" in tool_message.text
+    assert "Do not read the artifact for additional command output." in tool_message.text
+    assert "Artifact content:" not in tool_message.text
+
+    artifact_meta = runtime.artifacts_dir / "tool" / "call-bash-no-output.meta.json"
+    assert artifact_meta.exists()
+
+
+@pytest.mark.asyncio
 async def test_read_context_policy_trims_large_output_and_saves_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
