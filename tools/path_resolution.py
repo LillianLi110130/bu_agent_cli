@@ -102,6 +102,8 @@ def resolve_target_path(
     direct = _resolve_direct_path(cleaned, ctx, kind=kind)
     if direct is not None:
         return direct
+    if _should_require_exact_not_found(cleaned, ctx, kind=kind):
+        raise PathNotFoundError(f"Path not found: {query}")
 
     matches = _search_matches(cleaned, ctx, kind=kind)
     if not matches:
@@ -143,6 +145,51 @@ def _candidate_query_paths(query: str) -> list[str]:
     if expanded != query:
         candidates.append(expanded)
     return candidates
+
+
+def _resolve_candidate_user_path(query: str, ctx: SandboxContext) -> Path:
+    path_obj = Path(query).expanduser()
+    if path_obj.is_absolute():
+        return path_obj.resolve()
+    return (ctx.working_dir / path_obj).resolve()
+
+
+def _is_searchable_root(path: Path, ctx: SandboxContext) -> bool:
+    return path.exists() and ctx.is_allowed(path) and not ctx.is_ignored(path)
+
+
+def _should_require_exact_not_found(
+    query: str,
+    ctx: SandboxContext,
+    *,
+    kind: TargetKind,
+) -> bool:
+    if not _is_explicit_path_query(query):
+        return False
+
+    for candidate_text in _candidate_query_paths(query):
+        try:
+            resolved = _resolve_candidate_user_path(candidate_text, ctx)
+        except Exception:
+            continue
+
+        parent = resolved.parent
+        if _is_searchable_root(parent, ctx):
+            return True
+
+        if kind == "dir" and _is_searchable_root(resolved, ctx):
+            return True
+
+    return False
+
+
+def _is_explicit_path_query(text: str) -> bool:
+    return (
+        Path(text).is_absolute()
+        or "\\" in text
+        or "/" in text
+        or text.startswith((".", "~"))
+    )
 
 
 def _build_query_signature(query: str) -> _QuerySignature:

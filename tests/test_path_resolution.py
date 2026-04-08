@@ -11,7 +11,7 @@ import pytest
 from tools.files import read
 from tools.resolve_path import resolve_path
 from tools.search import glob_search
-from tools.path_resolution import AmbiguousPathError, resolve_target_path
+from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext
 
 
@@ -145,6 +145,27 @@ def test_resolve_target_path_prefers_full_path_match_over_partial_filename_match
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def test_resolve_target_path_reports_not_found_for_missing_exact_path_in_existing_parent():
+    workspace = _make_workspace()
+    docs = workspace / "docs"
+    nested_a = workspace / "alpha"
+    nested_b = workspace / "beta"
+    docs.mkdir()
+    nested_a.mkdir()
+    nested_b.mkdir()
+    (nested_a / "TGAGENTS.md").write_text("a", encoding="utf-8")
+    (nested_b / "TGAGENTS.md").write_text("b", encoding="utf-8")
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        missing_exact = str(workspace / "TGAGENTS.md")
+
+        with pytest.raises(PathNotFoundError):
+            resolve_target_path(missing_exact, ctx, kind="file")
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 @pytest.mark.asyncio
 async def test_glob_search_uses_resolved_directory_path():
     workspace = _make_workspace()
@@ -232,5 +253,27 @@ async def test_resolve_path_tool_reports_ambiguous_candidates():
         assert payload["ok"] is False
         assert payload["reason"] == "ambiguous"
         assert len(payload["candidates"]) == 2
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+async def test_resolve_path_tool_reports_not_found_for_missing_exact_path():
+    workspace = _make_workspace()
+    (workspace / "alpha").mkdir()
+    (workspace / "beta").mkdir()
+    (workspace / "alpha" / "TGAGENTS.md").write_text("a", encoding="utf-8")
+    (workspace / "beta" / "TGAGENTS.md").write_text("b", encoding="utf-8")
+    ctx = SandboxContext.create(workspace)
+
+    try:
+        query = str(workspace / "TGAGENTS.md")
+
+        result = await resolve_path.func(query, ctx=ctx, kind="file")
+        payload = json.loads(result)
+
+        assert payload["ok"] is False
+        assert payload["reason"] == "not_found"
+        assert payload["message"] == f"Path not found: {query}"
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
