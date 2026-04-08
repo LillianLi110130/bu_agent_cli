@@ -17,6 +17,19 @@ from agent_core.tools.decorator import tool
 from tools import SandboxContext
 
 
+def _read_artifact_parts(path: Path) -> tuple[dict[str, str], str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    marker_index = lines.index("--- artifact_body ---")
+    header: dict[str, str] = {}
+    for line in lines[1:marker_index]:
+        if not line.strip():
+            continue
+        key, _, value = line.partition(":")
+        header[key.strip()] = value.strip()
+    body = "\n".join(lines[marker_index + 1 :])
+    return header, body
+
+
 class _DummyPrompter:
     def __init__(self, console):
         self.console = console
@@ -163,12 +176,12 @@ async def test_bound_session_runtime_persists_large_tool_output(
         )
     )
 
-    artifact_path = runtime.artifacts_dir / "tool" / "call-large.meta.json"
+    artifact_path = runtime.artifacts_dir / "tool" / "call-large.artifact.txt"
     assert artifact_path.exists()
-    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    assert artifact_payload["tool_name"] == "emit_large_output"
-    assert artifact_payload["content_format"] == "text"
-    assert Path(artifact_payload["content_path"]).read_text(encoding="utf-8") == tool_message.content
+    header, body = _read_artifact_parts(artifact_path)
+    assert header["tool_name"] == "emit_large_output"
+    assert header["content_format"] == "text"
+    assert body == tool_message.content
 
 
 @pytest.mark.asyncio

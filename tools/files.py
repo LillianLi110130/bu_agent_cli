@@ -70,6 +70,25 @@ def _validate_artifact_window(
     return None
 
 
+def _parse_artifact_body_start_line(lines: list[str]) -> int | None:
+    for raw_line in lines[:16]:
+        if raw_line.startswith("body_start_line:"):
+            _, _, value = raw_line.partition(":")
+            try:
+                return int(value.strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _build_artifact_header_hint(body_start_line: int) -> str:
+    return (
+        "This is a runtime artifact file. "
+        f"The body starts at line {body_start_line}.\n"
+        f"Use read with offset_line >= {body_start_line} to inspect the artifact content."
+    )
+
+
 @tool("Read contents of a file", context_policy="trim", context_max_inline_chars=2200)
 async def read(
     file_path: str,
@@ -113,10 +132,16 @@ async def read(
         content, _ = read_text_with_fallback(path)
         lines = content.splitlines()
         total = len(lines)
+        artifact_body_start_line = (
+            _parse_artifact_body_start_line(lines) if ctx.is_runtime_artifact_path(path) else None
+        )
 
         # Determine the slice range
         start = max(0, (offset_line or 1) - 1)  # convert 1-based to 0-based
         end = total if n_lines is None else min(total, start + n_lines)
+
+        if artifact_body_start_line is not None and end < artifact_body_start_line:
+            return _build_artifact_header_hint(artifact_body_start_line)
 
         selected = lines[start:end]
         numbered = [f"{start + i + 1:4d}  {line}" for i, line in enumerate(selected)]

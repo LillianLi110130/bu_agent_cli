@@ -16,6 +16,19 @@ from tools.files import read
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 
+def _read_artifact_parts(path: Path) -> tuple[dict[str, str], str]:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    marker_index = lines.index("--- artifact_body ---")
+    header: dict[str, str] = {}
+    for line in lines[1:marker_index]:
+        if not line.strip():
+            continue
+        key, _, value = line.partition(":")
+        header[key.strip()] = value.strip()
+    body = "\n".join(lines[marker_index + 1 :])
+    return header, body
+
+
 @pytest.mark.asyncio
 async def test_bash_context_policy_summarizes_and_persists_raw_output(
     tmp_path: Path,
@@ -58,13 +71,18 @@ async def test_bash_context_policy_summarizes_and_persists_raw_output(
     assert "fatal: repository has conflicts" in tool_message.text
     assert '"stdout"' not in tool_message.text
 
-    artifact_meta = runtime.artifacts_dir / "tool" / "call-bash.meta.json"
-    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
-    assert artifact_payload["content_format"] == "json"
-    raw_payload = json.loads(Path(artifact_payload["content_path"]).read_text(encoding="utf-8"))
+    artifact_path = runtime.artifacts_dir / "tool" / "call-bash.artifact.txt"
+    header, body = _read_artifact_parts(artifact_path)
+    assert header["content_format"] == "json"
+    assert header["tool_name"] == "bash"
+    assert int(header["body_start_line"]) > 1
+    raw_payload = json.loads(body)
     assert raw_payload["command"] == "git status"
     assert raw_payload["returncode"] == 1
     assert raw_payload["stdout"] == "line one\nline two\nline three"
+    assert "Artifact file:" in tool_message.text
+    assert f"Artifact file: {artifact_path}" in tool_message.text
+    assert "Artifact body starts at line" in tool_message.text
 
 
 @pytest.mark.asyncio
@@ -107,10 +125,10 @@ async def test_bash_summary_hides_artifact_path_when_no_command_output(
     assert "No stdout or stderr. The command may have succeeded without printing anything." in tool_message.text
     assert "did not write to stdout/stderr" in tool_message.text
     assert "Do not read the artifact for additional command output." in tool_message.text
-    assert "Artifact content:" not in tool_message.text
+    assert "Artifact file:" not in tool_message.text
 
-    artifact_meta = runtime.artifacts_dir / "tool" / "call-bash-no-output.meta.json"
-    assert artifact_meta.exists()
+    artifact_path = runtime.artifacts_dir / "tool" / "call-bash-no-output.artifact.txt"
+    assert artifact_path.exists()
 
 
 @pytest.mark.asyncio
@@ -151,14 +169,13 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     assert tool_message.text != raw_result
     assert "Read result: [Lines 1-180 of 180]" in tool_message.text
     assert "Context preview:" in tool_message.text
-    assert "Artifact content:" in tool_message.text
+    assert "Artifact file:" in tool_message.text
 
-    artifact_meta = runtime.artifacts_dir / "tool" / "call-read-large.meta.json"
-    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
-    assert artifact_payload["tool_name"] == "read"
-    assert artifact_payload["content_format"] == "text"
-    artifact_content = Path(artifact_payload["content_path"]).read_text(encoding="utf-8")
-    assert artifact_content == raw_result
+    artifact_path = runtime.artifacts_dir / "tool" / "call-read-large.artifact.txt"
+    header, body = _read_artifact_parts(artifact_path)
+    assert header["tool_name"] == "read"
+    assert header["content_format"] == "text"
+    assert body == raw_result
 
 
 @pytest.mark.asyncio
@@ -279,13 +296,13 @@ async def test_read_excel_context_policy_summarizes_large_match_payload(
     assert "Matches returned: 200" in tool_message.text
     assert "Sheet summary: Sheet1 rows=1955, cols=42" in tool_message.text
     assert "Top matches:" in tool_message.text
-    assert "Artifact content:" in tool_message.text
+    assert "Artifact file:" in tool_message.text
 
-    artifact_meta = runtime.artifacts_dir / "tool" / "call-excel.meta.json"
-    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
-    assert artifact_payload["tool_name"] == "read_excel"
-    assert artifact_payload["content_format"] == "json"
-    assert "\"matches\"" in Path(artifact_payload["content_path"]).read_text(encoding="utf-8")
+    artifact_path = runtime.artifacts_dir / "tool" / "call-excel.artifact.txt"
+    header, body = _read_artifact_parts(artifact_path)
+    assert header["tool_name"] == "read_excel"
+    assert header["content_format"] == "json"
+    assert "\"matches\"" in body
 
 
 @pytest.mark.asyncio
@@ -316,17 +333,25 @@ async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
             function=Function(name="read", arguments=json.dumps({"file_path": "large.txt"})),
         )
     )
-    assert "Artifact content:" in first_tool_message.text
+    assert "Artifact file:" in first_tool_message.text
 
-    artifact_meta = runtime.artifacts_dir / "tool" / "call-read-large-window.meta.json"
-    artifact_payload = json.loads(artifact_meta.read_text(encoding="utf-8"))
-    artifact_content_path = artifact_payload["content_path"]
+    artifact_path = runtime.artifacts_dir / "tool" / "call-read-large-window.artifact.txt"
+    header, _body = _read_artifact_parts(artifact_path)
+    artifact_body_start_line = int(header["body_start_line"])
 
     missing_window = await read.execute(
-        file_path=artifact_content_path,
+        file_path=str(artifact_path),
         _overrides={get_sandbox_context: lambda: sandbox},
     )
     assert "requires explicit offset_line and n_lines" in str(missing_window)
+
+    header_only = await read.execute(
+        file_path=str(artifact_path),
+        offset_line=1,
+        n_lines=max(1, artifact_body_start_line - 1),
+        _overrides={get_sandbox_context: lambda: sandbox},
+    )
+    assert f"The body starts at line {artifact_body_start_line}." in str(header_only)
 
     artifact_tool_message = await agent._execute_tool_call(
         ToolCall(
@@ -335,8 +360,8 @@ async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
                 name="read",
                 arguments=json.dumps(
                     {
-                        "file_path": artifact_content_path,
-                        "offset_line": 10,
+                        "file_path": str(artifact_path),
+                        "offset_line": artifact_body_start_line,
                         "n_lines": 40,
                     }
                 ),
@@ -344,6 +369,7 @@ async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
         )
     )
 
-    assert artifact_tool_message.text.startswith("[Lines 10-49")
-    assert "Artifact content:" not in artifact_tool_message.text
-    assert not (runtime.artifacts_dir / "tool" / "call-read-artifact-slice.meta.json").exists()
+    expected_end = artifact_body_start_line + 39
+    assert artifact_tool_message.text.startswith(f"[Lines {artifact_body_start_line}-{expected_end}")
+    assert "Artifact file:" not in artifact_tool_message.text
+    assert not (runtime.artifacts_dir / "tool" / "call-read-artifact-slice.artifact.txt").exists()

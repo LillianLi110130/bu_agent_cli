@@ -529,10 +529,7 @@ class Agent:
 
         summary_lines = self._build_bash_summary_lines(payload)
         if artifact_path and self._bash_artifact_has_recoverable_output(payload):
-            summary_lines.append(
-                f"Artifact content: {artifact_path}\n"
-                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
-            )
+            summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         elif artifact_path:
             summary_lines.append(
                 "This artifact only contains bash execution metadata because stdout/stderr were empty. "
@@ -558,10 +555,7 @@ class Agent:
         summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
         summary_lines = ["Bash output summary:", summary]
         if artifact_path:
-            summary_lines.append(
-                f"Artifact content: {artifact_path}\n"
-                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
-            )
+            summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
 
     @staticmethod
@@ -602,6 +596,31 @@ class Agent:
             )
         return summary_lines
 
+    @staticmethod
+    def _artifact_body_start_line(artifact_path: str | None) -> int | None:
+        if not artifact_path:
+            return None
+        try:
+            with Path(artifact_path).open("r", encoding="utf-8") as handle:
+                for _ in range(16):
+                    line = handle.readline()
+                    if not line:
+                        break
+                    if line.startswith("body_start_line:"):
+                        _, _, value = line.partition(":")
+                        return int(value.strip())
+        except Exception:
+            return None
+        return None
+
+    def _build_artifact_reference_lines(self, artifact_path: str) -> list[str]:
+        lines = [f"Artifact file: {artifact_path}"]
+        body_start_line = self._artifact_body_start_line(artifact_path)
+        if body_start_line is not None:
+            lines.append(f"Artifact body starts at line {body_start_line}.")
+        lines.append("If more detail is needed, use read with explicit offset_line and n_lines.")
+        return lines
+
     def _append_bash_stream_summary(
         self,
         summary_lines: list[str],
@@ -633,10 +652,7 @@ class Agent:
             preview or "(empty)",
         ]
         if artifact_path:
-            summary_lines.append(
-                f"Artifact content: {artifact_path}. "
-                "If more detail is needed, use read with explicit offset_line and n_lines."
-            )
+            summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
 
     def _summarize_excel_output(
@@ -704,10 +720,7 @@ class Agent:
                 )
 
         if artifact_path:
-            summary_lines.append(
-                f"Artifact content: {artifact_path}\n"
-                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
-            )
+            summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
 
     def _summarize_generic_tool_output(
@@ -724,10 +737,7 @@ class Agent:
             preview or "(empty)",
         ]
         if artifact_path:
-            summary_lines.append(
-                f"Artifact content: {artifact_path}\n"
-                "If more detail is needed, read the artifact with explicit offset_line and n_lines."
-            )
+            summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
 
     def _apply_tool_context_policy(
@@ -902,7 +912,7 @@ class Agent:
     ) -> ToolMessage:
         if normalized_policy == "store_only" and artifact_path:
             return raw_message.model_copy(
-                update={"content": f"{tool.name} output stored at {artifact_path}."}
+                update={"content": self._build_store_only_note(tool.name, artifact_path)}
             )
         return raw_message
 
@@ -939,14 +949,10 @@ class Agent:
             return raw_message.model_copy(update={"content": summarized})
         return raw_message
 
-    @staticmethod
-    def _build_store_only_note(tool_name: str, artifact_path: str | None) -> str:
+    def _build_store_only_note(self, tool_name: str, artifact_path: str | None) -> str:
         stored_note = f"{tool_name} output omitted from context."
         if artifact_path:
-            stored_note = (
-                f"{stored_note} Artifact content: {artifact_path} "
-                "Use read with explicit offset_line and n_lines if more detail is needed."
-            )
+            stored_note = " ".join([stored_note, *self._build_artifact_reference_lines(artifact_path)])
         return stored_note
 
     def _apply_trim_tool_context_policy(

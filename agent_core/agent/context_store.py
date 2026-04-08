@@ -59,21 +59,57 @@ def _serialize_tool_content(content: object) -> object:
     return str(content)
 
 
-def _render_tool_content_file(content: object) -> tuple[str, str, str]:
-    """Return (suffix, serialized_text, content_format) for one artifact content file."""
+def _render_tool_body_text(content: object) -> tuple[str, str]:
+    """Return (serialized_text, content_format) for one artifact body."""
     if isinstance(content, str):
         try:
             parsed = json.loads(content)
         except Exception:
-            return ("txt", content, "text")
+            return (content, "text")
         if isinstance(parsed, (dict, list)):
-            return ("json", json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", "json")
-        return ("txt", content, "text")
+            return (json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", "json")
+        return (content, "text")
 
     serialized = _serialize_tool_content(content)
     if isinstance(serialized, str):
-        return ("txt", serialized, "text")
-    return ("json", json.dumps(serialized, ensure_ascii=False, indent=2) + "\n", "json")
+        return (serialized, "text")
+    return (json.dumps(serialized, ensure_ascii=False, indent=2) + "\n", "json")
+
+
+def _normalize_artifact_summary(summary_text: str | None) -> str:
+    if not summary_text:
+        return ""
+    normalized = " ".join(summary_text.split())
+    return normalized
+
+
+def _render_tool_artifact_text(
+    message: ToolMessage,
+    *,
+    summary_text: str | None,
+) -> str:
+    body_text, content_format = _render_tool_body_text(message.content)
+    summary_line = _normalize_artifact_summary(summary_text)
+    header_lines = [
+        "# artifact_meta",
+        f"tool_call_id: {message.tool_call_id}",
+        f"tool_name: {message.tool_name}",
+        "artifact_kind: tool_output",
+        f"created_at: {_now_iso()}",
+        f"is_error: {str(bool(message.is_error)).lower()}",
+        f"ephemeral: {str(bool(message.ephemeral)).lower()}",
+        f"content_format: {content_format}",
+        f"summary: {summary_line}",
+    ]
+    body_start_line = len(header_lines) + 4
+    header_lines.append(f"body_start_line: {body_start_line}")
+    artifact_lines = [
+        *header_lines,
+        "",
+        "--- artifact_body ---",
+        body_text.rstrip("\n"),
+    ]
+    return "\n".join(artifact_lines) + "\n"
 
 
 def _estimate_content_size(content: object) -> int:
@@ -136,27 +172,12 @@ class ArtifactStore:
 
         category_dir = self._category_dir("tool")
         base_name = _sanitize_segment(message.tool_call_id)
-        suffix, rendered_content, content_format = _render_tool_content_file(message.content)
-        content_path = category_dir / f"{base_name}.content.{suffix}"
-        content_path.write_text(rendered_content, encoding="utf-8")
-
-        payload = {
-            "tool_call_id": message.tool_call_id,
-            "tool_name": message.tool_name,
-            "artifact_kind": "tool_output",
-            "is_error": message.is_error,
-            "ephemeral": message.ephemeral,
-            "created_at": _now_iso(),
-            "summary": summary_text or "",
-            "content_path": str(content_path),
-            "content_format": content_format,
-        }
-        meta_path = category_dir / f"{base_name}.meta.json"
-        meta_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        artifact_path = category_dir / f"{base_name}.artifact.txt"
+        artifact_path.write_text(
+            _render_tool_artifact_text(message, summary_text=summary_text),
             encoding="utf-8",
         )
-        return content_path
+        return artifact_path
 
     def save_image_detail(self, detail_text: str, *, source_hint: str = "") -> Path:
         artifact_id = f"image-{uuid4().hex[:12]}"
