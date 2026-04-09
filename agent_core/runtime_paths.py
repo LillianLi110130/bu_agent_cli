@@ -100,7 +100,7 @@ def default_runtime_env_content() -> str:
 
 
 def ensure_cli_runtime_state() -> Path:
-    """Create default CLI runtime files under ~/.tg_agent when missing."""
+    """Create default CLI runtime files under ~/.tg_agent and refresh packaged defaults."""
     home_dir = tg_agent_home()
     home_dir.mkdir(parents=True, exist_ok=True)
 
@@ -126,7 +126,7 @@ def ensure_cli_runtime_state() -> Path:
 
     packaged_worker_config = application_root() / "tg_crab_worker.json"
     user_worker_config = home_dir / "tg_crab_worker.json"
-    if packaged_worker_config.exists() and not user_worker_config.exists():
+    if packaged_worker_config.exists():
         shutil.copyfile(packaged_worker_config, user_worker_config)
 
     return home_dir
