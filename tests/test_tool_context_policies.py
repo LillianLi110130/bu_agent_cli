@@ -125,6 +125,8 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     assert tool_message.text != raw_result
     assert "Bash command: pytest" in tool_message.text
     assert "Exit code: 1" in tool_message.text
+    assert "context-trimmed summary of the bash result" in tool_message.text
+    assert "Do not rerun the same command only to see more output in context." in tool_message.text
     assert "Stdout: 90 lines" in tool_message.text
     assert "Stderr: 80 lines" in tool_message.text
     assert "stdout line 0001" in tool_message.text
@@ -181,6 +183,8 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     assert len(raw_result) > read.context_config.max_inline_chars
     assert tool_message.text != raw_result
     assert "Read result: [Lines 1-180 of 180]" in tool_message.text
+    assert "This is a context-trimmed preview" in tool_message.text
+    assert "Repeating the same read with identical file_path, offset_line, and n_lines will not reveal more content in context." in tool_message.text
     assert "Context preview:" in tool_message.text
     assert "Artifact file:" in tool_message.text
 

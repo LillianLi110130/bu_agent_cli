@@ -89,7 +89,7 @@ def _build_artifact_header_hint(body_start_line: int) -> str:
     )
 
 
-@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=2200)
+@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=2600)
 async def read(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],

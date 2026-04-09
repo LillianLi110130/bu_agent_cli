@@ -553,7 +553,14 @@ class Agent:
         max_inline_chars: int,
     ) -> str:
         summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
-        summary_lines = ["Bash output summary:", summary]
+        summary_lines = [
+            "Bash output summary:",
+            "This is a context-trimmed summary, not the full bash result payload.",
+            "Do not rerun the same command only to reveal more output in context.",
+            "If the current preview is sufficient, continue with the next step.",
+            "If more output is required, inspect the artifact file below instead.",
+            summary,
+        ]
         if artifact_path:
             summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
@@ -580,6 +587,10 @@ class Agent:
             f"Cwd: {cwd or '(unknown)'}",
             f"Exit code: {returncode if returncode is not None else 'timeout'}",
             f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
+            "This is a context-trimmed summary of the bash result, not the full stdout/stderr payload.",
+            "Do not rerun the same command only to see more output in context.",
+            "If the current preview is sufficient, continue with the next step.",
+            "If more output is required, read the artifact file below instead.",
         ]
         if background_task_id:
             summary_lines.append(f"Background task id: {background_task_id}")
@@ -652,6 +663,10 @@ class Agent:
             f"Cwd: {cwd or '(unknown)'}",
             f"Exit code: {returncode if returncode is not None else 'timeout'}",
             f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
+            "This is a context-trimmed summary of the bash result, not the full stdout/stderr payload.",
+            "Do not rerun the same command only to see more output in context.",
+            "If the current preview is sufficient, continue with the next step.",
+            "If more output is required, read the artifact file below instead.",
         ]
         if background_task_id:
             summary_lines.append(f"Background task id: {background_task_id}")
@@ -694,8 +709,8 @@ class Agent:
             summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         elif artifact_path:
             summary_lines.append(
-                "This artifact only contains bash execution metadata because stdout/stderr were empty. "
-                "Do not read the artifact for additional command output."
+                "The artifact only contains bash execution metadata because stdout/stderr were empty. "
+                "Do not read the artifact expecting hidden command output."
             )
         return "\n".join(summary_lines)
 
@@ -751,10 +766,16 @@ class Agent:
         summary_lines = [
             f"Read result: {header or '(no line metadata)'}",
             f"Body lines: {len(body_lines)}",
+            "This is a context-trimmed preview, not the full file slice returned by the tool.",
+            "Repeating the same read with identical file_path, offset_line, and n_lines will not reveal more content in context.",
+            "If more detail is needed, change the read window or inspect the artifact file below.",
             "Context preview:",
             preview or "(empty)",
         ]
         if artifact_path:
+            summary_lines.append(
+                "To inspect more content, use read on the artifact file with explicit offset_line and n_lines."
+            )
             summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
 
