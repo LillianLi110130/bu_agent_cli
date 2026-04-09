@@ -189,7 +189,75 @@ async def test_init_repeated_tool_call_guard_blocks_identical_read_call(tmp_path
 
     assert repeated_decision is not None
     assert repeated_decision.action == "override_result"
-    assert "same tool with identical parameters" in repeated_decision.override_result.content
+    assert repeated_decision.override_result.is_error is False
+    assert "repeated identical `/init` file-inspection call suppressed" in repeated_decision.override_result.content
+    assert "[Lines 100-119 of 200]" in repeated_decision.override_result.content
+
+
+@pytest.mark.asyncio
+async def test_init_repeated_tool_call_guard_does_not_stack_reuse_notice(tmp_path) -> None:
+    del tmp_path
+    hook = InitRepeatedToolCallGuardHook()
+    tool_call = ToolCall(
+        id="read-1",
+        function=Function(
+            name="read",
+            arguments='{"file_path":"docs/guide.md","offset_line":100,"n_lines":20}',
+        ),
+    )
+
+    await hook.after_event(
+        ToolResultReceived(
+            tool_call=tool_call,
+            tool_result=ToolMessage(
+                tool_call_id="read-1",
+                tool_name="read",
+                content="[Lines 100-119 of 200]",
+                is_error=False,
+            ),
+            iteration=1,
+        ),
+        SimpleNamespace(),
+        [],
+    )
+
+    repeated_call = ToolCall(
+        id="read-2",
+        function=Function(
+            name="read",
+            arguments='{"file_path":"docs/guide.md","offset_line":100,"n_lines":20}',
+        ),
+    )
+    repeated_decision = await hook.before_event(
+        ToolCallRequested(tool_call=repeated_call, iteration=2),
+        SimpleNamespace(),
+    )
+    await hook.after_event(
+        ToolResultReceived(
+            tool_call=repeated_call,
+            tool_result=repeated_decision.override_result,
+            iteration=2,
+        ),
+        SimpleNamespace(),
+        [],
+    )
+
+    repeated_again = ToolCall(
+        id="read-3",
+        function=Function(
+            name="read",
+            arguments='{"file_path":"docs/guide.md","offset_line":100,"n_lines":20}',
+        ),
+    )
+    repeated_again_decision = await hook.before_event(
+        ToolCallRequested(tool_call=repeated_again, iteration=3),
+        SimpleNamespace(),
+    )
+
+    assert repeated_again_decision is not None
+    content = repeated_again_decision.override_result.content
+    assert isinstance(content, str)
+    assert content.count("repeated identical `/init` file-inspection call suppressed") == 1
 
 
 @pytest.mark.asyncio

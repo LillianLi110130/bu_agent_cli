@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +57,12 @@ class InitRepeatedToolCallGuardHook(BaseAgentHook):
     priority: int = 16
     watched_tool_names: tuple[str, ...] = ("read", "glob_search", "grep", "resolve_path")
     _last_signature: tuple[str, str] | None = None
+    _cached_results: dict[tuple[str, str], ToolMessage] = field(default_factory=dict)
+
+    _REUSED_RESULT_NOTICE = (
+        "Notice: repeated identical `/init` file-inspection call suppressed. "
+        "Reuse the cached result below instead of calling the same tool again."
+    )
 
     async def before_event(self, event, ctx) -> HookDecision | None:
         if not isinstance(event, ToolCallRequested):
@@ -72,6 +78,22 @@ class InitRepeatedToolCallGuardHook(BaseAgentHook):
 
         if signature != self._last_signature:
             return None
+
+        cached_result = self._cached_results.get(signature)
+        if cached_result is not None:
+            reused_content = cached_result.content
+            if isinstance(reused_content, str):
+                reused_content = f"{self._REUSED_RESULT_NOTICE}\n\n{reused_content}"
+            return HookDecision(
+                action=HookAction.OVERRIDE_RESULT,
+                override_result=ToolMessage(
+                    tool_call_id=event.tool_call.id,
+                    tool_name=tool_name,
+                    content=reused_content,
+                    is_error=False,
+                ),
+                reason="reused cached result for repeated identical init tool call",
+            )
 
         return HookDecision(
             action=HookAction.OVERRIDE_RESULT,
@@ -103,6 +125,13 @@ class InitRepeatedToolCallGuardHook(BaseAgentHook):
         signature = self._build_signature_from_call(event.tool_call)
         if signature is not None:
             self._last_signature = signature
+            if not bool(getattr(event.tool_result, "is_error", False)):
+                content = getattr(event.tool_result, "content", None)
+                if not (
+                    isinstance(content, str)
+                    and content.startswith(self._REUSED_RESULT_NOTICE)
+                ):
+                    self._cached_results[signature] = event.tool_result.model_copy(deep=True)
         return None
 
     def _build_signature(self, event: ToolCallRequested) -> tuple[str, str] | None:
