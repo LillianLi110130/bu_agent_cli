@@ -27,6 +27,8 @@ class MockGatewayState:
 
     queued_messages: list[MockWorkerMessage] = field(default_factory=list)
     completions: list[dict[str, Any]] = field(default_factory=list)
+    sent_texts: list[dict[str, Any]] = field(default_factory=list)
+    uploaded_attachments: list[dict[str, Any]] = field(default_factory=list)
     online_workers: dict[str, dict[str, Any]] = field(default_factory=dict)
     worker_ttl_seconds: float = 30.0
     inflight_messages: dict[str, list[MockWorkerMessage]] = field(default_factory=dict)
@@ -82,6 +84,19 @@ class EnqueueRequest(BaseModel):
     content: str
 
 
+class SendTextRequest(BaseModel):
+    worker_id: str
+    text: str
+
+
+class UploadAttachmentRequest(BaseModel):
+    worker_id: str
+    file_name: str
+    mime_type: str
+    file_size: int
+    file_content_base64: str
+
+
 def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     """Create a FastAPI app that mimics the worker gateway contract."""
     state = state or MockGatewayState()
@@ -121,6 +136,29 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
                 "worker_id": request.worker_id,
                 "input_content": inflight.content if inflight is not None else "",
                 "final_content": request.final_content,
+            }
+        )
+        return {"ok": True}
+
+    @app.post("/api/worker/send_text")
+    async def send_text(request: SendTextRequest) -> dict[str, bool]:
+        state.sent_texts.append(
+            {
+                "worker_id": request.worker_id,
+                "text": request.text,
+            }
+        )
+        return {"ok": True}
+
+    @app.post("/api/worker/upload_attachment")
+    async def upload_attachment(request: UploadAttachmentRequest) -> dict[str, bool]:
+        state.uploaded_attachments.append(
+            {
+                "worker_id": request.worker_id,
+                "file_name": request.file_name,
+                "mime_type": request.mime_type,
+                "file_size": request.file_size,
+                "file_content_base64": request.file_content_base64,
             }
         )
         return {"ok": True}

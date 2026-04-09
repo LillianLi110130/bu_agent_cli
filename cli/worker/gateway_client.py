@@ -83,6 +83,45 @@ class WorkerGatewayClient:
         response.raise_for_status()
         return bool(response.json().get("ok", False))
 
+    async def send_text(self, worker_id: str, text: str) -> bool:
+        """Send one proactive text message through the gateway."""
+        logger.info(f"Sending proactive text for worker_id={worker_id}")
+        response = await self._client.post(
+            "/api/worker/send_text",
+            json={
+                "worker_id": worker_id,
+                "text": text,
+            },
+            headers=self._build_headers(),
+        )
+        response.raise_for_status()
+        return bool(response.json().get("ok", False))
+
+    async def upload_attachment(
+        self,
+        *,
+        worker_id: str,
+        file_name: str,
+        mime_type: str,
+        file_size: int,
+        file_content_base64: str,
+    ) -> bool:
+        """Upload one proactive attachment through the gateway."""
+        logger.info(f"Uploading proactive attachment for worker_id={worker_id}, file_name={file_name}")
+        response = await self._client.post(
+            "/api/worker/upload_attachment",
+            json={
+                "worker_id": worker_id,
+                "file_name": file_name,
+                "mime_type": mime_type,
+                "file_size": file_size,
+                "file_content_base64": file_content_base64,
+            },
+            headers=self._build_headers(),
+        )
+        response.raise_for_status()
+        return bool(response.json().get("ok", False))
+
     async def offline(self, worker_id: str) -> bool:
         """Mark the worker as offline."""
         response = await self._client.post(

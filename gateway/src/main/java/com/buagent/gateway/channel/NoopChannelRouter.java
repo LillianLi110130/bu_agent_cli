@@ -14,4 +14,23 @@ public class NoopChannelRouter implements ChannelRouter {
         logger.info("Noop send sessionKey={} content={}", sessionKey, content);
         return true;
     }
+
+    @Override
+    public boolean sendAttachment(
+        String sessionKey,
+        String fileName,
+        String mimeType,
+        Long fileSize,
+        String fileContentBase64
+    ) {
+        logger.info(
+            "Noop send attachment sessionKey={} fileName={} mimeType={} fileSize={} base64Length={}",
+            sessionKey,
+            fileName,
+            mimeType,
+            fileSize,
+            fileContentBase64 == null ? 0 : fileContentBase64.length()
+        );
+        return true;
+    }
 }

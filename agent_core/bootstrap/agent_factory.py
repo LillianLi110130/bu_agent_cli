@@ -13,6 +13,7 @@ from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
+from cli.im_bridge import get_bridge_store
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 
 _APP_ROOT = application_root()
@@ -203,7 +204,10 @@ def create_agent(
         llm=llm,
         tools=ALL_TOOLS,
         system_prompt=system_prompt,
-        dependency_overrides={get_sandbox_context: lambda: ctx},
+        dependency_overrides={
+            get_sandbox_context: lambda: ctx,
+            get_bridge_store: lambda: ctx.bridge_store,
+        },
         mode=mode,
         agent_config=agent_config,
     )
@@ -236,5 +240,8 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
         system_prompt=system_prompt,
         mode="subagent",
         agent_config=config,
-        dependency_overrides={get_sandbox_context: lambda: parent_ctx},
+        dependency_overrides={
+            get_sandbox_context: lambda: parent_ctx,
+            get_bridge_store: lambda: getattr(parent_ctx, "bridge_store", None),
+        },
     )

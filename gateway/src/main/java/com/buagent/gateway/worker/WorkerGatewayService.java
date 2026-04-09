@@ -6,7 +6,9 @@ import com.buagent.gateway.app.dto.PollMessageDto;
 import com.buagent.gateway.app.dto.PollRequest;
 import com.buagent.gateway.app.dto.PollResponse;
 import com.buagent.gateway.app.dto.RenewRequest;
+import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
+import com.buagent.gateway.app.dto.UploadAttachmentRequest;
 import com.buagent.gateway.channel.ChannelRouter;
 import com.buagent.gateway.session.InFlightDelivery;
 import com.buagent.gateway.session.InboundMessageSnapshot;
@@ -105,8 +107,9 @@ public class WorkerGatewayService {
     }
 
     public DeferredResult<PollResponse> poll(PollRequest request) {
-        long currentEpoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), currentEpoch);
+        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
+        long currentEpoch = ensureCurrentEpoch(sessionKey);
+        SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, currentEpoch);
         DeferredResult<PollResponse> deferredResult = new DeferredResult<>(pollWaitTimeoutMillis);
 
         deferredResult.onTimeout(() -> {
@@ -144,9 +147,44 @@ public class WorkerGatewayService {
         return deferredResult;
     }
 
+    public SimpleOkResponse online(String workerId) {
+        if (isBlank(workerId)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "worker_id is required");
+        }
+        logger.info("Worker marked online, workerId={}", workerId);
+        return new SimpleOkResponse(true);
+    }
+
+    public SimpleOkResponse offline(String workerId) {
+        if (isBlank(workerId)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "worker_id is required");
+        }
+        logger.info("Worker marked offline, workerId={}", workerId);
+        return new SimpleOkResponse(true);
+    }
+
+    public SimpleOkResponse sendText(SendTextRequest request) {
+        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
+        boolean sent = channelRouter.send(sessionKey, request.getText());
+        return new SimpleOkResponse(sent);
+    }
+
+    public SimpleOkResponse uploadAttachment(UploadAttachmentRequest request) {
+        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
+        boolean sent = channelRouter.sendAttachment(
+            sessionKey,
+            request.getFileName(),
+            request.getMimeType(),
+            request.getFileSize(),
+            request.getFileContentBase64()
+        );
+        return new SimpleOkResponse(sent);
+    }
+
     public SimpleOkResponse renew(RenewRequest request) {
-        long currentEpoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), currentEpoch);
+        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
+        long currentEpoch = ensureCurrentEpoch(sessionKey);
+        SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, currentEpoch);
         synchronized (mailbox) {
             InFlightDelivery inFlightDelivery = mailbox.getInFlightDelivery();
             if (inFlightDelivery == null) {
@@ -155,7 +193,11 @@ public class WorkerGatewayService {
             if (!request.getWorkerId().equals(mailbox.getOwnerWorkerId())) {
                 return new SimpleOkResponse(false);
             }
-            if (!request.getDeliveryId().equals(inFlightDelivery.getDeliveryId())) {
+            String deliveryId = resolveDeliveryId(request.getDeliveryId(), inFlightDelivery);
+            if (deliveryId == null) {
+                return new SimpleOkResponse(false);
+            }
+            if (!deliveryId.equals(inFlightDelivery.getDeliveryId())) {
                 return new SimpleOkResponse(false);
             }
 
@@ -171,8 +213,9 @@ public class WorkerGatewayService {
     }
 
     public SimpleOkResponse complete(CompleteRequest request) {
-        long currentEpoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), currentEpoch);
+        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
+        long currentEpoch = ensureCurrentEpoch(sessionKey);
+        SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, currentEpoch);
         synchronized (mailbox) {
             InFlightDelivery inFlightDelivery = mailbox.getInFlightDelivery();
             if (inFlightDelivery == null) {
@@ -181,7 +224,11 @@ public class WorkerGatewayService {
             if (!request.getWorkerId().equals(mailbox.getOwnerWorkerId())) {
                 return new SimpleOkResponse(false);
             }
-            if (!request.getDeliveryId().equals(inFlightDelivery.getDeliveryId())) {
+            String deliveryId = resolveDeliveryId(request.getDeliveryId(), inFlightDelivery);
+            if (deliveryId == null) {
+                return new SimpleOkResponse(false);
+            }
+            if (!deliveryId.equals(inFlightDelivery.getDeliveryId())) {
                 return new SimpleOkResponse(false);
             }
 
@@ -194,7 +241,7 @@ public class WorkerGatewayService {
             }
 
             OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-            outboundMessageEntity.setSessionKey(request.getSessionKey());
+            outboundMessageEntity.setSessionKey(sessionKey);
             outboundMessageEntity.setEpoch(inFlightDelivery.getEpoch());
             outboundMessageEntity.setInboundMessageId(inFlightDelivery.getMessageId());
             outboundMessageEntity.setContent(request.getFinalContent());
@@ -202,7 +249,7 @@ public class WorkerGatewayService {
             outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
             outboundMessageMapper.insert(outboundMessageEntity);
 
-            boolean sent = channelRouter.send(request.getSessionKey(), request.getFinalContent());
+            boolean sent = channelRouter.send(sessionKey, request.getFinalContent());
             outboundMessageMapper.updateStatus(outboundMessageEntity.getId(), sent ? "SENT" : "FAILED");
             mailbox.setInFlightDelivery(null);
             return new SimpleOkResponse(true);
@@ -277,5 +324,29 @@ public class WorkerGatewayService {
                 snapshot.getContent()
             )
         ));
+    }
+
+    private String resolveSessionKey(String sessionKey, String workerId) {
+        if (!isBlank(sessionKey)) {
+            return sessionKey;
+        }
+        if (!isBlank(workerId)) {
+            return workerId;
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "session_key or worker_id is required");
+    }
+
+    private String resolveDeliveryId(String deliveryId, InFlightDelivery inFlightDelivery) {
+        if (!isBlank(deliveryId)) {
+            return deliveryId;
+        }
+        if (inFlightDelivery == null || isBlank(inFlightDelivery.getDeliveryId())) {
+            return null;
+        }
+        return inFlightDelivery.getDeliveryId();
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 }

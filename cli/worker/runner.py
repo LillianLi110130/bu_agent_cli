@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,9 @@ class WorkerRunner:
                     logger.warning(
                         f"Worker poll timed out for worker_id={self.worker_id}, continuing next poll: {exc}"
                     )
+                    await self._drain_outbound_events()
                     continue
+                await self._drain_outbound_events()
                 if not messages:
                     await asyncio.sleep(self.empty_poll_sleep_seconds)
                     continue
@@ -107,3 +110,31 @@ class WorkerRunner:
                 return result
             await asyncio.sleep(self.result_poll_interval_seconds)
         raise RuntimeError(f"Worker stopped while waiting for bridge result: {request_id}")
+
+    async def _drain_outbound_events(self) -> None:
+        """Deliver queued outbound events through the gateway."""
+        while not self._stop_event.is_set():
+            event = self.bridge_store.claim_next_pending_outbound()
+            if event is None:
+                return
+
+            if event.action == "text":
+                ok = await self.gateway_client.send_text(
+                    worker_id=self.worker_id,
+                    text=event.text,
+                )
+            elif event.action == "attachment":
+                file_bytes = Path(event.file_path).read_bytes()
+                ok = await self.gateway_client.upload_attachment(
+                    worker_id=self.worker_id,
+                    file_name=event.file_name,
+                    mime_type=event.mime_type,
+                    file_size=event.file_size,
+                    file_content_base64=base64.b64encode(file_bytes).decode("ascii"),
+                )
+            else:
+                logger.warning(f"Unsupported outbound action={event.action}, event_id={event.event_id}")
+                ok = False
+
+            if ok:
+                self.bridge_store.complete_outbound_event(event)
