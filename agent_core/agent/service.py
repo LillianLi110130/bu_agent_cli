@@ -555,10 +555,12 @@ class Agent:
         summary = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
         summary_lines = [
             "Bash output summary:",
-            "This is a context-trimmed summary, not the full bash result payload.",
-            "Do not rerun the same command only to reveal more output in context.",
-            "If the current preview is sufficient, continue with the next step.",
-            "If more output is required, inspect the artifact file below instead.",
+            "This is a context-limited summary of the bash result, not the full raw result.",
+            "Do not repeat the same bash call with identical arguments just to reveal more "
+            "output.",
+            "If you need more detail, read the referenced artifact file with explicit window "
+            "parameters.",
+            "If this summary is already sufficient, continue with the next step.",
             summary,
         ]
         if artifact_path:
@@ -587,15 +589,17 @@ class Agent:
             f"Cwd: {cwd or '(unknown)'}",
             f"Exit code: {returncode if returncode is not None else 'timeout'}",
             f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
-            "This is a context-trimmed summary of the bash result, not the full stdout/stderr payload.",
-            "Do not rerun the same command only to see more output in context.",
-            "If the current preview is sufficient, continue with the next step.",
-            "If more output is required, read the artifact file below instead.",
+            "This is a context-limited summary of the bash result, not the full stdout/stderr "
+            "payload.",
+            "Do not repeat the same bash call with identical arguments just to reveal more "
+            "output.",
+            "If you need more detail, read the referenced artifact file or output/log path.",
+            "If this summary is already sufficient, continue with the next step.",
         ]
         if background_task_id:
             summary_lines.append(f"Background task id: {background_task_id}")
         if persisted_output_path:
-            summary_lines.append(f"Output path: {persisted_output_path}")
+            summary_lines.extend(self._build_output_path_reference_lines(persisted_output_path))
         self._append_bash_stream_summary(summary_lines, label="Stdout", stream_text=stdout)
         self._append_bash_stream_summary(summary_lines, label="Stderr", stream_text=stderr)
         if not stdout and not stderr:
@@ -663,15 +667,17 @@ class Agent:
             f"Cwd: {cwd or '(unknown)'}",
             f"Exit code: {returncode if returncode is not None else 'timeout'}",
             f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
-            "This is a context-trimmed summary of the bash result, not the full stdout/stderr payload.",
-            "Do not rerun the same command only to see more output in context.",
-            "If the current preview is sufficient, continue with the next step.",
-            "If more output is required, read the artifact file below instead.",
+            "This is a context-limited summary of the bash result, not the full stdout/stderr "
+            "payload.",
+            "Do not repeat the same bash call with identical arguments just to reveal more "
+            "output.",
+            "If you need more detail, read the referenced artifact file or output/log path.",
+            "If this summary is already sufficient, continue with the next step.",
         ]
         if background_task_id:
             summary_lines.append(f"Background task id: {background_task_id}")
         if persisted_output_path:
-            summary_lines.append(f"Output path: {persisted_output_path}")
+            summary_lines.extend(self._build_output_path_reference_lines(persisted_output_path))
 
         stream_budget = max(800, max_inline_chars - 700)
         if stdout and stderr:
@@ -736,8 +742,24 @@ class Agent:
         body_start_line = self._artifact_body_start_line(artifact_path)
         if body_start_line is not None:
             lines.append(f"Artifact body starts at line {body_start_line}.")
-        lines.append("If more detail is needed, use read with explicit offset_line and n_lines.")
+            example_offset = body_start_line
+        else:
+            example_offset = 1
+        lines.append("This artifact contains the full raw tool result.")
+        lines.append("If you need more detail, use read with explicit offset_line and n_lines.")
+        lines.append(
+            f'Example: read(file_path="{artifact_path}", offset_line={example_offset}, '
+            'n_lines=80)'
+        )
         return lines
+
+    @staticmethod
+    def _build_output_path_reference_lines(output_path: str) -> list[str]:
+        return [
+            f"Output path: {output_path}",
+            "This is a tool-generated output/log file path, not a runtime artifact.",
+            "Read that file directly if you need its contents.",
+        ]
 
     def _append_bash_stream_summary(
         self,
@@ -766,16 +788,17 @@ class Agent:
         summary_lines = [
             f"Read result: {header or '(no line metadata)'}",
             f"Body lines: {len(body_lines)}",
-            "This is a context-trimmed preview, not the full file slice returned by the tool.",
-            "Repeating the same read with identical file_path, offset_line, and n_lines will not reveal more content in context.",
-            "If more detail is needed, change the read window or inspect the artifact file below.",
+            "This is a context-limited preview of the requested file slice, not the full raw "
+            "result.",
+            "Do not repeat the same read call with identical file_path, offset_line, and "
+            "n_lines just to reveal more content.",
+            "If you need more detail, change the read window or read the referenced artifact "
+            "file.",
+            "If this preview is already sufficient, continue with the next step.",
             "Context preview:",
             preview or "(empty)",
         ]
         if artifact_path:
-            summary_lines.append(
-                "To inspect more content, use read on the artifact file with explicit offset_line and n_lines."
-            )
             summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
         return "\n".join(summary_lines)
 
@@ -815,6 +838,13 @@ class Agent:
                 f"max_cols={preview_limits.get('max_cols')}"
             ),
             f"Matches returned: {len(matches)}",
+            "This is a context-limited summary of the workbook result, not the full raw "
+            "workbook payload.",
+            "Do not repeat the same read_excel call with identical arguments just to reveal more "
+            "content.",
+            "If you need more detail, refine the query/window or read the referenced artifact "
+            "file.",
+            "If this summary is already sufficient, continue with the next step.",
         ]
 
         for sheet in sheets[:3]:
@@ -857,7 +887,11 @@ class Agent:
     ) -> str:
         preview = self._truncate_tool_text(raw_text, max_chars=max_inline_chars)
         summary_lines = [
-            f"{tool_name} output trimmed from {len(raw_text)} chars for context.",
+            f"{tool_name} output was reduced for context; this is not the full raw result.",
+            "Do not repeat the same tool call with identical arguments just to reveal more "
+            "content.",
+            "If you need more detail, read the referenced artifact file.",
+            "If this preview is already sufficient, continue with the next step.",
             preview or "(empty)",
         ]
         if artifact_path:
