@@ -17,8 +17,8 @@ from tools.sandbox import SandboxContext, get_sandbox_context
     "Execute a command in the current OS shell and return structured output. "
     "On Windows, use cmd or PowerShell compatible syntax and avoid Unix-only "
     "patterns such as heredoc, python3, or file.",
-    context_policy="summarize",
-    context_max_inline_chars=1200,
+    context_policy="trim",
+    context_max_inline_chars=2400,
 )
 async def bash(
     command: str,

@@ -597,6 +597,109 @@ class Agent:
         return summary_lines
 
     @staticmethod
+    def _count_text_lines(text: str) -> int:
+        if not text:
+            return 0
+        return len(text.splitlines()) or 1
+
+    def _append_bash_trimmed_stream_summary(
+        self,
+        summary_lines: list[str],
+        *,
+        label: str,
+        stream_text: str,
+        max_chars: int,
+    ) -> None:
+        if not stream_text:
+            return
+
+        line_count = self._count_text_lines(stream_text)
+        char_count = len(stream_text)
+        truncated = char_count > max_chars
+        line = f"{label}: {line_count} lines, {char_count} chars"
+        if truncated:
+            line += " (truncated for context)"
+        summary_lines.append(line)
+        summary_lines.append(self._truncate_tool_text(stream_text, max_chars=max_chars))
+
+    def _summarize_trimmed_bash_output(
+        self,
+        raw_text: str,
+        *,
+        artifact_path: str | None,
+        max_inline_chars: int,
+    ) -> str:
+        payload = self._parse_json_tool_output(raw_text)
+        if payload is None:
+            return self._build_fallback_bash_summary(
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+
+        stdout = str(payload.get("stdout", "") or "")
+        stderr = str(payload.get("stderr", "") or "")
+        command = str(payload.get("command", "") or "")
+        cwd = str(payload.get("cwd", "") or "")
+        returncode = payload.get("returncode")
+        timed_out = bool(payload.get("timed_out", False))
+        ok = bool(payload.get("ok", False))
+        background_task_id = payload.get("backgroundTaskId")
+        persisted_output_path = payload.get("persistedOutputPath")
+
+        summary_lines = [
+            f"Bash command: {command or '(empty)'}",
+            f"Cwd: {cwd or '(unknown)'}",
+            f"Exit code: {returncode if returncode is not None else 'timeout'}",
+            f"Status: {'ok' if ok else 'error'}{' (timed out)' if timed_out else ''}",
+        ]
+        if background_task_id:
+            summary_lines.append(f"Background task id: {background_task_id}")
+        if persisted_output_path:
+            summary_lines.append(f"Output path: {persisted_output_path}")
+
+        stream_budget = max(800, max_inline_chars - 700)
+        if stdout and stderr:
+            stderr_budget = max(480, int(stream_budget * 0.6))
+            stdout_budget = max(320, stream_budget - stderr_budget)
+        elif stderr:
+            stderr_budget = stream_budget
+            stdout_budget = 0
+        else:
+            stdout_budget = stream_budget
+            stderr_budget = 0
+
+        self._append_bash_trimmed_stream_summary(
+            summary_lines,
+            label="Stdout",
+            stream_text=stdout,
+            max_chars=stdout_budget,
+        )
+        self._append_bash_trimmed_stream_summary(
+            summary_lines,
+            label="Stderr",
+            stream_text=stderr,
+            max_chars=stderr_budget,
+        )
+
+        if not stdout and not stderr:
+            summary_lines.append(
+                "No stdout or stderr. The command may have succeeded without printing anything."
+            )
+            summary_lines.append(
+                "If this command was expected to produce a result, the script likely did not write to stdout/stderr."
+            )
+
+        if artifact_path and self._bash_artifact_has_recoverable_output(payload):
+            summary_lines.extend(self._build_artifact_reference_lines(artifact_path))
+        elif artifact_path:
+            summary_lines.append(
+                "This artifact only contains bash execution metadata because stdout/stderr were empty. "
+                "Do not read the artifact for additional command output."
+            )
+        return "\n".join(summary_lines)
+
+    @staticmethod
     def _artifact_body_start_line(artifact_path: str | None) -> int | None:
         if not artifact_path:
             return None
@@ -984,6 +1087,12 @@ class Agent:
     ) -> str:
         if tool_name == "read":
             return self._summarize_read_output(
+                raw_text,
+                artifact_path=artifact_path,
+                max_inline_chars=max_inline_chars,
+            )
+        if tool_name == "bash":
+            return self._summarize_trimmed_bash_output(
                 raw_text,
                 artifact_path=artifact_path,
                 max_inline_chars=max_inline_chars,

@@ -30,7 +30,7 @@ def _read_artifact_parts(path: Path) -> tuple[dict[str, str], str]:
 
 
 @pytest.mark.asyncio
-async def test_bash_context_policy_summarizes_and_persists_raw_output(
+async def test_bash_context_policy_keeps_small_output_inline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -59,6 +59,10 @@ async def test_bash_context_policy_summarizes_and_persists_raw_output(
     )
     agent.bind_session_runtime(runtime)
 
+    raw_result = await bash.execute(
+        command="git status",
+        _overrides={get_sandbox_context: lambda: sandbox},
+    )
     tool_message = await agent._execute_tool_call(
         ToolCall(
             id="call-bash",
@@ -66,27 +70,17 @@ async def test_bash_context_policy_summarizes_and_persists_raw_output(
         )
     )
 
-    assert "Bash command: git status" in tool_message.text
-    assert "Exit code: 1" in tool_message.text
-    assert "fatal: repository has conflicts" in tool_message.text
-    assert '"stdout"' not in tool_message.text
+    assert tool_message.text == raw_result
+    assert '"command": "git status"' in tool_message.text
+    assert '"stdout": "line one\\nline two\\nline three"' in tool_message.text
+    assert "Artifact file:" not in tool_message.text
 
     artifact_path = runtime.artifacts_dir / "tool" / "call-bash.artifact.txt"
-    header, body = _read_artifact_parts(artifact_path)
-    assert header["content_format"] == "json"
-    assert header["tool_name"] == "bash"
-    assert int(header["body_start_line"]) > 1
-    raw_payload = json.loads(body)
-    assert raw_payload["command"] == "git status"
-    assert raw_payload["returncode"] == 1
-    assert raw_payload["stdout"] == "line one\nline two\nline three"
-    assert "Artifact file:" in tool_message.text
-    assert f"Artifact file: {artifact_path}" in tool_message.text
-    assert "Artifact body starts at line" in tool_message.text
+    assert not artifact_path.exists()
 
 
 @pytest.mark.asyncio
-async def test_bash_summary_hides_artifact_path_when_no_command_output(
+async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -95,9 +89,9 @@ async def test_bash_summary_hides_artifact_path_when_no_command_output(
     async def fake_run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
         del command, cwd, timeout
         return _AsyncShellResult(
-            returncode=0,
-            stdout="",
-            stderr="",
+            returncode=1,
+            stdout="".join(f"stdout line {index:04d} " + ("x" * 40) + "\n" for index in range(1, 91)),
+            stderr="".join(f"stderr line {index:04d} " + ("y" * 40) + "\n" for index in range(1, 81)),
         )
 
     bash_module = importlib.import_module("tools.bash")
@@ -115,20 +109,39 @@ async def test_bash_summary_hides_artifact_path_when_no_command_output(
     )
     agent.bind_session_runtime(runtime)
 
+    raw_result = await bash.execute(
+        command="pytest",
+        _overrides={get_sandbox_context: lambda: sandbox},
+    )
     tool_message = await agent._execute_tool_call(
         ToolCall(
-            id="call-bash-no-output",
-            function=Function(name="bash", arguments=json.dumps({"command": "python demo.py"})),
+            id="call-bash-large",
+            function=Function(name="bash", arguments=json.dumps({"command": "pytest"})),
         )
     )
 
-    assert "No stdout or stderr. The command may have succeeded without printing anything." in tool_message.text
-    assert "did not write to stdout/stderr" in tool_message.text
-    assert "Do not read the artifact for additional command output." in tool_message.text
-    assert "Artifact file:" not in tool_message.text
+    assert isinstance(raw_result, str)
+    assert len(raw_result) > bash.context_config.max_inline_chars
+    assert tool_message.text != raw_result
+    assert "Bash command: pytest" in tool_message.text
+    assert "Exit code: 1" in tool_message.text
+    assert "Stdout: 90 lines" in tool_message.text
+    assert "Stderr: 80 lines" in tool_message.text
+    assert "stdout line 0001" in tool_message.text
+    assert "stdout line 0090" in tool_message.text
+    assert "stderr line 0001" in tool_message.text
+    assert "stderr line 0080" in tool_message.text
+    assert "Artifact file:" in tool_message.text
 
-    artifact_path = runtime.artifacts_dir / "tool" / "call-bash-no-output.artifact.txt"
-    assert artifact_path.exists()
+    artifact_path = runtime.artifacts_dir / "tool" / "call-bash-large.artifact.txt"
+    header, body = _read_artifact_parts(artifact_path)
+    assert header["content_format"] == "json"
+    assert header["tool_name"] == "bash"
+    raw_payload = json.loads(body)
+    assert raw_payload["command"] == "pytest"
+    assert raw_payload["returncode"] == 1
+    assert "stdout line 0001" in raw_payload["stdout"]
+    assert "stderr line 0080" in raw_payload["stderr"]
 
 
 @pytest.mark.asyncio
