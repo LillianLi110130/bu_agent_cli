@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_core import Agent
+from agent_core.agent.compaction import CompactionConfig
 from agent_core.agent.hooks import BaseAgentHook, HookAction, HookDecision
 from agent_core.agent.runtime_events import ToolCallRequested, ToolResultReceived
 from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
@@ -51,12 +52,86 @@ class InitOutputGuardHook(BaseAgentHook):
 
 
 @dataclass
+class InitDraftBeforeMoreInspectionHook(BaseAgentHook):
+    """Require a first TGAGENTS.md draft after limited `/init` inspection."""
+
+    workspace_root: Path = Path(".")
+    priority: int = 14
+    draft_required_after: int = 12
+    inspection_tool_names: tuple[str, ...] = ("read", "glob_search", "grep", "resolve_path")
+    drafting_tool_names: tuple[str, ...] = ("write", "edit")
+    _inspection_count_before_draft: int = 0
+    _draft_started: bool = False
+
+    async def before_event(self, event, ctx) -> HookDecision | None:
+        del ctx
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        tool_name = event.tool_call.function.name
+
+        if tool_name in self.drafting_tool_names and self._targets_init_output(event):
+            self._draft_started = True
+            return None
+
+        if tool_name not in self.inspection_tool_names:
+            return None
+
+        if self._draft_started:
+            return None
+
+        ok, _ = validate_init_output(self.workspace_root)
+        if ok:
+            self._draft_started = True
+            return None
+
+        self._inspection_count_before_draft += 1
+        if self._inspection_count_before_draft <= self.draft_required_after:
+            return None
+
+        return HookDecision(
+            action=HookAction.OVERRIDE_RESULT,
+            override_result=ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name=tool_name,
+                content=(
+                    "Error: `/init` has done enough repository inspection for the first draft.\n"
+                    "You must now create TGAGENTS.md with all required section headings before "
+                    "inspecting more files.\n"
+                    "Use `write` to create the first complete draft skeleton.\n"
+                    "If some facts remain uncertain, mark them as 未验证.\n"
+                    "After the draft exists, you may continue refining it with `edit` and "
+                    "additional inspection."
+                ),
+                is_error=True,
+            ),
+            reason="blocked extra init inspection before TGAGENTS first draft existed",
+        )
+
+    def _targets_init_output(self, event: ToolCallRequested) -> bool:
+        try:
+            parsed = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
+        except ToolArgumentsError:
+            return False
+
+        file_path = parsed.get("file_path")
+        if not isinstance(file_path, str) or not file_path.strip():
+            return False
+
+        candidate = Path(file_path)
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+
+        output_path = (self.workspace_root / INIT_OUTPUT_FILENAME).resolve(strict=False)
+        return candidate.resolve(strict=False) == output_path
+
+
+@dataclass
 class InitRepeatedToolCallGuardHook(BaseAgentHook):
     """Block repeated identical file-inspection calls during `/init`."""
 
     priority: int = 16
     watched_tool_names: tuple[str, ...] = ("read", "glob_search", "grep", "resolve_path")
-    _last_signature: tuple[str, str] | None = None
     _cached_results: dict[tuple[str, str], ToolMessage] = field(default_factory=dict)
 
     _REUSED_RESULT_NOTICE = (
@@ -76,40 +151,22 @@ class InitRepeatedToolCallGuardHook(BaseAgentHook):
         if signature is None:
             return None
 
-        if signature != self._last_signature:
+        cached_result = self._cached_results.get(signature)
+        if cached_result is None:
             return None
 
-        cached_result = self._cached_results.get(signature)
-        if cached_result is not None:
-            reused_content = cached_result.content
-            if isinstance(reused_content, str):
-                reused_content = f"{self._REUSED_RESULT_NOTICE}\n\n{reused_content}"
-            return HookDecision(
-                action=HookAction.OVERRIDE_RESULT,
-                override_result=ToolMessage(
-                    tool_call_id=event.tool_call.id,
-                    tool_name=tool_name,
-                    content=reused_content,
-                    is_error=False,
-                ),
-                reason="reused cached result for repeated identical init tool call",
-            )
-
+        reused_content = cached_result.content
+        if isinstance(reused_content, str):
+            reused_content = f"{self._REUSED_RESULT_NOTICE}\n\n{reused_content}"
         return HookDecision(
             action=HookAction.OVERRIDE_RESULT,
             override_result=ToolMessage(
                 tool_call_id=event.tool_call.id,
                 tool_name=tool_name,
-                content=(
-                    "Error: You just called the same tool with identical parameters and already "
-                    "received the result.\n"
-                    "Do not repeat the same file-inspection step.\n"
-                    "Reuse the previous output, change the file/range/query, or move on to "
-                    "`write`, `edit`, or `done` if you already have enough information."
-                ),
-                is_error=True,
+                content=reused_content,
+                is_error=False,
             ),
-            reason="blocked repeated identical init tool call",
+            reason="reused cached result for repeated identical init tool call",
         )
 
     async def after_event(self, event, ctx, emitted_events) -> HookDecision | None:
@@ -119,12 +176,10 @@ class InitRepeatedToolCallGuardHook(BaseAgentHook):
 
         tool_name = event.tool_call.function.name
         if tool_name not in self.watched_tool_names:
-            self._last_signature = None
             return None
 
         signature = self._build_signature_from_call(event.tool_call)
         if signature is not None:
-            self._last_signature = signature
             if not bool(getattr(event.tool_result, "is_error", False)):
                 content = getattr(event.tool_result, "content", None)
                 if not (
@@ -191,6 +246,14 @@ def build_init_system_prompt() -> str:
         "If the result points to an output file or log path, read that file directly.\n"
         "Do not repeatedly read the same file slice with identical parameters unless you are "
         "verifying a specific detail that was not already captured.\n"
+        "After a small number of high-signal inspections, you must write the first complete "
+        "TGAGENTS.md draft instead of continuing open-ended exploration.\n"
+        "Do not keep reading adjacent modules just because they seem related once the required "
+        "sections can already be drafted.\n"
+        "If some details remain uncertain, write them as 未验证 rather than delaying the first "
+        "draft.\n"
+        "The first draft should already include all required section headings, even if some "
+        "subsections are still brief.\n"
         "Once you have enough verified information to fill the required sections, stop "
         "exploring and draft the full TGAGENTS.md immediately.\n"
         "If the current tool outputs already support the required sections, do not keep reading "
@@ -240,6 +303,13 @@ def build_init_user_prompt(workspace_root: Path) -> str:
         "parameters, or read the referenced output/log file when necessary.\n"
         "- Do not repeat the same read or search with identical parameters unless it is required "
         "to verify one specific missing detail.\n"
+        "- After a small number of high-signal inspections, write the first full TGAGENTS.md "
+        "draft immediately instead of continuing open-ended exploration.\n"
+        "- Do not keep reading adjacent modules just because they seem related once you can "
+        "already draft the required structure.\n"
+        "- If some details remain uncertain, write 未验证 instead of delaying the first draft.\n"
+        "- The first draft must already contain all required section headings before you do more "
+        "inspection.\n"
         "- As soon as you can cover the required structure with verified facts, stop exploring "
         "and write TGAGENTS.md.\n"
         "- If the current evidence is already sufficient to draft TGAGENTS.md, start writing "
@@ -256,22 +326,26 @@ def build_init_agent(
     llm: BaseChatModel,
     workspace_root: Path,
     dependency_overrides: dict | None = None,
-    max_iterations: int = 24,
+    max_iterations: int = 40,
 ) -> Agent:
     """Create the temporary agent used by `/init`."""
-    return Agent(
+    agent = Agent(
         llm=llm,
         tools=build_init_tools(),
         system_prompt=build_init_system_prompt(),
         dependency_overrides=dependency_overrides,
         max_iterations=max_iterations,
-        tool_choice="required",
+        compaction=CompactionConfig(enabled=False),
+        tool_choice="auto",
         require_done_tool=True,
         hooks=[
+            InitDraftBeforeMoreInspectionHook(workspace_root=workspace_root),
             InitOutputGuardHook(workspace_root=workspace_root),
             InitRepeatedToolCallGuardHook(),
         ],
     )
+    agent._context.sliding_window_messages = None
+    return agent
 
 
 def validate_init_output(workspace_root: Path) -> tuple[bool, str | None]:
