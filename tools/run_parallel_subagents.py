@@ -27,14 +27,21 @@ async def run_parallel_subagents(
     This is useful when you need to execute multiple independent tasks concurrently
     and wait for all results.
 
+    Before using this tool, first check whether a relevant skill exists.
+    If a relevant skill exists, read its `SKILL.md` fully before deciding to delegate.
+    Do not use parallel subagents as a shortcut to skip a relevant skill
+    or to avoid understanding the task decomposition yourself. Use parallel delegation
+    only when the tasks are genuinely independent and the speedup or extra coverage is meaningful.
+
     The tasks will run in parallel (at the same time), which is much faster than
     running them sequentially. The main agent will wait for ALL tasks to complete
     before returning.
 
     Use this for:
     - Running multiple independent analyses at once
-    - Processing multiple files simultaneously
-    - Getting multiple perspectives on the same code
+    - Processing multiple independent files or modules simultaneously
+    - Getting multiple perspectives only when the tasks are truly independent
+      and relevant skill guidance has already been checked
 
     Use run_subagent instead for:
     - Single task execution

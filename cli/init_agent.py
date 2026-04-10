@@ -16,7 +16,7 @@ from agent_core.llm.messages import ToolMessage
 from tools import done, edit, glob_search, grep, read, resolve_path, write
 
 INIT_OUTPUT_FILENAME = "TGAGENTS.md"
-INIT_DOCUMENT_TITLE = "Repository Guidelines"
+INIT_DOCUMENT_TITLE = "仓库指南"
 _PLACEHOLDER_PATTERNS = ("todo", "tbd", "待补充", "coming soon", "xxx")
 _SECTION_KEYWORD_GROUPS = (
     ("项目结构", "目录", "module", "structure"),
