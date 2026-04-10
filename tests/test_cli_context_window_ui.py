@@ -253,11 +253,125 @@ async def test_run_agent_renders_execution_state_through_live(
     assert len(live_instances) == 1
     assert live_instances[0].started is True
     assert live_instances[0].stopped is True
-    assert "hello " in capture.get()
+    assert live_instances[0].kwargs["transient"] is True
+    assert "hello world\n" in capture.get()
 
     rendered = "\n".join(_render_plain_text(renderable) for renderable in live_instances[0].renderables)
     assert "echo-worker" in rendered
     assert "运行状态" in rendered
+
+
+@pytest.mark.asyncio
+async def test_run_agent_prints_final_response_when_text_events_are_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(ctx)
+    cli = TGAgentCLI(
+        agent=Agent(llm=EchoLLM(prefix="echo:"), tools=[], system_prompt="test"),
+        context=ctx,
+        slash_registry=SlashCommandRegistry(),
+        session_runtime=runtime,
+    )
+
+    class _FakeLive:
+        def __init__(self, renderable: Any, **kwargs: Any) -> None:
+            del renderable, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def update(self, renderable: Any, refresh: bool = False) -> None:
+            del renderable, refresh
+
+        def stop(self) -> None:
+            return None
+
+    async def _fake_query_stream(user_input: Any, cancel_event=None):
+        del user_input, cancel_event
+        yield TextEvent(content="部分输出")
+        yield FinalResponseEvent(content="部分输出\n最终输出")
+
+    async def _fake_spinner() -> None:
+        return None
+
+    async def _fake_budget_refresh() -> None:
+        return None
+
+    monkeypatch.setattr(app_module, "Live", _FakeLive)
+    monkeypatch.setattr(cli, "_run_execution_live_spinner", _fake_spinner)
+    monkeypatch.setattr(cli, "_run_execution_live_budget_refresh", _fake_budget_refresh)
+    monkeypatch.setattr(cli._agent, "query_stream", _fake_query_stream)
+
+    with cli._console.capture() as capture:
+        result = await cli._run_agent("hello")
+
+    console_text = capture.get()
+    assert result == "部分输出\n最终输出"
+    assert "部分输出" in console_text
+    assert "最终输出\n" in console_text
+
+
+@pytest.mark.asyncio
+async def test_run_agent_prints_final_suffix_after_streamed_prefix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ctx = SandboxContext.create(workspace)
+    runtime = CLISessionRuntime.create_for_context(ctx)
+    cli = TGAgentCLI(
+        agent=Agent(llm=EchoLLM(prefix="echo:"), tools=[], system_prompt="test"),
+        context=ctx,
+        slash_registry=SlashCommandRegistry(),
+        session_runtime=runtime,
+    )
+
+    class _FakeLive:
+        def __init__(self, renderable: Any, **kwargs: Any) -> None:
+            del renderable, kwargs
+
+        def start(self) -> None:
+            return None
+
+        def update(self, renderable: Any, refresh: bool = False) -> None:
+            del renderable, refresh
+
+        def stop(self) -> None:
+            return None
+
+    async def _fake_query_stream(user_input: Any, cancel_event=None):
+        del user_input, cancel_event
+        yield TextEvent(content="你")
+        yield FinalResponseEvent(content="你好")
+
+    async def _fake_spinner() -> None:
+        return None
+
+    async def _fake_budget_refresh() -> None:
+        return None
+
+    monkeypatch.setattr(app_module, "Live", _FakeLive)
+    monkeypatch.setattr(cli, "_run_execution_live_spinner", _fake_spinner)
+    monkeypatch.setattr(cli, "_run_execution_live_budget_refresh", _fake_budget_refresh)
+    monkeypatch.setattr(cli._agent, "query_stream", _fake_query_stream)
+
+    with cli._console.capture() as capture:
+        result = await cli._run_agent("hello")
+
+    console_text = capture.get()
+    assert result == "你好"
+    assert "你好\n" in console_text
 
 
 @pytest.mark.asyncio

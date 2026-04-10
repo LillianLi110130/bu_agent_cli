@@ -28,6 +28,7 @@ def test_workflow_plugins_load_expected_commands():
     manager.load_all()
 
     frontend = manager.get_plugin("frontend-workflow")
+    knowledge_wiki = manager.get_plugin("knowledge-wiki")
     ta_workflow = manager.get_plugin("ta-workflow")
     tgcrab_frontend = manager.get_plugin("tgcrab-frontend")
 
@@ -37,6 +38,17 @@ def test_workflow_plugins_load_expected_commands():
         "frontend-workflow:design",
         "frontend-workflow:requirement",
         "frontend-workflow:tasks",
+    }
+
+    assert knowledge_wiki is not None
+    assert knowledge_wiki.status == "loaded"
+    assert set(knowledge_wiki.commands) == {
+        "knowledge-wiki:ask",
+        "knowledge-wiki:ingest",
+        "knowledge-wiki:init",
+        "knowledge-wiki:lint",
+        "knowledge-wiki:reindex",
+        "knowledge-wiki:status",
     }
 
     assert ta_workflow is not None

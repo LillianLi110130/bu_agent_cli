@@ -649,7 +649,7 @@ class TGAgentCLI:
             self._build_execution_live_renderable(),
             console=self._console,
             auto_refresh=False,
-            transient=False,
+            transient=True,
             vertical_overflow="crop",
         )
         self._execution_live.start()
@@ -664,7 +664,7 @@ class TGAgentCLI:
         self._resume_execution_live()
 
     async def _stop_execution_live(self) -> None:
-        """Stop the fixed execution live area and freeze its final frame."""
+        """Stop the fixed execution live area."""
         spinner_task = self._execution_live_spinner_task
         self._execution_live_spinner_task = None
         if spinner_task is not None:
@@ -1367,7 +1367,7 @@ class TGAgentCLI:
         self._console.print()
         final_response: str | None = None
         active_agent = agent or self._agent
-        saw_text_output = False
+        streamed_text_fragments: list[str] = []
 
         # Keep workspace instructions synchronized for the main CLI agent.
         # Dedicated helper agents like /init manage their own injection timing.
@@ -1485,17 +1485,13 @@ class TGAgentCLI:
 
                 elif isinstance(event, TextEvent):
                     self._set_execution_live_message("输出中")
-                    saw_text_output = True
-                    self._console.print(event.content, end="")
+                    streamed_text_fragments.append(event.content)
 
                 elif isinstance(event, FinalResponseEvent):
                     self._set_execution_live_message("已完成")
                     final_response = event.content
-                    # Check if this was a cancellation
                     if event.content == "[Cancelled by user]":
                         self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
-                    elif event.content and not saw_text_output:
-                        self._console.print(event.content)
                     if active_agent is self._agent:
                         await self._refresh_context_window_status(trigger="cli_final_response")
 
@@ -1515,7 +1511,14 @@ class TGAgentCLI:
         if active_agent is self._agent:
             self._set_context_window_runtime_state("idle")
             await self._refresh_context_window_status(trigger="cli_run_end")
-        self._console.print()
+
+        streamed_text = "".join(streamed_text_fragments)
+        if final_response and final_response != "[Cancelled by user]":
+            self._console.print(final_response)
+        elif streamed_text:
+            self._console.print(streamed_text)
+        else:
+            self._console.print()
         return final_response
 
     async def _on_task_completed(self, result: Any):
