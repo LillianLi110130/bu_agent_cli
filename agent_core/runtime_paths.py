@@ -89,9 +89,9 @@ def default_runtime_env_content() -> str:
     """Return the default CLI runtime env template."""
     lines = [
         "# tg-agent runtime configuration",
-        "# Generated automatically on first CLI launch.",
+        "# Refreshed automatically from packaged defaults on CLI launch.",
         "# Values from the packaged .env are merged here when available.",
-        "# Edit this file if you want to override the default model or API endpoint.",
+        "# Local edits in this file may be replaced on the next CLI launch.",
     ]
     for key, value in default_runtime_env_values().items():
         lines.append(f"{key}={value}")
@@ -105,24 +105,7 @@ def ensure_cli_runtime_state() -> Path:
     home_dir.mkdir(parents=True, exist_ok=True)
 
     env_path = home_dir / ".env"
-    if not env_path.exists():
-        env_path.write_text(default_runtime_env_content(), encoding="utf-8")
-    else:
-        existing_values = {
-            key: value
-            for key, value in dotenv_values(env_path).items()
-            if key is not None
-        }
-        missing_items: list[tuple[str, str]] = []
-        for key, value in default_runtime_env_values().items():
-            if key not in existing_values:
-                missing_items.append((key, value))
-        if missing_items:
-            with env_path.open("a", encoding="utf-8") as f:
-                if env_path.stat().st_size > 0:
-                    f.write("\n")
-                for key, value in missing_items:
-                    f.write(f"{key}={value}\n")
+    env_path.write_text(default_runtime_env_content(), encoding="utf-8")
 
     packaged_worker_config = application_root() / "tg_crab_worker.json"
     user_worker_config = home_dir / "tg_crab_worker.json"

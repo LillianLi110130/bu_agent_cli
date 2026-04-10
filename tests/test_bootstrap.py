@@ -120,6 +120,28 @@ def test_build_system_prompt_prefers_project_skill_metadata(
     assert "builtin override" not in prompt
 
 
+def test_claude_code_build_system_prompt_includes_project_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("claude_code")
+    skill_module = _load_module("cli.at_commands")
+    registry_module = _load_module("agent_core.agent.registry")
+
+    monkeypatch.setattr(module, "build_project_context", lambda: "PROJECT_CONTEXT_MARKER")
+
+    skill_registry = skill_module.AtCommandRegistry(skill_dirs=[tmp_path / "skills"])
+    agent_registry = registry_module.AgentRegistry(tmp_path / "agents")
+
+    prompt = module._build_system_prompt(
+        tmp_path,
+        skill_registry=skill_registry,
+        agent_registry=agent_registry,
+    )
+
+    assert "PROJECT_CONTEXT_MARKER" in prompt
+
+
 def test_sync_workspace_agents_md_deduplicates_and_replaces_content(tmp_path: Path) -> None:
     module = _load_module("agent_core.bootstrap.session_bootstrap")
     sdk_module = _load_module("agent_core")

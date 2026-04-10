@@ -42,6 +42,7 @@ class CLISessionRuntime:
     checkpoints_dir: Path
     artifacts_dir: Path
     working_state_path: Path
+    context_window_status_path: Path
     meta_path: Path
     started_at: str
     last_active_at: str
@@ -133,6 +134,7 @@ class CLISessionRuntime:
             checkpoints_dir=checkpoints_dir,
             artifacts_dir=artifacts_dir,
             working_state_path=rollout_dir / "working_state.json",
+            context_window_status_path=rollout_dir / "context_window_status.json",
             meta_path=rollout_dir / "meta.json",
             started_at=_format_timestamp(resolved_now),
             last_active_at=_format_timestamp(resolved_now),

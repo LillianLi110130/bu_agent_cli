@@ -38,6 +38,7 @@ from agent_core.agent import (
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
+from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
 from agent_core.runtime_paths import (
@@ -252,6 +253,7 @@ def _build_system_prompt(
         WORKING_DIR=str(working_dir),
         SUBAGENTS=agents_text,
         SYSTEM_INFO=system_info_text,
+        PROJECT_CONTEXT=build_project_context(),
     )
 
     return prompt

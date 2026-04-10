@@ -8,7 +8,7 @@ and a role-based index for fast grouping.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable, Iterator, Sequence, TYPE_CHECKING
+from typing import Callable, Iterable, Iterator, Sequence, TYPE_CHECKING
 
 import logging
 
@@ -61,6 +61,7 @@ class ContextManager:
         self._checkpoint_store: CheckpointStore | None = None
         self._working_state_store: WorkingStateStore | None = None
         self._artifact_refs: list[str] = []
+        self._compaction_state_callback: Callable[[str, CompactionResult | None], None] | None = None
         if messages:
             self.replace_messages(messages)
 
@@ -139,6 +140,22 @@ class ContextManager:
         if self._working_state_store is not None:
             self._working_state_store.ensure_initialized()
 
+    def set_compaction_state_callback(
+        self,
+        callback: Callable[[str, CompactionResult | None], None] | None,
+    ) -> None:
+        """Register a lightweight callback for compaction lifecycle state changes."""
+        self._compaction_state_callback = callback
+
+    def _emit_compaction_state(
+        self,
+        state: str,
+        result: CompactionResult | None = None,
+    ) -> None:
+        if self._compaction_state_callback is None:
+            return
+        self._compaction_state_callback(state, result)
+
     def _register_artifact_ref(self, path: str) -> str:
         self._artifact_refs = self._dedupe_preserve_order([*self._artifact_refs, path])
         return path
@@ -187,7 +204,13 @@ class ContextManager:
         if self._checkpoint_store is not None and messages:
             checkpoint_record = self._checkpoint_store.save_messages(messages)
 
-        result = await self._compaction_service.compact(list(messages), llm)
+        self._emit_compaction_state("start")
+        try:
+            result = await self._compaction_service.compact(list(messages), llm)
+        except Exception:
+            self._emit_compaction_state("error")
+            raise
+        self._emit_compaction_state("finish", result)
         if checkpoint_record is not None:
             result.checkpoint_ref = checkpoint_record.reference
             result.checkpoint_path = str(checkpoint_record.path)

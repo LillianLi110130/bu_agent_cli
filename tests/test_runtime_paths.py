@@ -155,7 +155,7 @@ def test_ensure_cli_runtime_state_creates_default_home_files(
     assert '"enable_auth": false' in worker_config.read_text(encoding="utf-8")
 
 
-def test_ensure_cli_runtime_state_appends_missing_model_envs_without_overwriting(
+def test_ensure_cli_runtime_state_overwrites_existing_user_env_with_packaged_defaults(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -185,6 +185,8 @@ def test_ensure_cli_runtime_state_appends_missing_model_envs_without_overwriting
     ensure_cli_runtime_state()
 
     env_text = user_env.read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY=user-key" in env_text
-    assert "CUSTOM_MODEL_KEY=user-secret" in env_text
+    assert "OPENAI_API_KEY=" in env_text
+    assert "OPENAI_API_KEY=user-key" not in env_text
+    assert "CUSTOM_MODEL_KEY=packaged-secret" in env_text
+    assert "CUSTOM_MODEL_KEY=user-secret" not in env_text
     assert "ANOTHER_MODEL_KEY=from-package" in env_text
