@@ -38,6 +38,7 @@ from agent_core.agent import (
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
+from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
 from agent_core.runtime_paths import (
@@ -49,7 +50,7 @@ from agent_core.runtime_paths import (
 from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.auth import (
@@ -252,6 +253,7 @@ def _build_system_prompt(
         WORKING_DIR=str(working_dir),
         SUBAGENTS=agents_text,
         SYSTEM_INFO=system_info_text,
+        PROJECT_CONTEXT=build_project_context(),
     )
 
     return prompt
@@ -552,7 +554,10 @@ def create_agent(
         llm=llm,
         tools=ALL_TOOLS,
         system_prompt=system_prompt,
-        dependency_overrides={get_sandbox_context: lambda: ctx},
+        dependency_overrides={
+            get_sandbox_context: lambda: ctx,
+            get_bridge_store: lambda: ctx.bridge_store,
+        },
         mode=mode,
         agent_config=agent_config,
         hooks=build_agent_hooks(mode=mode),
@@ -587,7 +592,10 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
         system_prompt=system_prompt,
         mode="subagent",
         agent_config=config,
-        dependency_overrides={get_sandbox_context: lambda: parent_ctx},
+        dependency_overrides={
+            get_sandbox_context: lambda: parent_ctx,
+            get_bridge_store: lambda: getattr(parent_ctx, "bridge_store", None),
+        },
         hooks=build_agent_hooks(mode="subagent"),
     )
     return agent
@@ -605,6 +613,7 @@ async def main():
     )
     session_runtime = CLISessionRuntime.create_for_context(ctx)
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
+    ctx.bridge_store = bridge_store
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
     if bridge_store is not None:
         console.print(

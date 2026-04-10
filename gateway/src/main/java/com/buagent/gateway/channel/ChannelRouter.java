@@ -8,6 +8,6 @@ public interface ChannelRouter {
         String fileName,
         String mimeType,
         Long fileSize,
-        String fileContentBase64
+        byte[] fileContent
     );
 }

@@ -21,15 +21,15 @@ public class NoopChannelRouter implements ChannelRouter {
         String fileName,
         String mimeType,
         Long fileSize,
-        String fileContentBase64
+        byte[] fileContent
     ) {
         logger.info(
-            "Noop send attachment sessionKey={} fileName={} mimeType={} fileSize={} base64Length={}",
+            "Noop send attachment sessionKey={} fileName={} mimeType={} fileSize={} contentLength={}",
             sessionKey,
             fileName,
             mimeType,
             fileSize,
-            fileContentBase64 == null ? 0 : fileContentBase64.length()
+            fileContent == null ? 0 : fileContent.length
         );
         return true;
     }

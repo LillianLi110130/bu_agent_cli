@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 import time
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
@@ -89,14 +89,6 @@ class SendTextRequest(BaseModel):
     text: str
 
 
-class UploadAttachmentRequest(BaseModel):
-    worker_id: str
-    file_name: str
-    mime_type: str
-    file_size: int
-    file_content_base64: str
-
-
 def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     """Create a FastAPI app that mimics the worker gateway contract."""
     state = state or MockGatewayState()
@@ -151,14 +143,13 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/worker/upload_attachment")
-    async def upload_attachment(request: UploadAttachmentRequest) -> dict[str, bool]:
+    async def upload_attachment(request: Request) -> dict[str, bool]:
+        content_type = request.headers.get("content-type", "")
+        body = await request.body()
         state.uploaded_attachments.append(
             {
-                "worker_id": request.worker_id,
-                "file_name": request.file_name,
-                "mime_type": request.mime_type,
-                "file_size": request.file_size,
-                "file_content_base64": request.file_content_base64,
+                "content_type": content_type,
+                "body": body,
             }
         )
         return {"ok": True}

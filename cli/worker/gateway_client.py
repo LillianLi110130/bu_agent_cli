@@ -104,18 +104,19 @@ class WorkerGatewayClient:
         file_name: str,
         mime_type: str,
         file_size: int,
-        file_content_base64: str,
+        file_bytes: bytes,
     ) -> bool:
         """Upload one proactive attachment through the gateway."""
         logger.info(f"Uploading proactive attachment for worker_id={worker_id}, file_name={file_name}")
         response = await self._client.post(
             "/api/worker/upload_attachment",
-            json={
+            data={
                 "worker_id": worker_id,
-                "file_name": file_name,
                 "mime_type": mime_type,
                 "file_size": file_size,
-                "file_content_base64": file_content_base64,
+            },
+            files={
+                "file": (file_name, file_bytes, mime_type),
             },
             headers=self._build_headers(),
         )

@@ -8,7 +8,6 @@ import com.buagent.gateway.app.dto.PollResponse;
 import com.buagent.gateway.app.dto.RenewRequest;
 import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
-import com.buagent.gateway.app.dto.UploadAttachmentRequest;
 import com.buagent.gateway.channel.ChannelRouter;
 import com.buagent.gateway.session.InFlightDelivery;
 import com.buagent.gateway.session.InboundMessageSnapshot;
@@ -27,8 +26,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.async.DeferredResult;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.util.Collections;
 import java.util.UUID;
 
@@ -169,14 +170,20 @@ public class WorkerGatewayService {
         return new SimpleOkResponse(sent);
     }
 
-    public SimpleOkResponse uploadAttachment(UploadAttachmentRequest request) {
-        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
+    public SimpleOkResponse uploadAttachment(
+        String sessionKey,
+        String workerId,
+        String mimeType,
+        Long fileSize,
+        MultipartFile file
+    ) throws IOException {
+        String resolvedSessionKey = resolveSessionKey(sessionKey, workerId);
         boolean sent = channelRouter.sendAttachment(
-            sessionKey,
-            request.getFileName(),
-            request.getMimeType(),
-            request.getFileSize(),
-            request.getFileContentBase64()
+            resolvedSessionKey,
+            file.getOriginalFilename(),
+            mimeType,
+            fileSize != null ? fileSize : file.getSize(),
+            file.getBytes()
         );
         return new SimpleOkResponse(sent);
     }

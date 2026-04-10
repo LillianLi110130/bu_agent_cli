@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 from pathlib import Path
 from typing import Any
@@ -130,7 +129,7 @@ class WorkerRunner:
                     file_name=event.file_name,
                     mime_type=event.mime_type,
                     file_size=event.file_size,
-                    file_content_base64=base64.b64encode(file_bytes).decode("ascii"),
+                    file_bytes=file_bytes,
                 )
             else:
                 logger.warning(f"Unsupported outbound action={event.action}, event_id={event.event_id}")
