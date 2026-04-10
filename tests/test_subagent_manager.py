@@ -25,6 +25,10 @@ class _FakeSubagent:
         yield FinalResponseEvent(content=f"handled:{prompt}")
 
 
+class _FakeMainAgent:
+    pass
+
+
 @pytest.mark.asyncio
 async def test_run_and_wait_returns_result_without_main_agent_injection_support(
     tmp_path: Path,
@@ -52,3 +56,25 @@ async def test_run_and_wait_returns_result_without_main_agent_injection_support(
 
     assert result.status == "completed"
     assert result.final_response == "handled:read the document"
+
+
+def test_set_main_agent_is_supported_for_bootstrap_compatibility(tmp_path: Path) -> None:
+    config = AgentConfig(
+        name="doc_reader",
+        description="Read docs",
+        mode="subagent",
+        system_prompt="subagent prompt",
+    )
+    registry = _FakeRegistry(config)
+    manager = SubagentManager(
+        agent_factory=lambda config, parent_ctx, all_tools: _FakeSubagent(),
+        registry=registry,
+        all_tools=[],
+        workspace=tmp_path,
+        context=object(),
+    )
+
+    main_agent = _FakeMainAgent()
+    manager.set_main_agent(main_agent)  # type: ignore[arg-type]
+
+    assert manager._main_agent is main_agent

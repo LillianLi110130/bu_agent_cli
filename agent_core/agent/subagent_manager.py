@@ -110,6 +110,7 @@ class SubagentManager:
         self._all_tools = all_tools
         self._workspace = workspace
         self._context = context
+        self._main_agent: Agent | None = None
 
         # Task storage
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
@@ -125,6 +126,10 @@ class SubagentManager:
     def set_result_callback(self, callback: Callable[[TaskResult], Awaitable[None]]):
         """Set a callback function to be called when tasks complete."""
         self._result_callback = callback
+
+    def set_main_agent(self, agent: Agent) -> None:
+        """Register the owning main agent for compatibility with existing bootstrap code."""
+        self._main_agent = agent
 
     async def spawn(
         self,
