@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,6 +16,72 @@ from agent_core.llm.messages import ToolMessage
 from tools import done, edit, glob_search, grep, read, resolve_path, write
 
 INIT_OUTPUT_FILENAME = "TGAGENTS.md"
+INIT_DOCUMENT_TITLE = "Repository Guidelines"
+_PLACEHOLDER_PATTERNS = ("todo", "tbd", "待补充", "coming soon", "xxx")
+_SECTION_KEYWORD_GROUPS = (
+    ("项目结构", "目录", "module", "structure"),
+    ("构建", "开发命令", "build", "development command"),
+    ("测试", "test", "pytest", "unittest"),
+    ("代码风格", "命名", "lint", "format"),
+    ("提交", "pull request", "pr", "commit"),
+    ("配置", "安全", "configuration", "security"),
+)
+
+
+def _resolve_init_output_path(workspace_root: Path, file_path: str) -> Path:
+    candidate = Path(file_path)
+    if not candidate.is_absolute():
+        candidate = workspace_root / candidate
+    return candidate.resolve(strict=False)
+
+
+def _targets_init_output_path(workspace_root: Path, event: ToolCallRequested) -> bool:
+    try:
+        parsed = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
+    except ToolArgumentsError:
+        return False
+
+    file_path = parsed.get("file_path")
+    if not isinstance(file_path, str) or not file_path.strip():
+        return False
+
+    output_path = (workspace_root / INIT_OUTPUT_FILENAME).resolve(strict=False)
+    return _resolve_init_output_path(workspace_root, file_path) == output_path
+
+
+@dataclass
+class InitWriteTargetGuardHook(BaseAgentHook):
+    """Block `/init` from modifying files other than the expected output."""
+
+    workspace_root: Path = Path(".")
+    priority: int = 13
+    guarded_tool_names: tuple[str, ...] = ("write", "edit")
+
+    async def before_event(self, event, ctx) -> HookDecision | None:
+        del ctx
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        tool_name = event.tool_call.function.name
+        if tool_name not in self.guarded_tool_names:
+            return None
+
+        if _targets_init_output_path(self.workspace_root, event):
+            return None
+
+        return HookDecision(
+            action=HookAction.OVERRIDE_RESULT,
+            override_result=ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name=tool_name,
+                content=(
+                    f"Error: `/init` may only modify {INIT_OUTPUT_FILENAME} at the workspace root.\n"
+                    "Do not write or edit any other file."
+                ),
+                is_error=True,
+            ),
+            reason="blocked init write outside TGAGENTS.md",
+        )
 
 
 @dataclass
@@ -109,21 +176,7 @@ class InitDraftBeforeMoreInspectionHook(BaseAgentHook):
         )
 
     def _targets_init_output(self, event: ToolCallRequested) -> bool:
-        try:
-            parsed = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
-        except ToolArgumentsError:
-            return False
-
-        file_path = parsed.get("file_path")
-        if not isinstance(file_path, str) or not file_path.strip():
-            return False
-
-        candidate = Path(file_path)
-        if not candidate.is_absolute():
-            candidate = self.workspace_root / candidate
-
-        output_path = (self.workspace_root / INIT_OUTPUT_FILENAME).resolve(strict=False)
-        return candidate.resolve(strict=False) == output_path
+        return _targets_init_output_path(self.workspace_root, event)
 
 
 @dataclass
@@ -231,6 +284,7 @@ def build_init_system_prompt() -> str:
         "Do not use shell commands.\n"
         "If TGAGENTS.md already exists, read it first and update it instead of blindly "
         "rewriting it.\n"
+        "Only include claims supported by files or search results you actually inspected.\n"
         "If information cannot be verified from tool outputs, mark it as 未验证 or 推测.\n"
         "Prefer high-signal files first, such as README, pyproject.toml, existing docs, and "
         "project overview documents when they exist.\n"
@@ -248,28 +302,22 @@ def build_init_system_prompt() -> str:
         "verifying a specific detail that was not already captured.\n"
         "After a small number of high-signal inspections, you must write the first complete "
         "TGAGENTS.md draft instead of continuing open-ended exploration.\n"
-        "Do not keep reading adjacent modules just because they seem related once the required "
-        "sections can already be drafted.\n"
         "If some details remain uncertain, write them as 未验证 rather than delaying the first "
         "draft.\n"
-        "The first draft should already include all required section headings, even if some "
-        "subsections are still brief.\n"
-        "Once you have enough verified information to fill the required sections, stop "
-        "exploring and draft the full TGAGENTS.md immediately.\n"
-        "If the current tool outputs already support the required sections, do not keep reading "
-        "for completeness; switch to drafting with `write` or `edit` immediately.\n"
-        "Before each additional read or search, ask whether it is necessary to complete a "
-        "missing section. If not, move on to drafting or editing TGAGENTS.md.\n"
+        "Once you have enough verified information to write a concise contributor guide, stop "
+        "exploring and draft TGAGENTS.md immediately.\n"
+        "If the current tool outputs already support the document requirements, switch to "
+        "drafting with `write` or `edit` immediately.\n"
         "Execution procedure:\n"
         "1. Check whether TGAGENTS.md already exists at the workspace root.\n"
-        "2. Inspect only the minimum set of files needed to verify the required sections.\n"
+        "2. Inspect only the minimum set of files needed to verify the contributor guide.\n"
         "3. Reuse high-signal overview documents when available instead of exhaustively reading "
         "many files.\n"
-        "4. Draft the full TGAGENTS.md content as soon as the required sections can be "
+        "4. Draft the full TGAGENTS.md content as soon as the document requirements can be "
         "supported.\n"
         "5. Use `write` or `edit` to persist TGAGENTS.md.\n"
-        "6. Only after the file exists and is non-empty may you call `done`.\n"
-        "When the file is complete, Call the done tool with a short completion summary."
+        "6. Only after the file passes validation may you call `done`.\n"
+        "When the file is complete, call the done tool with a short completion summary."
     )
 
 
@@ -277,47 +325,37 @@ def build_init_user_prompt(workspace_root: Path) -> str:
     """Build the task prompt for the dedicated `/init` agent."""
     output_path = workspace_root / INIT_OUTPUT_FILENAME
     return (
-        f"Analyze the repository rooted at {workspace_root} and generate or update "
-        f"{output_path}.\n\n"
-        "The document must be written in Chinese and help future coding and analysis sessions work "
-        "efficiently in this repository.\n\n"
-        "Required structure:\n"
-        "1. 项目目标\n"
-        "2. 目录与职责\n"
-        "3. 推荐阅读路径\n"
-        "4. 关键入口与核心链路\n"
-        "5. 可暂时忽略的内容\n"
-        "6. 开发与验证命令\n"
-        "7. 约束与假设\n\n"
-        "Requirements:\n"
-        "- Explore the repository with tools instead of guessing.\n"
-        "- Only include claims supported by files or search results you actually inspected.\n"
-        "- Favor concise, actionable guidance over generic introduction text.\n"
-        "- If a section cannot be verified, say so explicitly.\n"
-        "- Prefer high-signal files first, especially README, pyproject.toml, and overview docs.\n"
-        "- If a tool result shows `Context preview`, `trimmed`, `summary`, `Artifact file`, "
-        "`Output path`, `log_path`, or similar, treat it as context-limited rather than the "
-        "full raw result.\n"
-        "- Do not repeat an identical `read`, `glob_search`, `grep`, or `resolve_path` call just "
-        "to see more; change the range/query, read the referenced artifact with explicit window "
-        "parameters, or read the referenced output/log file when necessary.\n"
-        "- Do not repeat the same read or search with identical parameters unless it is required "
-        "to verify one specific missing detail.\n"
-        "- After a small number of high-signal inspections, write the first full TGAGENTS.md "
-        "draft immediately instead of continuing open-ended exploration.\n"
-        "- Do not keep reading adjacent modules just because they seem related once you can "
-        "already draft the required structure.\n"
-        "- If some details remain uncertain, write 未验证 instead of delaying the first draft.\n"
-        "- The first draft must already contain all required section headings before you do more "
-        "inspection.\n"
-        "- As soon as you can cover the required structure with verified facts, stop exploring "
-        "and write TGAGENTS.md.\n"
-        "- If the current evidence is already sufficient to draft TGAGENTS.md, start writing "
-        "immediately instead of continuing to inspect more files.\n"
+        f"Analyze the repository rooted at {workspace_root} and generate or update {output_path}.\n\n"
+        "Generate a file named TGAGENTS.md that serves as a contributor guide for this "
+        "repository. Your goal is to produce a clear, concise, and well-structured document "
+        "with descriptive headings and actionable explanations for each section.\n\n"
+        "Document Requirements:\n"
+        f"- Title the document \"{INIT_DOCUMENT_TITLE}\".\n"
+        "- Write the document in Chinese.\n"
+        "- Use Markdown headings (#, ##, etc.) for structure.\n"
+        "- Keep the document concise; 200-400 English words worth of content is optimal.\n"
+        "- Keep explanations short, direct, and specific to this repository.\n"
+        "- Provide examples where helpful, such as commands, paths, and naming patterns.\n"
+        "- Maintain a professional, instructional tone.\n"
+        "- If a fact cannot be verified from inspected files, mark it as 未验证.\n"
+        "- Adapt the outline as needed: add sections if relevant, and omit those that do not apply.\n"
+        "- Only include claims supported by files or search results you actually inspected.\n\n"
+        "Recommended Sections:\n"
+        "- Project Structure & Module Organization\n"
+        "- Build, Test, and Development Commands\n"
+        "- Coding Style & Naming Conventions\n"
+        "- Testing Guidelines\n"
+        "- Commit & Pull Request Guidelines\n"
+        "- Optional: Security & Configuration Tips\n"
+        "- Optional: Architecture Overview\n"
+        "- Optional: Agent-Specific Instructions\n\n"
+        "Repository-specific expectations:\n"
+        "- Prefer concrete paths and commands from the repository over generic advice.\n"
+        "- Reuse existing high-signal docs such as README, pyproject.toml, package manifests, "
+        "or contributor docs when available.\n"
         "- Only modify TGAGENTS.md.\n"
         "- You must use write or edit to persist TGAGENTS.md before finishing.\n"
-        "- Do not call done until TGAGENTS.md exists and is non-empty.\n"
-        "- Call the done tool after the file is written."
+        "- Call the done tool after TGAGENTS.md passes validation."
     )
 
 
@@ -339,6 +377,7 @@ def build_init_agent(
         tool_choice="auto",
         require_done_tool=True,
         hooks=[
+            InitWriteTargetGuardHook(workspace_root=workspace_root),
             InitDraftBeforeMoreInspectionHook(workspace_root=workspace_root),
             InitOutputGuardHook(workspace_root=workspace_root),
             InitRepeatedToolCallGuardHook(),
@@ -357,5 +396,43 @@ def validate_init_output(workspace_root: Path) -> tuple[bool, str | None]:
     content = output_path.read_text(encoding="utf-8").strip()
     if not content:
         return False, f"`/init` 生成了空的 {INIT_OUTPUT_FILENAME}。"
+
+    lines = [line.rstrip() for line in content.splitlines()]
+    normalized = "\n".join(lines)
+    normalized_lower = normalized.lower()
+
+    title_line = next((line.strip() for line in lines if line.strip()), "")
+    if title_line != f"# {INIT_DOCUMENT_TITLE}":
+        return (
+            False,
+            f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 缺少标题 `# {INIT_DOCUMENT_TITLE}`。",
+        )
+
+    level_two_headings = [line for line in lines if re.match(r"^##\s+\S+", line)]
+    if len(level_two_headings) < 4:
+        return (
+            False,
+            f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 章节过少，至少应包含 4 个二级标题。",
+        )
+
+    visible_chars = len("".join(ch for ch in content if not ch.isspace()))
+    if visible_chars < 200:
+        return False, f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 内容过短，像是未完成草稿。"
+    if visible_chars > 4000:
+        return False, f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 过长，不符合简明指南要求。"
+
+    if any(token in normalized_lower for token in _PLACEHOLDER_PATTERNS):
+        return False, f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 仍包含占位内容。"
+
+    matched_keyword_groups = sum(
+        1
+        for group in _SECTION_KEYWORD_GROUPS
+        if any(keyword.lower() in normalized_lower for keyword in group)
+    )
+    if matched_keyword_groups < 3:
+        return (
+            False,
+            f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 缺少 contributor guide 的核心章节。",
+        )
 
     return True, None
