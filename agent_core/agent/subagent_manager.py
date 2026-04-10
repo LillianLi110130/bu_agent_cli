@@ -119,48 +119,12 @@ class SubagentManager:
         # Completion events for blocking wait
         self._completion_events: dict[str, asyncio.Event] = {}
 
-        # Main agent instance (optional) for injecting results
-        self._main_agent: Any | None = None
-
         # Result callback - called when a task completes
         self._result_callback: Callable[[TaskResult], Awaitable[None]] | None = None
-
-    def set_main_agent(self, agent: Any):
-        """Set the main agent instance for result injection."""
-        self._main_agent = agent
 
     def set_result_callback(self, callback: Callable[[TaskResult], Awaitable[None]]):
         """Set a callback function to be called when tasks complete."""
         self._result_callback = callback
-
-    async def _inject_result_to_main_agent(self, result: TaskResult):
-        """Inject task result as a system message into main agent's conversation history.
-
-        This allows the main agent to know about subagent task results.
-        """
-        if not self._main_agent:
-            return
-
-        # Get context from main agent
-        ctx = getattr(self._main_agent, "_context", None)
-        if not ctx:
-            return
-
-        # Format result as a system message
-        content = f"""
-[Subagent Task Completed]
-
-Task ID: {result.task_id}
-Subagent: {result.subagent_name}
-Status: {result.status}
-
-Result:
-{result.final_response}
-"""
-        # Add as SystemMessage (like system prompt)
-        from agent_core.llm.messages import SystemMessage
-
-        ctx.inject_message(SystemMessage(content=content), pinned=True)
 
     async def spawn(
         self,
@@ -322,9 +286,6 @@ Result:
                 except Exception as e:
                     logger.error(f"Error in result callback: {e}")
 
-            # Inject result into main agent's conversation
-            await self._inject_result_to_main_agent(result)
-
         except asyncio.CancelledError:
             logger.info(f"Subagent [{task_id}] was cancelled")
             await self._handle_task_cancelled(task_id, subagent_name, prompt)
@@ -364,9 +325,6 @@ Result:
                 await self._result_callback(result)
             except Exception as e:
                 logger.error(f"Error in result callback: {e}")
-
-        # Inject result into main agent's conversation
-        await self._inject_result_to_main_agent(result)
 
     async def _handle_task_cancelled(self, task_id: str, subagent_name: str, prompt: str):
         """Handle a task cancellation."""
