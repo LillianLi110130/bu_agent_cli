@@ -1827,7 +1827,7 @@ class TGAgentCLI:
   [blue]read <file>[/blue]   - 读取文件内容
   [blue]write <file>[/blue]  - 写入文件内容
   [blue]edit <file>[/blue]   - 编辑文件（替换文本）
-  [blue]glob <pattern>[/blue]- 按模式查找文件
+  [blue]glob <pattern>[/blue]- 按模式查找文件或目录
   [blue]grep <pattern>[/blue] - 搜索文件内容
   [blue]todos[/blue]         - 管理待办事项
 

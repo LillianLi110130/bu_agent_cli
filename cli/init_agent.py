@@ -17,7 +17,13 @@ from tools import done, edit, glob_search, grep, read, resolve_path, write
 
 INIT_OUTPUT_FILENAME = "TGAGENTS.md"
 INIT_DOCUMENT_TITLE = "仓库指南"
-_PLACEHOLDER_PATTERNS = ("todo", "tbd", "待补充", "coming soon", "xxx")
+_PLACEHOLDER_PATTERNS = (
+    re.compile(r"(?<![A-Za-z0-9_.-])todo(?![A-Za-z0-9_-])", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_.-])tbd(?![A-Za-z0-9_-])", re.IGNORECASE),
+    re.compile(r"待补充"),
+    re.compile(r"(?<![A-Za-z0-9_.-])coming\s+soon(?![A-Za-z0-9_-])", re.IGNORECASE),
+    re.compile(r"(?<![A-Za-z0-9_.-])xxx(?![A-Za-z0-9_-])", re.IGNORECASE),
+)
 _SECTION_KEYWORD_GROUPS = (
     ("项目结构", "目录", "module", "structure"),
     ("构建", "开发命令", "build", "development command"),
@@ -26,6 +32,16 @@ _SECTION_KEYWORD_GROUPS = (
     ("提交", "pull request", "pr", "commit"),
     ("配置", "安全", "configuration", "security"),
 )
+
+
+def _strip_markdown_code(text: str) -> str:
+    without_fenced_blocks = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+    return re.sub(r"`[^`\n]*`", "", without_fenced_blocks)
+
+
+def _contains_placeholder_content(text: str) -> bool:
+    searchable_text = _strip_markdown_code(text)
+    return any(pattern.search(searchable_text) for pattern in _PLACEHOLDER_PATTERNS)
 
 
 def _resolve_init_output_path(workspace_root: Path, file_path: str) -> Path:
@@ -421,7 +437,7 @@ def validate_init_output(workspace_root: Path) -> tuple[bool, str | None]:
     if visible_chars > 4000:
         return False, f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 过长，不符合简明指南要求。"
 
-    if any(token in normalized_lower for token in _PLACEHOLDER_PATTERNS):
+    if _contains_placeholder_content(normalized):
         return False, f"`/init` 生成的 {INIT_OUTPUT_FILENAME} 仍包含占位内容。"
 
     matched_keyword_groups = sum(

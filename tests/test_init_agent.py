@@ -151,12 +151,44 @@ def test_validate_init_output_checks_document_structure(tmp_path) -> None:
 def test_validate_init_output_rejects_short_or_placeholder_drafts(tmp_path) -> None:
     agents_md = tmp_path / "TGAGENTS.md"
     agents_md.write_text(
-        "# Repository Guidelines\n\n## Project Structure\nTODO\n\n## Testing\nTODO\n\n## Commands\nTODO\n\n## PR\nTODO\n",
+        "# 仓库指南\n\n## Project Structure\nTODO\n\n## Testing\nTODO\n\n## Commands\nTODO\n\n## PR\nTODO\n",
         encoding="utf-8",
     )
     ok, error = validate_init_output(tmp_path)
     assert ok is False
     assert "占位" in (error or "") or "过短" in (error or "")
+
+
+def test_validate_init_output_allows_placeholder_like_tokens_in_code_spans(tmp_path) -> None:
+    agents_md = tmp_path / "TGAGENTS.md"
+    agents_md.write_text(
+        """# 仓库指南
+
+## 项目结构与模块组织
+主体代码位于 `agent_core/`、`cli/` 与 `tools/`，测试集中在 `tests/`。新增模块时保持目录职责单一，模块导入遵循 `from core.xxx import ...` 格式这类现有示例只作为路径占位说明，不代表未完成草稿。
+
+## 构建、测试与开发命令
+使用指定虚拟环境解释器运行 `pytest -q` 做测试，使用 `ruff check .` 做静态检查。涉及局部变更时优先运行对应测试文件，再根据影响范围扩大验证。
+
+## 代码风格与命名约定
+Python 代码使用 4 空格缩进，模块、函数和测试文件采用 `snake_case`，类名采用 `PascalCase`。提交前保持格式化、lint 和导入顺序干净。
+
+## 测试规范
+功能变更应补充最小必要测试，优先覆盖 CLI 流程、工具契约、路径解析和插件行为。异步测试应使用仓库已有的 pytest 标记风格。
+
+## 提交与 Pull Request 规范
+提交信息使用简短祈使句，Pull Request 需要说明用户可见影响、验证命令和关联任务。影响 CLI 交互时附上终端输出示例。
+
+## 配置与安全
+敏感配置放在 `.env`，不要提交真实密钥。调整模型路由、默认预设或工作区说明读取逻辑时，同步更新相关文档和测试。
+""",
+        encoding="utf-8",
+    )
+
+    ok, error = validate_init_output(tmp_path)
+
+    assert ok is True
+    assert error is None
 
 
 @pytest.mark.asyncio
