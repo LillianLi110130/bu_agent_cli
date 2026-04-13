@@ -108,6 +108,31 @@ def test_load_persisted_auth_result_falls_back_to_legacy_tg_crab_path(workspace_
     )
 
 
+def test_persist_updated_authorization_overwrites_token_and_preserves_user_id(workspace_root: Path):
+    auth._persist_auth_result(  # noqa: SLF001
+        workspace_root,
+        auth.AuthBootstrapResult(
+            authorization="Bearer old-token",
+            user_id="user-123",
+        ),
+    )
+
+    updated = auth.persist_updated_authorization(
+        base_dir=workspace_root,
+        authorization="Bearer new-token",
+    )
+
+    assert updated == auth.AuthBootstrapResult(
+        authorization="Bearer new-token",
+        user_id="user-123",
+    )
+    token_payload = json.loads(
+        (workspace_root / ".tg_agent" / "token.json").read_text(encoding="utf-8")
+    )
+    assert token_payload["authorization"] == "Bearer new-token"
+    assert token_payload["user_id"] == "user-123"
+
+
 def test_parse_local_callback_url_requires_fixed_port_8088():
     parsed = auth._parse_local_callback_url("http://127.0.0.1:8088/callback")  # noqa: SLF001
     assert parsed.port == 8088

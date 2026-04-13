@@ -21,8 +21,14 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
     calls: list[tuple[str, object]] = []
 
     class FakeGatewayClient:
-        def __init__(self, *, base_url: str, authorization: str | None = None):
-            calls.append(("client", base_url, authorization))
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            authorization: str | None = None,
+            base_dir: Path | None = None,
+        ):
+            calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
         def __init__(self, *, worker_id, gateway_client, model, root_dir):
@@ -68,7 +74,7 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
         assert calls == [
             ("load_auth_config", config_dir.resolve()),
             ("load_persisted_auth_result", config_dir.resolve()),
-            ("client", "http://127.0.0.1:8765", "Bearer test-token"),
+            ("client", "http://127.0.0.1:8765", "Bearer test-token", config_dir.resolve()),
             ("runner", "worker-1", None, str(workspace_root), "FakeGatewayClient"),
             ("run_forever",),
         ]
@@ -90,8 +96,14 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
     calls: list[tuple[str, object]] = []
 
     class FakeGatewayClient:
-        def __init__(self, *, base_url: str, authorization: str | None = None):
-            calls.append(("client", base_url, authorization))
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            authorization: str | None = None,
+            base_dir: Path | None = None,
+        ):
+            calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
         def __init__(self, *, worker_id, gateway_client, model, root_dir):
@@ -139,7 +151,7 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
         assert calls == [
             ("load_auth_config", config_source_dir.resolve()),
             ("load_persisted_auth_result", config_dir.resolve()),
-            ("client", "http://127.0.0.1:8765", "Bearer source-token"),
+            ("client", "http://127.0.0.1:8765", "Bearer source-token", config_dir.resolve()),
             ("runner", "worker-1", None, str(workspace_root), "FakeGatewayClient"),
             ("run_forever",),
         ]

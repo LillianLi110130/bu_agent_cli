@@ -329,7 +329,45 @@ async def _fetch_authorization(
 
 def _persist_auth_result(base_dir: Path, auth_result: AuthBootstrapResult) -> None:
     """Persist the authorization state to .tg_agent/token.json."""
-    token_path = base_dir / ".tg_agent" / "token.json"
+    token_path = _preferred_auth_result_path(base_dir)
+    _write_auth_result(token_path=token_path, auth_result=auth_result)
+
+
+def persist_updated_authorization(
+    *,
+    base_dir: Path | str | None,
+    authorization: str,
+) -> AuthBootstrapResult | None:
+    """Persist a refreshed Authorization token while preserving the current user id."""
+    normalized_authorization = _normalize_optional_string(authorization)
+    if not normalized_authorization:
+        return None
+
+    existing_result = load_persisted_auth_result(base_dir)
+    if existing_result is None:
+        logger.warning("Skipping Authorization refresh persistence because no token file exists")
+        return None
+
+    if existing_result.authorization == normalized_authorization:
+        return existing_result
+
+    updated_result = AuthBootstrapResult(
+        authorization=normalized_authorization,
+        user_id=existing_result.user_id,
+    )
+    _persist_auth_result(Path(base_dir or Path.cwd()), updated_result)
+    logger.info("Persisted refreshed Authorization token to local token.json")
+    return updated_result
+
+
+def _preferred_auth_result_path(base_dir: Path | str | None) -> Path:
+    """Return the preferred token persistence path under .tg_agent."""
+    resolved_base_dir = Path(base_dir or Path.cwd())
+    return resolved_base_dir / ".tg_agent" / "token.json"
+
+
+def _write_auth_result(*, token_path: Path, auth_result: AuthBootstrapResult) -> None:
+    """Write one auth result payload to the target token path."""
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(
         json.dumps(

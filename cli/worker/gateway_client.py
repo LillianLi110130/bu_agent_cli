@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlparse
 
 import httpx
+
+from cli.worker.auth import persist_updated_authorization
 
 logger = logging.getLogger("cli.worker.gateway_client")
 
@@ -26,9 +29,11 @@ class WorkerGatewayClient:
         base_url: str,
         client: httpx.AsyncClient | None = None,
         authorization: str | None = None,
+        base_dir: str | Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.authorization = authorization
+        self.base_dir = Path(base_dir).resolve() if base_dir is not None else None
         self._owns_client = client is None
         trust_env = not _is_loopback_base_url(self.base_url)
         self._client = client or httpx.AsyncClient(
@@ -40,14 +45,12 @@ class WorkerGatewayClient:
     async def poll(self, worker_id: str) -> list[WorkerMessage]:
         """Long poll for at most one message for the bound worker."""
         logger.info(f"Polling gateway for worker_id={worker_id}")
-        response = await self._client.post(
+        response = await self._post_with_auth_refresh(
             "/api/worker/poll",
-            json={
+            {
                 "worker_id": worker_id,
             },
-            headers=self._build_headers(),
         )
-        response.raise_for_status()
         payload = response.json()
         messages = payload.get("messages", [])
         return [WorkerMessage(content=str(message["content"])) for message in messages]
@@ -59,47 +62,99 @@ class WorkerGatewayClient:
     ) -> bool:
         """Submit the final response for one delivery."""
         logger.info(f"Completing delivery for worker_id={worker_id}")
-        response = await self._client.post(
+        response = await self._post_with_auth_refresh(
             "/api/worker/complete",
-            json={
+            {
                 "worker_id": worker_id,
                 "final_content": final_content,
             },
-            headers=self._build_headers(),
         )
-        response.raise_for_status()
         return bool(response.json().get("ok", False))
 
     async def online(self, worker_id: str) -> bool:
         """Mark the worker as online."""
-        # todo: 改成通知实际的server端
-        response = await self._client.post(
+        response = await self._post_with_auth_refresh(
             "/api/worker/online",
-            json={
+            {
                 "worker_id": worker_id,
             },
-            headers=self._build_headers(),
         )
-        response.raise_for_status()
         return bool(response.json().get("ok", False))
 
     async def offline(self, worker_id: str) -> bool:
         """Mark the worker as offline."""
-        response = await self._client.post(
+        response = await self._post_with_auth_refresh(
             "/api/worker/offline",
-            json={
+            {
                 "worker_id": worker_id,
             },
-            headers=self._build_headers(),
         )
-        response.raise_for_status()
         return bool(response.json().get("ok", False))
 
-    def _build_headers(self) -> dict[str, str] | None:
+    def _build_headers(self, authorization: str | None = None) -> dict[str, str] | None:
         """Build optional request headers for worker protocol calls."""
-        if not self.authorization:
+        resolved_authorization = authorization if authorization is not None else self.authorization
+        if not resolved_authorization:
             return None
-        return {"Authorization": self.authorization}
+        return {"Authorization": resolved_authorization}
+
+    async def _post_with_auth_refresh(
+        self,
+        path: str,
+        payload: dict[str, object],
+    ) -> httpx.Response:
+        """POST JSON, refresh local Authorization from response headers, and retry once."""
+        request_authorization = self.authorization
+        response = await self._client.post(
+            path,
+            json=payload,
+            headers=self._build_headers(request_authorization),
+        )
+        authorization_changed = self._refresh_authorization_from_response(
+            response,
+            request_authorization=request_authorization,
+        )
+        if response.is_error and authorization_changed:
+            logger.warning(
+                "Gateway request failed with refreshed Authorization header, retrying once: "
+                f"path={path}, status={response.status_code}"
+            )
+            response = await self._client.post(
+                path,
+                json=payload,
+                headers=self._build_headers(),
+            )
+            self._refresh_authorization_from_response(
+                response,
+                request_authorization=self.authorization,
+            )
+        response.raise_for_status()
+        return response
+
+    def _refresh_authorization_from_response(
+        self,
+        response: httpx.Response,
+        *,
+        request_authorization: str | None,
+    ) -> bool:
+        """Update in-memory and persisted Authorization when the response provides a new one."""
+        response_authorization = _normalize_header_value(response.headers.get("Authorization"))
+        if not response_authorization:
+            return False
+        if response_authorization == self.authorization:
+            return False
+        if self.authorization is not None and self.authorization != request_authorization:
+            logger.info("Skipping stale Authorization refresh because a newer token is already active")
+            return False
+
+        self.authorization = response_authorization
+        if self.base_dir is not None:
+            persist_updated_authorization(
+                base_dir=self.base_dir,
+                authorization=response_authorization,
+            )
+        logger.info("Updated worker Authorization from gateway response header")
+        return True
 
     async def aclose(self) -> None:
         """Close the underlying HTTP client when owned by this instance."""
@@ -112,3 +167,13 @@ def _is_loopback_base_url(base_url: str) -> bool:
     """Return True when *base_url* targets the local machine."""
     hostname = (urlparse(base_url).hostname or "").strip().lower()
     return hostname in {"127.0.0.1", "localhost", "::1"}
+
+
+def _normalize_header_value(value: str | None) -> str | None:
+    """Normalize an optional response header string."""
+    if value is None:
+        return None
+    normalized_value = value.strip()
+    if not normalized_value:
+        return None
+    return normalized_value
