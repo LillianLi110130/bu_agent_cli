@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
-from cli.worker.gateway_client import WorkerGatewayClient
+from cli.worker.gateway_client import WorkerGatewayClient, WorkerMessage, WorkerStreamEvent
 from cli.worker.mock_server import MockGatewayState, create_mock_gateway_app
 from cli.worker.runner import WorkerRunner
 
@@ -50,6 +50,7 @@ async def test_worker_runner_bridges_remote_message_and_completes(workspace_root
             gateway_client=gateway_client,
             model=None,
             root_dir=workspace_root,
+            gateway_transport="poll",
             result_poll_interval_seconds=0.01,
         )
         task = asyncio.create_task(runner.run_forever())
@@ -78,6 +79,76 @@ async def test_worker_runner_bridges_remote_message_and_completes(workspace_root
 
 
 @pytest.mark.asyncio
+async def test_worker_runner_bridges_remote_message_and_completes_via_sse(workspace_root: Path):
+    class FakeSSEGatewayClient:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[WorkerStreamEvent] = asyncio.Queue()
+            self.online_calls: list[str] = []
+            self.offline_calls: list[str] = []
+            self.completions: list[dict[str, str]] = []
+
+        async def online(self, worker_id: str) -> bool:
+            self.online_calls.append(worker_id)
+            return True
+
+        async def offline(self, worker_id: str) -> bool:
+            self.offline_calls.append(worker_id)
+            return True
+
+        async def complete(self, worker_id: str, final_content: str) -> bool:
+            self.completions.append(
+                {"worker_id": worker_id, "final_content": final_content}
+            )
+            return True
+
+        async def stream_events(self, worker_id: str):
+            yield WorkerStreamEvent(event="ready", payload={"worker_id": worker_id})
+            while True:
+                event = await self.queue.get()
+                yield event
+
+    gateway_client = FakeSSEGatewayClient()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=gateway_client,
+        model=None,
+        root_dir=workspace_root,
+        gateway_transport="sse",
+        result_poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(runner.run_forever())
+
+    store = FileBridgeStore(
+        workspace_root,
+        session_binding_id=resolve_session_binding_id("worker-1"),
+    )
+
+    await _wait_until(lambda: gateway_client.online_calls == ["worker-1"])
+    await gateway_client.queue.put(
+        WorkerStreamEvent(
+            event="message",
+            message=WorkerMessage(content="remote hello sse"),
+            payload={"content": "remote hello sse"},
+        )
+    )
+    await _wait_until(lambda: store.pending_count() == 1)
+    claimed = store.claim_next_pending()
+    assert claimed is not None
+    assert claimed.content == "remote hello sse"
+    store.complete_request(claimed, final_content="remote done sse")
+
+    await _wait_until(lambda: len(gateway_client.completions) == 1)
+    runner.stop()
+    await gateway_client.queue.put(WorkerStreamEvent(event="heartbeat", payload={"ts": 1}))
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert gateway_client.offline_calls == ["worker-1"]
+    assert gateway_client.completions == [
+        {"worker_id": "worker-1", "final_content": "remote done sse"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_worker_runner_uses_local_request_id_for_remote_message(workspace_root: Path):
     state = MockGatewayState()
     app = create_mock_gateway_app(state)
@@ -95,6 +166,7 @@ async def test_worker_runner_uses_local_request_id_for_remote_message(workspace_
             gateway_client=gateway_client,
             model=None,
             root_dir=workspace_root,
+            gateway_transport="poll",
             result_poll_interval_seconds=0.01,
         )
         task = asyncio.create_task(runner.run_forever())
@@ -141,6 +213,7 @@ async def test_worker_runner_keeps_polling_while_previous_remote_request_is_proc
             gateway_client=gateway_client,
             model=None,
             root_dir=workspace_root,
+            gateway_transport="poll",
             result_poll_interval_seconds=0.01,
         )
         task = asyncio.create_task(runner.run_forever())
@@ -196,7 +269,7 @@ async def test_mock_gateway_rejects_messages_when_no_worker_is_online():
 
 
 @pytest.mark.asyncio
-async def test_mock_gateway_assigns_message_and_delivery_ids():
+async def test_mock_gateway_assigns_message_to_worker_queue():
     state = MockGatewayState()
     state.mark_online(worker_id="worker-1")
     app = create_mock_gateway_app(state)
@@ -215,3 +288,12 @@ async def test_mock_gateway_assigns_message_and_delivery_ids():
     payload = response.json()
     assert payload["ok"] is True
     assert state.queued_messages[0].worker_id == "worker-1"
+
+
+def test_mock_gateway_register_stream_replaces_previous_connection():
+    state = MockGatewayState()
+    first_version = state.register_stream(worker_id="worker-1")
+    second_version = state.register_stream(worker_id="worker-1")
+
+    assert state.is_current_stream(worker_id="worker-1", version=first_version) is False
+    assert state.is_current_stream(worker_id="worker-1", version=second_version) is True

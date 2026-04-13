@@ -31,8 +31,17 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
             calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
-        def __init__(self, *, worker_id, gateway_client, model, root_dir):
-            calls.append(("runner", worker_id, model, root_dir, type(gateway_client).__name__))
+        def __init__(self, *, worker_id, gateway_client, model, root_dir, gateway_transport):
+            calls.append(
+                (
+                    "runner",
+                    worker_id,
+                    model,
+                    root_dir,
+                    gateway_transport,
+                    type(gateway_client).__name__,
+                )
+            )
 
         async def run_forever(self) -> None:
             calls.append(("run_forever",))
@@ -75,7 +84,7 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
             ("load_auth_config", config_dir.resolve()),
             ("load_persisted_auth_result", config_dir.resolve()),
             ("client", "http://127.0.0.1:8765", "Bearer test-token", config_dir.resolve()),
-            ("runner", "worker-1", None, str(workspace_root), "FakeGatewayClient"),
+            ("runner", "worker-1", None, str(workspace_root), "sse", "FakeGatewayClient"),
             ("run_forever",),
         ]
     finally:
@@ -106,8 +115,17 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
             calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
-        def __init__(self, *, worker_id, gateway_client, model, root_dir):
-            calls.append(("runner", worker_id, model, root_dir, type(gateway_client).__name__))
+        def __init__(self, *, worker_id, gateway_client, model, root_dir, gateway_transport):
+            calls.append(
+                (
+                    "runner",
+                    worker_id,
+                    model,
+                    root_dir,
+                    gateway_transport,
+                    type(gateway_client).__name__,
+                )
+            )
 
         async def run_forever(self) -> None:
             calls.append(("run_forever",))
@@ -152,9 +170,70 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
             ("load_auth_config", config_source_dir.resolve()),
             ("load_persisted_auth_result", config_dir.resolve()),
             ("client", "http://127.0.0.1:8765", "Bearer source-token", config_dir.resolve()),
-            ("runner", "worker-1", None, str(workspace_root), "FakeGatewayClient"),
+            ("runner", "worker-1", None, str(workspace_root), "sse", "FakeGatewayClient"),
             ("run_forever",),
         ]
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
+
+
+def test_async_main_passes_sse_gateway_transport(monkeypatch):
+    root = Path(".pytest_tmp") / f"worker-main-sse-{uuid.uuid4().hex}"
+    if root.exists():
+        shutil.rmtree(root)
+    config_dir = root / "config"
+    config_dir.mkdir(parents=True)
+
+    calls: list[tuple[str, object]] = []
+
+    class FakeGatewayClient:
+        def __init__(
+            self,
+            *,
+            base_url: str,
+            authorization: str | None = None,
+            base_dir: Path | None = None,
+        ):
+            calls.append(("client", base_url, authorization, base_dir))
+
+    class FakeRunner:
+        def __init__(self, *, worker_id, gateway_client, model, root_dir, gateway_transport):
+            calls.append(("runner", worker_id, gateway_transport))
+
+        async def run_forever(self) -> None:
+            calls.append(("run_forever",))
+
+    def fake_load_auth_config(*, base_dir):
+        calls.append(("load_auth_config", Path(base_dir)))
+        return auth.WorkerAuthConfig(enable_auth=False)
+
+    def fake_load_persisted_auth_result(*, base_dir):
+        raise AssertionError("persisted auth should not be loaded when auth is disabled")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cli.worker.main",
+            "--worker-id",
+            "worker-1",
+            "--gateway-base-url",
+            "http://127.0.0.1:8765",
+            "--gateway-transport",
+            "sse",
+            "--config-dir",
+            str(config_dir),
+        ],
+    )
+    monkeypatch.setattr(worker_main, "WorkerGatewayClient", FakeGatewayClient)
+    monkeypatch.setattr(worker_main, "WorkerRunner", FakeRunner)
+    monkeypatch.setattr(worker_main, "load_auth_config", fake_load_auth_config)
+    monkeypatch.setattr(worker_main, "load_persisted_auth_result", fake_load_persisted_auth_result)
+
+    try:
+        asyncio.run(worker_main.async_main())
+        assert ("runner", "worker-1", "sse") in calls
     finally:
         if root.exists():
             shutil.rmtree(root)

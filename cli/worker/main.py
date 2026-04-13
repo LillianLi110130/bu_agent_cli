@@ -21,6 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="BU Agent worker")
     parser.add_argument("--worker-id", required=True, help="Stable worker identifier")
     parser.add_argument("--gateway-base-url", required=True, help="Gateway base URL")
+    parser.add_argument(
+        "--gateway-transport",
+        choices=("poll", "sse"),
+        default="sse",
+        help="Gateway transport mode (default: sse)",
+    )
     parser.add_argument("--model", default=None, help="Optional model override")
     parser.add_argument(
         "--config-dir",
@@ -78,6 +84,7 @@ async def async_main() -> None:
         gateway_client=client,
         model=args.model,
         root_dir=args.root_dir,
+        gateway_transport=args.gateway_transport,
     )
     await runner.run_forever()
 

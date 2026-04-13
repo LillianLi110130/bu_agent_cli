@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 import httpx
@@ -19,6 +21,15 @@ class WorkerMessage:
     """One message returned by the gateway poll API."""
 
     content: str
+
+
+@dataclass(slots=True)
+class WorkerStreamEvent:
+    """One SSE event emitted by the gateway worker stream."""
+
+    event: str
+    message: WorkerMessage | None = None
+    payload: dict[str, Any] | None = None
 
 
 class WorkerGatewayClient:
@@ -54,6 +65,38 @@ class WorkerGatewayClient:
         payload = response.json()
         messages = payload.get("messages", [])
         return [WorkerMessage(content=str(message["content"])) for message in messages]
+
+    async def stream_events(self, worker_id: str) -> AsyncIterator[WorkerStreamEvent]:
+        """Consume SSE events for the bound worker."""
+        logger.info(f"Opening gateway SSE stream for worker_id={worker_id}")
+        request_authorization = self.authorization
+
+        for attempt in range(2):
+            async with self._client.stream(
+                "GET",
+                "/api/worker/stream",
+                params={"worker_id": worker_id},
+                headers=self._build_headers(
+                    request_authorization if attempt == 0 else None,
+                ),
+            ) as response:
+                authorization_changed = self._refresh_authorization_from_response(
+                    response,
+                    request_authorization=request_authorization if attempt == 0 else self.authorization,
+                )
+                if response.is_error:
+                    if attempt == 0 and authorization_changed:
+                        logger.warning(
+                            "Gateway stream request failed with refreshed Authorization header, "
+                            f"retrying once: status={response.status_code}"
+                        )
+                        request_authorization = self.authorization
+                        continue
+                    response.raise_for_status()
+
+                async for event in self._iter_stream_events(response):
+                    yield event
+                return
 
     async def complete(
         self,
@@ -162,6 +205,40 @@ class WorkerGatewayClient:
             return
         await self._client.aclose()
 
+    async def _iter_stream_events(
+        self,
+        response: httpx.Response,
+    ) -> AsyncIterator[WorkerStreamEvent]:
+        """Parse an SSE response into structured events."""
+        event_name = "message"
+        data_lines: list[str] = []
+
+        async for line in response.aiter_lines():
+            if line == "":
+                event = _build_stream_event(event_name, data_lines)
+                if event is not None:
+                    yield event
+                event_name = "message"
+                data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+
+            field, separator, value = line.partition(":")
+            if not separator:
+                continue
+            if value.startswith(" "):
+                value = value[1:]
+
+            if field == "event":
+                event_name = value or "message"
+            elif field == "data":
+                data_lines.append(value)
+
+        event = _build_stream_event(event_name, data_lines)
+        if event is not None:
+            yield event
+
 
 def _is_loopback_base_url(base_url: str) -> bool:
     """Return True when *base_url* targets the local machine."""
@@ -177,3 +254,34 @@ def _normalize_header_value(value: str | None) -> str | None:
     if not normalized_value:
         return None
     return normalized_value
+
+
+def _build_stream_event(
+    event_name: str,
+    data_lines: list[str],
+) -> WorkerStreamEvent | None:
+    """Build one structured stream event from raw SSE lines."""
+    payload: dict[str, Any] | None = None
+    raw_data = "\n".join(data_lines)
+    if raw_data:
+        try:
+            decoded = json.loads(raw_data)
+        except json.JSONDecodeError:
+            decoded = {"data": raw_data}
+        if isinstance(decoded, dict):
+            payload = decoded
+        else:
+            payload = {"data": decoded}
+
+    if event_name == "message":
+        if payload is None or "content" not in payload:
+            return None
+        return WorkerStreamEvent(
+            event="message",
+            message=WorkerMessage(content=str(payload["content"])),
+            payload=payload,
+        )
+    return WorkerStreamEvent(
+        event=event_name,
+        payload=payload,
+    )
