@@ -7,6 +7,7 @@ import pytest
 
 import cli.app as app_module
 from agent_core import Agent
+from agent_core.agent import CompactionConfig
 from agent_core.agent.hooks import HookContext
 from agent_core.agent.runtime_events import ContextMaintenanceRequested
 from agent_core.agent.runtime_state import AgentRunState
@@ -199,6 +200,35 @@ async def test_run_agent_updates_context_budget_after_llm_response(
     assert any(snapshot.trigger == "post_llm_response" for snapshot in printed)
     assert "fake-model" in cli._render_context_budget_toolbar()
     assert "left" in cli._render_context_budget_toolbar()
+
+
+@pytest.mark.asyncio
+async def test_run_agent_prints_compaction_status_messages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = Agent(
+        llm=FakeLLM(
+            [
+                ChatInvokeCompletion(content="done", usage=_usage(140)),
+                ChatInvokeCompletion(content="summary", usage=_usage(5)),
+            ]
+        ),
+        tools=[],
+        compaction=CompactionConfig(
+            threshold_ratio=0.001,
+            preserve_recent_messages=0,
+        ),
+    )
+    cli = _make_cli(tmp_path, monkeypatch, agent)
+    statuses: list[str] = []
+    monkeypatch.setattr(cli, "_print_compaction_status", lambda message: statuses.append(message))
+    monkeypatch.setattr(cli, "_print_context_budget_status", lambda snapshot: None)
+
+    final_content = await cli._run_agent("hello", has_image=False)
+
+    assert final_content == "done"
+    assert statuses == ["Compaction start", "Context compacted"]
 
 
 @pytest.mark.asyncio

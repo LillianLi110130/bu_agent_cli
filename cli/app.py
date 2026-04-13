@@ -143,6 +143,17 @@ class _CLIContextBudgetHook(BaseAgentHook):
     """Emit CLI-private budget snapshots after context-changing runtime events."""
 
     priority: int = 900
+    on_compaction_status: Callable[[str], None] | None = None
+
+    async def before_event(self, event, ctx):
+        if isinstance(event, ContextMaintenanceRequested):
+            assessment = await ctx.agent._context.assess_budget(
+                model=ctx.agent.llm.model,
+                trigger=None,
+            )
+            if self._will_attempt_compaction(ctx, assessment):
+                self._emit_compaction_status("Compaction start")
+        return None
 
     async def after_event(self, event, ctx, emitted_events):
         del emitted_events
@@ -151,30 +162,59 @@ class _CLIContextBudgetHook(BaseAgentHook):
         elif isinstance(event, RuntimeToolResultReceived):
             await self._emit_budget(ctx, "post_tool_result")
         elif isinstance(event, ContextMaintenanceRequested):
-            await self._emit_budget(ctx, None)
+            snapshot = await self._emit_budget(ctx, None)
+            if snapshot.trigger == "post_compaction":
+                self._emit_compaction_status("Context compacted")
         return None
 
+    def _emit_compaction_status(self, message: str) -> None:
+        if self.on_compaction_status is not None:
+            self.on_compaction_status(message)
+
     @staticmethod
-    async def _emit_budget(ctx, trigger: str | None) -> None:
+    def _will_attempt_compaction(ctx, assessment) -> bool:
+        if not getattr(assessment, "needs_compaction", False):
+            return False
+        context = ctx.agent._context
+        compaction_service = getattr(context, "_compaction_service", None)
+        if compaction_service is None:
+            return False
+        if not compaction_service.config.enabled:
+            return False
+        messages = context.get_messages()
+        countable_indices = context._countable_indices_from(
+            messages,
+            start_index=context.summarized_boundary,
+        )
+        keep_indices = context._build_recent_keep_indices(
+            messages,
+            countable_indices,
+            compaction_service.config.preserve_recent_messages,
+            token_budget=context._recent_keep_token_budget(assessment),
+        )
+        return any(index not in keep_indices for index in countable_indices)
+
+    @staticmethod
+    async def _emit_budget(ctx, trigger: str | None) -> _CLIContextBudgetSnapshot:
         assessment = await ctx.agent._context.assess_budget(
             model=ctx.agent.llm.model,
             trigger=trigger,
         )
-        ctx.emit_ui_event(
-            _CLIContextBudgetSnapshot(
-                model=assessment.model,
-                estimated_tokens=assessment.estimated_tokens,
-                context_limit=assessment.context_limit,
-                remaining_tokens=max(
-                    0,
-                    assessment.context_limit - assessment.estimated_tokens,
-                ),
-                context_utilization=assessment.context_utilization,
-                remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
-                message_count=assessment.message_count,
-                trigger=assessment.trigger,
-            )
+        snapshot = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=assessment.estimated_tokens,
+            context_limit=assessment.context_limit,
+            remaining_tokens=max(
+                0,
+                assessment.context_limit - assessment.estimated_tokens,
+            ),
+            context_utilization=assessment.context_utilization,
+            remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
         )
+        ctx.emit_ui_event(snapshot)
+        return snapshot
 
 
 # =============================================================================
@@ -480,7 +520,9 @@ class TGAgentCLI:
         key = id(agent)
         if key in self._context_budget_hook_agents:
             return
-        agent.register_hook(_CLIContextBudgetHook())
+        agent.register_hook(
+            _CLIContextBudgetHook(on_compaction_status=self._print_compaction_status)
+        )
         self._context_budget_hook_agents.add(key)
 
     async def _refresh_empty_context_budget_display(self, agent: Agent | None = None) -> None:
@@ -551,6 +593,15 @@ class TGAgentCLI:
             return
         self._last_context_budget_status_line = status_line
         self._console.print(Text(status_line, style="grey50"))
+
+    def _print_compaction_status(self, message: str) -> None:
+        had_loading = self._loading is not None
+        if had_loading:
+            self._stop_loading(self._loading)
+            self._loading = None
+        self._console.print(Text(message, style="yellow"))
+        if had_loading:
+            self._loading = self._start_loading("思考中")
 
     def _render_context_budget_toolbar(self) -> str:
         if self._last_context_budget is None:
