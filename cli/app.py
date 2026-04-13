@@ -13,6 +13,7 @@ import threading
 import time
 import hashlib
 from dataclasses import dataclass
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,7 +29,13 @@ from agent_core.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from agent_core.agent.hooks import BaseAgentHook
 from agent_core.agent.registry import AgentRegistry
+from agent_core.agent.runtime_events import (
+    ContextMaintenanceRequested,
+    LLMResponseReceived,
+    ToolResultReceived as RuntimeToolResultReceived,
+)
 from agent_core.llm import ChatOpenAI
 from agent_core.llm.messages import (
     ContentPartImageParam,
@@ -54,6 +61,7 @@ from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import BashLexer
 from rich.console import Console
 from rich.panel import Panel
+from rich.text import Text
 
 from cli.slash_commands import (
     SlashCommand,
@@ -103,6 +111,20 @@ class _ExecutionOutcome:
     final_content: str = ""
 
 
+@dataclass(slots=True)
+class _CLIContextBudgetSnapshot:
+    """CLI-private snapshot for displaying remaining context budget."""
+
+    model: str
+    estimated_tokens: int
+    context_limit: int
+    remaining_tokens: int
+    context_utilization: float
+    remaining_ratio: float
+    message_count: int
+    trigger: str | None = None
+
+
 class _CLIHumanApprovalHandler:
     """CLI-backed approval handler used by runtime hooks."""
 
@@ -114,6 +136,45 @@ class _CLIHumanApprovalHandler:
         request: HumanApprovalRequest,
     ) -> HumanApprovalDecision:
         return await self._cli._request_human_approval(request)
+
+
+@dataclass
+class _CLIContextBudgetHook(BaseAgentHook):
+    """Emit CLI-private budget snapshots after context-changing runtime events."""
+
+    priority: int = 900
+
+    async def after_event(self, event, ctx, emitted_events):
+        del emitted_events
+        if isinstance(event, LLMResponseReceived):
+            await self._emit_budget(ctx, "post_llm_response")
+        elif isinstance(event, RuntimeToolResultReceived):
+            await self._emit_budget(ctx, "post_tool_result")
+        elif isinstance(event, ContextMaintenanceRequested):
+            await self._emit_budget(ctx, None)
+        return None
+
+    @staticmethod
+    async def _emit_budget(ctx, trigger: str | None) -> None:
+        assessment = await ctx.agent._context.assess_budget(
+            model=ctx.agent.llm.model,
+            trigger=trigger,
+        )
+        ctx.emit_ui_event(
+            _CLIContextBudgetSnapshot(
+                model=assessment.model,
+                estimated_tokens=assessment.estimated_tokens,
+                context_limit=assessment.context_limit,
+                remaining_tokens=max(
+                    0,
+                    assessment.context_limit - assessment.estimated_tokens,
+                ),
+                context_utilization=assessment.context_utilization,
+                remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+                message_count=assessment.message_count,
+                trigger=assessment.trigger,
+            )
+        )
 
 
 # =============================================================================
@@ -334,6 +395,9 @@ class TGAgentCLI:
             )
         )
         self._workspace_instruction_state = WorkspaceInstructionState()
+        self._last_context_budget: _CLIContextBudgetSnapshot | None = None
+        self._last_context_budget_status_line: str | None = None
+        self._context_budget_hook_agents: set[int] = set()
 
         if self._bridge_store is not None:
             self._bridge_store.initialize()
@@ -411,6 +475,89 @@ class TGAgentCLI:
             workspace_dir=self._ctx.working_dir,
             state=self._workspace_instruction_state,
         )
+
+    def _ensure_context_budget_hook(self, agent: Agent) -> None:
+        key = id(agent)
+        if key in self._context_budget_hook_agents:
+            return
+        agent.register_hook(_CLIContextBudgetHook())
+        self._context_budget_hook_agents.add(key)
+
+    async def _refresh_empty_context_budget_display(self, agent: Agent | None = None) -> None:
+        active_agent = agent or self._agent
+        assessment = await active_agent._context.assess_budget(
+            model=active_agent.llm.model,
+            trigger=None,
+        )
+        self._last_context_budget = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=0,
+            context_limit=assessment.context_limit,
+            remaining_tokens=assessment.context_limit,
+            context_utilization=0.0,
+            remaining_ratio=1.0,
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        self._last_context_budget_status_line = None
+
+    async def _refresh_current_context_budget_display(
+        self,
+        agent: Agent | None = None,
+        *,
+        trigger: str | None = None,
+        print_status: bool = False,
+    ) -> None:
+        active_agent = agent or self._agent
+        assessment = await active_agent._context.assess_budget(
+            model=active_agent.llm.model,
+            trigger=trigger,
+        )
+        snapshot = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=assessment.estimated_tokens,
+            context_limit=assessment.context_limit,
+            remaining_tokens=max(0, assessment.context_limit - assessment.estimated_tokens),
+            context_utilization=assessment.context_utilization,
+            remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        self._last_context_budget = snapshot
+        if print_status:
+            self._print_context_budget_status(snapshot)
+
+    def _context_budget_left_percent(self, snapshot: _CLIContextBudgetSnapshot) -> int:
+        return max(0, min(100, round(snapshot.remaining_ratio * 100)))
+
+    def _format_token_count(self, value: int) -> str:
+        if value == 0:
+            return "0k"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}k"
+        return str(value)
+
+    def _format_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> str:
+        percent = self._context_budget_left_percent(snapshot)
+        used = self._format_token_count(snapshot.estimated_tokens)
+        limit = self._format_token_count(snapshot.context_limit)
+        return f"上下文 {percent}% left · {used}/{limit} tokens · {snapshot.model}"
+
+    def _print_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> None:
+        status_line = self._format_context_budget_status(snapshot)
+        if status_line == self._last_context_budget_status_line:
+            return
+        self._last_context_budget_status_line = status_line
+        self._console.print(Text(status_line, style="grey50"))
+
+    def _render_context_budget_toolbar(self) -> str:
+        if self._last_context_budget is None:
+            status = "上下文 100% left"
+        else:
+            status = self._format_context_budget_status(self._last_context_budget)
+        return html_escape(status)
 
     def _build_project_snapshot(self) -> str:
         """Build a lightweight snapshot of the project for summarization."""
@@ -622,11 +769,17 @@ class TGAgentCLI:
 
     async def _switch_model_preset(self, preset_name: str, *, manual: bool = True) -> bool:
         """Switch to a configured model preset without clearing conversation context."""
-        return await self._model_switch_service.switch_model_preset(
+        switched = await self._model_switch_service.switch_model_preset(
             preset_name,
             manual=manual,
             auto_state=self._model_auto_state,
         )
+        if switched:
+            await self._refresh_current_context_budget_display(
+                trigger="model_switch",
+                print_status=True,
+            )
+        return switched
 
     def _store_command_final_content(self, content: str | None) -> None:
         """Persist the latest non-agent command output for bridge results."""
@@ -804,6 +957,7 @@ class TGAgentCLI:
         # Handle reset command
         if command_name == "reset":
             self._agent.clear_history()
+            await self._refresh_empty_context_budget_display()
             self._console.print("[yellow]会话上下文已重置。[/yellow]")
             return True
 
@@ -1069,6 +1223,7 @@ class TGAgentCLI:
         self._console.print()
         final_response: str | None = None
         active_agent = agent or self._agent
+        self._ensure_context_budget_hook(active_agent)
 
         # Keep workspace instructions synchronized for the main CLI agent.
         # Dedicated helper agents like /init manage their own injection timing.
@@ -1150,6 +1305,11 @@ class TGAgentCLI:
                     self._console.print()
                     self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     break
+
+                if isinstance(event, _CLIContextBudgetSnapshot):
+                    self._last_context_budget = event
+                    self._print_context_budget_status(event)
+                    continue
 
                 if isinstance(event, ToolCallEvent):
                     self._stop_loading(self._loading)
@@ -1468,6 +1628,7 @@ class TGAgentCLI:
 
         # Print welcome
         self._print_welcome()
+        await self._refresh_empty_context_budget_display()
 
         if self._bridge_store is not None:
             should_continue = await self._drain_bridge_queue()
@@ -1525,6 +1686,8 @@ class TGAgentCLI:
                 "completion-menu.meta.completion": "bg:#00aaaa #000000",
                 "completion-menu.meta.current": "bg:#00ffff #000000",
                 "completion-menu": "bg:#008888 #ffffff",
+                "bottom-toolbar": "noreverse bg:default #777777",
+                "bottom-toolbar.text": "noreverse bg:default #777777",
             }
         )
 
@@ -1537,6 +1700,7 @@ class TGAgentCLI:
             auto_suggest=AutoSuggestFromHistory(),
             style=style,
             enable_history_search=True,
+            bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
         )
 
         if self._bridge_store is not None:
