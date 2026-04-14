@@ -8,11 +8,14 @@ import json
 from typing import Annotated
 
 from agent_core.tools import Depends, tool
-
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 
-@tool("Read output/logs from a background shell task", context_policy="summarize")
+@tool(
+    "Read output/logs from a background shell task",
+    context_policy="trim",
+    context_max_inline_chars=6400,
+)
 async def task_output(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     task_id: str,

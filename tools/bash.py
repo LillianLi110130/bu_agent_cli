@@ -8,9 +8,8 @@ import subprocess
 from typing import Annotated
 
 from agent_core.tools import Depends, tool
-
-from tools.shell_tasks import decode_process_stream, terminate_process_tree
 from tools.sandbox import SandboxContext, get_sandbox_context
+from tools.shell_tasks import decode_process_stream, terminate_process_tree
 
 
 @tool(
@@ -18,7 +17,7 @@ from tools.sandbox import SandboxContext, get_sandbox_context
     "On Windows, use cmd or PowerShell compatible syntax and avoid Unix-only "
     "patterns such as heredoc, python3, or file.",
     context_policy="trim",
-    context_max_inline_chars=2400,
+    context_max_inline_chars=6400,
 )
 async def bash(
     command: str,

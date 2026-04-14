@@ -70,6 +70,22 @@ def test_build_system_prompt_uses_packaged_skills_outside_workspace(
     assert str(tmp_path) in prompt
 
 
+def test_build_system_prompt_explains_background_bash_output_flow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    prompt = module.build_system_prompt(tmp_path)
+
+    assert "`bash` 的 `run_in_background=true`" in prompt
+    assert "`ok=true`" in prompt
+    assert "不代表后台命令最终完成或成功" in prompt
+    assert "`task_output(task_id=..., wait_for=..., timeout=...)`" in prompt
+    assert "不要用 `bash` 执行 `cat`/`type` 去读 `persistedOutputPath`" in prompt
+
+
 def test_build_system_prompt_includes_user_and_workspace_skills(
     tmp_path: Path,
     monkeypatch,
@@ -93,7 +109,8 @@ def test_build_system_prompt_includes_user_and_workspace_skills(
     assert "builtin-only" in prompt
     assert "user-only" in prompt
     assert "project-only" in prompt
-    assert str(home_dir / ".tg_agent" / "skills" / ".builtin" / "builtin-only").lower() in prompt.lower()
+    builtin_skill_path = home_dir / ".tg_agent" / "skills" / ".builtin" / "builtin-only"
+    assert str(builtin_skill_path).lower() in prompt.lower()
 
 
 def test_build_system_prompt_prefers_project_skill_metadata(

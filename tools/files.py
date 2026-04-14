@@ -1,9 +1,9 @@
 """File operation tools: read, write, edit."""
 
 import difflib
-from agent_core.tools import Depends, tool
 from typing import Annotated, Optional
 
+from agent_core.tools import Depends, tool
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
 from tools.text_encoding import read_text_with_fallback
@@ -35,7 +35,10 @@ def _build_diff_error(old_text: str, content: str, file_path: str) -> str:
                 lineterm="",
             )
         )
-        return f"Error: old_string not found.\nBest match ({best_ratio:.0%} similar) at line {best_start + 1}:\n{diff}"
+        return (
+            "Error: old_string not found.\n"
+            f"Best match ({best_ratio:.0%} similar) at line {best_start + 1}:\n{diff}"
+        )
     return f"Error: old_string not found in {file_path}. No similar text found."
 
 
@@ -60,7 +63,8 @@ def _validate_artifact_window(
 
     if n_lines > _MAX_ARTIFACT_WINDOW_LINES:
         return (
-            f"Error: runtime artifact reads are limited to {_MAX_ARTIFACT_WINDOW_LINES} lines per call. "
+            "Error: runtime artifact reads are limited to "
+            f"{_MAX_ARTIFACT_WINDOW_LINES} lines per call. "
             f"Requested n_lines={n_lines}."
         )
 
@@ -89,7 +93,7 @@ def _build_artifact_header_hint(body_start_line: int) -> str:
     )
 
 
-@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=2600)
+@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=6400)
 async def read(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
