@@ -109,7 +109,7 @@ Assert-PathExists -Path (Join-Path $runtimeDir "python.exe") -Label "bundled pyt
 Assert-PathExists -Path (Join-Path $runtimeDir "Lib") -Label "bundled Lib"
 Assert-PathExists -Path (Join-Path $runtimeDir "DLLs") -Label "bundled DLLs"
 Assert-PathExists -Path $wheelhouseDir -Label "wheelhouse directory"
-Assert-PathExists -Path (Join-Path $appDir "claude_code.py") -Label "packaged claude_code.py"
+Assert-PathExists -Path (Join-Path $appDir "tg_crab_main.py") -Label "packaged tg_crab_main.py"
 Assert-PathExists -Path (Join-Path $appDir "agent_core") -Label "packaged agent_core"
 Assert-PathExists -Path (Join-Path $appDir "cli") -Label "packaged cli"
 Assert-PathExists -Path (Join-Path $appDir "tools") -Label "packaged tools"

@@ -16,37 +16,109 @@ function Resolve-PythonExecutable {
 
     $candidates = [System.Collections.Generic.List[string]]::new()
 
-    function Add-Candidate {
+    function Normalize-CandidatePath {
         param([string]$Candidate)
 
         if (-not $Candidate) {
-            return
+            return ""
         }
-        if (-not (Test-Path -LiteralPath $Candidate)) {
+
+        return [Environment]::ExpandEnvironmentVariables($Candidate.Trim().Trim('"'))
+    }
+
+    function Add-Candidate {
+        param([string]$Candidate)
+
+        $normalized = Normalize-CandidatePath $Candidate
+        if (-not $normalized) {
             return
         }
 
-        $resolved = [System.IO.Path]::GetFullPath($Candidate)
+        if (Test-Path -LiteralPath $normalized -PathType Container) {
+            $normalized = Join-Path $normalized "python.exe"
+        }
+
+        if (-not (Test-Path -LiteralPath $normalized -PathType Leaf)) {
+            return
+        }
+
+        $resolved = [System.IO.Path]::GetFullPath($normalized)
         if (-not $candidates.Contains($resolved)) {
             $candidates.Add($resolved)
         }
     }
 
+    function Add-CandidatesFromCommand {
+        param([string]$CommandName)
+
+        $commands = @(Get-Command $CommandName -All -ErrorAction SilentlyContinue)
+        foreach ($command in $commands) {
+            if ($command.Source) {
+                Add-Candidate $command.Source
+            }
+        }
+    }
+
+    function Add-CandidatesFromWhere {
+        param([string]$CommandName)
+
+        try {
+            $matches = & where.exe $CommandName 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                return
+            }
+
+            foreach ($match in $matches) {
+                $trimmed = $match.Trim()
+                if (-not $trimmed) {
+                    continue
+                }
+                if ($trimmed.StartsWith("INFO:", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    continue
+                }
+
+                Add-Candidate $trimmed
+            }
+        }
+        catch {
+        }
+    }
+
     if ($ExplicitPython) {
-        Add-Candidate $ExplicitPython
+        $explicitCandidate = Normalize-CandidatePath $ExplicitPython
+
+        if (Test-Path -LiteralPath $explicitCandidate -PathType Container) {
+            $explicitCandidate = Join-Path $explicitCandidate "python.exe"
+        }
+
+        Add-Candidate $explicitCandidate
+        if ($candidates.Count -eq 0) {
+            $explicitCommand = Get-Command $explicitCandidate -ErrorAction SilentlyContinue
+            if ($explicitCommand -and $explicitCommand.Source) {
+                Add-Candidate $explicitCommand.Source
+            }
+        }
+
+        if ($candidates.Count -eq 0) {
+            throw "Explicit Python executable was provided but not found: $ExplicitPython"
+        }
     }
     else {
         if ($env:VIRTUAL_ENV) {
             Add-Candidate (Join-Path $env:VIRTUAL_ENV "Scripts\python.exe")
         }
+        if ($env:CONDA_PREFIX) {
+            Add-Candidate (Join-Path $env:CONDA_PREFIX "python.exe")
+        }
+        if ($env:CONDA_PYTHON_EXE) {
+            Add-Candidate $env:CONDA_PYTHON_EXE
+        }
         if ($env:PYTHON) {
             Add-Candidate $env:PYTHON
         }
 
-        $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
-        if ($pythonCommand -and $pythonCommand.Source) {
-            Add-Candidate $pythonCommand.Source
-        }
+        Add-CandidatesFromCommand "python"
+        Add-CandidatesFromWhere "python"
 
         $pyLauncher = Get-Command py -ErrorAction SilentlyContinue
         if ($pyLauncher -and $pyLauncher.Source) {
@@ -61,18 +133,45 @@ function Resolve-PythonExecutable {
         }
     }
 
+    $explicitFailureMessage = ""
     foreach ($candidate in $candidates) {
         try {
-            & $candidate -c "import sys; print(sys.executable)" | Out-Null
+            $probeOutput = @(& $candidate -c "import sys; print(sys.executable)" 2>&1)
+            $resolvedCandidate = ($probeOutput | Select-Object -First 1 | Out-String).Trim()
             if ($LASTEXITCODE -eq 0) {
+                if ($resolvedCandidate -and (Test-Path -LiteralPath $resolvedCandidate)) {
+                    return [System.IO.Path]::GetFullPath($resolvedCandidate)
+                }
+
                 return $candidate
+            }
+
+            if ($ExplicitPython) {
+                $probeMessage = ($probeOutput | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ }) -join " "
+                if ($probeMessage) {
+                    $explicitFailureMessage = "ExitCode=$LASTEXITCODE. $probeMessage"
+                }
+                else {
+                    $explicitFailureMessage = "ExitCode=$LASTEXITCODE."
+                }
             }
         }
         catch {
+            if ($ExplicitPython) {
+                $explicitFailureMessage = $_.Exception.Message
+            }
         }
     }
 
-    throw "Could not resolve a usable Python executable. Pass -PythonExecutable explicitly."
+    if ($ExplicitPython) {
+        $message = "Explicit Python executable is not usable: $ExplicitPython"
+        if ($explicitFailureMessage) {
+            $message = "$message. $explicitFailureMessage"
+        }
+        throw $message
+    }
+
+    throw "Could not resolve a usable Python executable automatically. Pass -PythonExecutable explicitly, for example '-PythonExecutable C:\Python310\python.exe' or '-PythonExecutable %CONDA_PREFIX%\python.exe'."
 }
 
 function Test-PathUnderRoot {

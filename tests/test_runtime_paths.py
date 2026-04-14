@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import claude_code
+import tg_crab_main
 from agent_core.runtime_paths import ensure_cli_runtime_state, load_runtime_env
 from cli.worker.auth import load_auth_config
 
@@ -76,9 +76,9 @@ def test_load_auth_config_prefers_user_home_config_before_packaged(
 
 
 def test_build_worker_process_command_uses_module_mode_for_source(monkeypatch) -> None:
-    monkeypatch.setattr(claude_code, "is_frozen_app", lambda: False)
+    monkeypatch.setattr(tg_crab_main, "is_frozen_app", lambda: False)
 
-    command = claude_code._build_worker_process_command(
+    command = tg_crab_main._build_worker_process_command(
         worker_id="worker-1",
         gateway_base_url="http://127.0.0.1:8765",
         config_dir=Path("D:/config"),
@@ -86,31 +86,31 @@ def test_build_worker_process_command_uses_module_mode_for_source(monkeypatch) -
         model="gpt-4o",
     )
 
-    assert command[:3] == [claude_code.sys.executable, "-m", "cli.worker.main"]
+    assert command[:3] == [tg_crab_main.sys.executable, "-m", "cli.worker.main"]
     assert "--model" in command
 
 
 def test_build_worker_process_command_uses_internal_flag_for_frozen(monkeypatch) -> None:
-    monkeypatch.setattr(claude_code, "is_frozen_app", lambda: True)
+    monkeypatch.setattr(tg_crab_main, "is_frozen_app", lambda: True)
 
-    command = claude_code._build_worker_process_command(
+    command = tg_crab_main._build_worker_process_command(
         worker_id="worker-1",
         gateway_base_url="http://127.0.0.1:8765",
         config_dir=Path("D:/config"),
         root_dir=Path("D:/workspace"),
     )
 
-    assert command[:2] == [claude_code.sys.executable, claude_code._INTERNAL_WORKER_FLAG]
+    assert command[:2] == [tg_crab_main.sys.executable, tg_crab_main._INTERNAL_WORKER_FLAG]
     assert "-m" not in command
 
 
 def test_cli_runtime_env_is_loaded_explicitly(monkeypatch) -> None:
     calls: list[str] = []
 
-    monkeypatch.setattr(claude_code, "ensure_cli_runtime_state", lambda: calls.append("bootstrapped"))
-    monkeypatch.setattr(claude_code, "load_runtime_env", lambda: calls.append("loaded"))
+    monkeypatch.setattr(tg_crab_main, "ensure_cli_runtime_state", lambda: calls.append("bootstrapped"))
+    monkeypatch.setattr(tg_crab_main, "load_runtime_env", lambda: calls.append("loaded"))
 
-    claude_code._load_cli_runtime_env()
+    tg_crab_main._load_cli_runtime_env()
 
     assert calls == ["bootstrapped", "loaded"]
 

@@ -10,7 +10,7 @@ import uuid
 import httpx
 import pytest
 
-import claude_code
+import tg_crab_main
 from cli.worker import auth
 from cli.worker.mock_auth_server import create_mock_auth_app
 
@@ -238,7 +238,7 @@ def test_load_auth_config_falls_back_to_package_install_dir(
     assert config.gateway_base_url == "http://127.0.0.1:8866"
 
 
-def test_claude_code_authentication_overrides_worker_id(
+def test_tg_crab_main_authentication_overrides_worker_id(
     workspace_root: Path,
     monkeypatch,
 ):
@@ -259,8 +259,8 @@ def test_claude_code_authentication_overrides_worker_id(
             user_id="mock-user-123",
         )
 
-    monkeypatch.setattr(claude_code, "load_auth_config", fake_load_auth_config)
-    monkeypatch.setattr(claude_code, "authenticate_startup", fake_authenticate_startup)
+    monkeypatch.setattr(tg_crab_main, "load_auth_config", fake_load_auth_config)
+    monkeypatch.setattr(tg_crab_main, "authenticate_startup", fake_authenticate_startup)
 
     args = argparse.Namespace(
         root_dir=str(workspace_root),
@@ -268,7 +268,7 @@ def test_claude_code_authentication_overrides_worker_id(
         im_worker_id="worker-old",
     )
 
-    asyncio.run(claude_code._authenticate_worker_startup(args))
+    asyncio.run(tg_crab_main._authenticate_worker_startup(args))
 
     assert calls == [config_root]
     assert args.im_worker_id == "mock-user-123"

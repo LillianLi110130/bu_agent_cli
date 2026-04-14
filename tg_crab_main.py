@@ -6,9 +6,9 @@ todo management, and task completion - all with dependency injection
 for secure filesystem access.
 
 Usage:
-    py -3.10 claude_code.py
-    py -3.10 claude_code.py --model gpt-4o
-    py -3.10 claude_code.py --root-dir ./other-project
+    py -3.10 tg_crab_main.py
+    py -3.10 tg_crab_main.py --model gpt-4o
+    py -3.10 tg_crab_main.py --root-dir ./other-project
 
 Environment Variables:
     LLM_MODEL: Model to use (default: GLM-4.7)

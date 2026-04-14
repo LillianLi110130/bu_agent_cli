@@ -6,7 +6,7 @@ from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
-from claude_code import create_runtime_registries
+from tg_crab_main import create_runtime_registries
 from cli.at_commands import (
     AtCommand,
     AtCommandCompleter,

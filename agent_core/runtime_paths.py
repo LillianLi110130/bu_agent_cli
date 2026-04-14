@@ -75,11 +75,7 @@ def _load_model_preset_api_key_env_names() -> list[str]:
 
 def default_runtime_env_values() -> dict[str, str]:
     """Return default CLI runtime env values merged with packaged overrides."""
-    values = {
-        "OPENAI_API_KEY": "",
-        "LLM_MODEL": "GLM-4.7",
-        "LLM_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
-    }
+    values = {}
     values.update(_read_env_values(packaged_env_path()))
     for env_name in _load_model_preset_api_key_env_names():
         values.setdefault(env_name, "")

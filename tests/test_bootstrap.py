@@ -120,11 +120,11 @@ def test_build_system_prompt_prefers_project_skill_metadata(
     assert "builtin override" not in prompt
 
 
-def test_claude_code_build_system_prompt_includes_project_context(
+def test_tg_crab_main_build_system_prompt_includes_project_context(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    module = _load_module("claude_code")
+    module = _load_module("tg_crab_main")
     skill_module = _load_module("cli.at_commands")
     registry_module = _load_module("agent_core.agent.registry")
 

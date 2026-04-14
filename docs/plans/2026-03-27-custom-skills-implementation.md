@@ -159,7 +159,7 @@ git commit -m "feat: share custom skill discovery logic"
 ### Task 3: 接入 CLI runtime，让 `@skill`、`/skills` 和 prompt 看到自定义 skill
 
 **Files:**
-- Modify: `claude_code.py`
+- Modify: `tg_crab_main.py`
 - Modify: `tests/test_at_commands.py`
 - Modify: `README.md`
 
@@ -194,7 +194,7 @@ Expected: FAIL，原因是 `create_runtime_registries()` 仍只使用单个 `ski
 
 **Step 3: Write minimal implementation**
 
-在 `claude_code.py` 中：
+在 `tg_crab_main.py` 中：
 
 - 新增基于 `workspace_root` 解析 skill 目录列表的调用
 - 将 `AtCommandRegistry(skills_dir or _SKILLS_DIR)` 改为多目录构造
@@ -226,7 +226,7 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add claude_code.py tests/test_at_commands.py README.md
+git add tg_crab_main.py tests/test_at_commands.py README.md
 git commit -m "feat: load custom skills in cli runtime"
 ```
 
@@ -324,7 +324,7 @@ Expected: PASS
 
 **Step 3: Run static validation**
 
-Run: `uv run ruff check cli/at_commands.py claude_code.py agent_core/skill/discovery.py agent_core/bootstrap/agent_factory.py tests/test_at_commands.py tests/test_bootstrap.py`
+Run: `uv run ruff check cli/at_commands.py tg_crab_main.py agent_core/skill/discovery.py agent_core/bootstrap/agent_factory.py tests/test_at_commands.py tests/test_bootstrap.py`
 Expected: All checks passed
 
 **Step 4: Confirm README text**

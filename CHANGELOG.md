@@ -29,7 +29,7 @@
 - 新增覆盖 bootstrap、bus、runtime、gateway、telegram、heartbeat、integration 的测试用例。
 
 ### Changed
-- `claude_code.py` 改为复用共享 bootstrap 工厂，避免 CLI 与 Gateway 各自维护独立装配逻辑。
+- `tg_crab_main.py` 改为复用共享 bootstrap 工厂，避免 CLI 与 Gateway 各自维护独立装配逻辑。
 - `cli/app.py` 中 `TGAGENTS.md` 注入逻辑改为复用共享 session bootstrap，收敛重复实现。
 - 更新项目打包入口，新增 `bu-agent-gateway` console script。
 - 更新依赖锁文件，纳入网关运行所需的 Telegram 依赖。
