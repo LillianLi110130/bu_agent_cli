@@ -15,12 +15,14 @@ DEFAULT_THRESHOLD_RATIO = 0.80
 DEFAULT_WARN_THRESHOLD = 0.65
 DEFAULT_HARD_THRESHOLD = 0.92
 
-DEFAULT_SUMMARY_PROMPT = """You are compacting an unfinished coding-agent conversation into a working set that will replace older history.
+DEFAULT_SUMMARY_PROMPT = """You are compacting an unfinished coding-agent conversation into a
+working set that will replace older history.
 
 Return exactly three blocks in this order and do not include markdown fences:
 
 <summary>
-A concise continuation summary for another coding agent. Focus on what the user wants, what has already been done, key technical findings, and the next concrete steps.
+A concise continuation summary for another coding agent. Focus on what the user wants,
+what has already been done, key technical findings, and the next concrete steps.
 </summary>
 
 <working_state>
@@ -42,11 +44,23 @@ compaction-inline-short-id
 </checkpoint_ref>
 
 Rules:
-- The task is usually a coding task. Preserve concrete file paths, decisions, unresolved bugs, and pending implementation steps.
-- Keep the summary compact but sufficient to continue work without repeating already-completed investigation.
+- The task is usually a coding task. Preserve concrete file paths, decisions, unresolved bugs,
+  and pending implementation steps.
+- Keep the summary compact but sufficient to continue work without repeating already-completed
+  investigation.
+- In working_state, output strict JSON only: double-quoted keys and strings, no markdown fences,
+  no comments, no trailing commas, no unescaped newlines inside strings.
 - In working_state, use empty strings or empty arrays when information is unavailable.
 - Do not invent files, refs, or decisions.
-- recent_history_notes should only capture a few very recent active threads that matter if the preserved tail is lost.
+- remaining_actions must contain only actions that are still unfinished, still valid, and should be
+  done next. Do not keep actions that are completed, obsolete, or contradicted by
+  confirmed_conclusions.
+- recent_history_notes should only capture a few very recent active threads that matter if the
+  preserved tail is lost.
+- recent_history_notes must not preserve casual chatter, completed intermediate steps, or obsolete
+  state.
+- If a recent_tail_reference block is present, use it only to decide whether requests in the
+  compacted segment were already answered or completed. Do not duplicate that tail in the summary.
 """
 
 
