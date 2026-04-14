@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path, PurePosixPath
-from typing import Annotated, Iterable
+from pathlib import Path
+from typing import Annotated, Iterable, Literal
 
 from agent_core.tools import Depends, tool
-
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
 from tools.text_encoding import read_text_with_fallback
+
+GlobKind = Literal["file", "dir", "any"]
+_GLOB_RESULT_LIMIT = 50
 
 
 def _iter_searchable_files(root: Path, ctx: SandboxContext) -> Iterable[Path]:
@@ -33,22 +35,47 @@ def _iter_searchable_files(root: Path, ctx: SandboxContext) -> Iterable[Path]:
                 yield candidate
 
 
-def _matches_glob(root: Path, candidate: Path, pattern: str) -> bool:
-    pattern_text = pattern.replace("\\", "/")
-    relative = candidate.relative_to(root).as_posix()
-    relative_path = PurePosixPath(relative)
-    candidate_name = PurePosixPath(candidate.name)
-    # Keep pathlib's native glob semantics for the common case.
-    if relative_path.match(pattern_text) or candidate_name.match(pattern_text):
-        return True
-    if pattern_text.startswith("**/"):
-        # pathlib does not treat patterns like "**/*.docx" as matching files that
-        # live directly under the search root, so retry without the recursive prefix.
-        pattern_without_recursive_prefix = pattern_text[3:]
-        return relative_path.match(pattern_without_recursive_prefix) or candidate_name.match(
-            pattern_without_recursive_prefix
-        )
-    return False
+def _matches_kind(path: Path, kind: GlobKind) -> bool:
+    if kind == "file":
+        return path.is_file()
+    if kind == "dir":
+        return path.is_dir()
+    return path.exists()
+
+
+def _is_searchable_path(path: Path, ctx: SandboxContext, kind: GlobKind) -> bool:
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return False
+    return (
+        ctx.is_allowed(resolved)
+        and not ctx.is_ignored(resolved)
+        and _matches_kind(resolved, kind)
+    )
+
+
+def _sort_key_for_glob_match(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix().lower()
+    except ValueError:
+        return str(path).lower()
+
+
+def _iter_glob_matches(root: Path, pattern: str, ctx: SandboxContext, kind: GlobKind) -> list[Path]:
+    pattern_text = pattern.strip().replace("\\", "/")
+    if not pattern_text:
+        raise ValueError("pattern cannot be empty")
+    pattern_path = Path(pattern_text)
+    if pattern_text.startswith("/") or pattern_path.is_absolute() or pattern_path.drive:
+        raise ValueError("pattern must be relative to the search path")
+
+    matches = {
+        candidate.resolve()
+        for candidate in root.glob(pattern_text)
+        if _is_searchable_path(candidate, ctx, kind)
+    }
+    return sorted(matches, key=lambda item: _sort_key_for_glob_match(item, root))
 
 
 def _display_path(path: Path, ctx: SandboxContext) -> str:
@@ -58,13 +85,18 @@ def _display_path(path: Path, ctx: SandboxContext) -> str:
         return str(path)
 
 
-@tool("Find files matching a glob pattern", context_policy="trim", context_max_inline_chars=1600)
+@tool(
+    "Find files or directories matching a glob pattern",
+    context_policy="trim",
+    context_max_inline_chars=1600,
+)
 async def glob_search(
     pattern: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     path: str | None = None,
+    kind: GlobKind = "file",
 ) -> str:
-    """Find files matching a glob pattern like ``**/*.py``."""
+    """Find files or directories matching a glob pattern like ``**/*.py``."""
     try:
         if path:
             search_dir = resolve_target_path(path, ctx, kind="dir")
@@ -76,14 +108,21 @@ async def glob_search(
         return f"Security error: {e}"
 
     try:
-        matches = [
+        all_matches = [
             _display_path(candidate, ctx)
-            for candidate in _iter_searchable_files(search_dir, ctx)
-            if _matches_glob(search_dir, candidate, pattern)
-        ][:50]
+            for candidate in _iter_glob_matches(search_dir, pattern, ctx, kind)
+        ]
+        matches = all_matches[:_GLOB_RESULT_LIMIT]
+        result_kind = "path" if kind == "any" else kind
         if not matches:
-            return f"No files match pattern: {pattern}"
-        return f"Found {len(matches)} file(s):\n" + "\n".join(matches)
+            return f"No {result_kind}s match pattern: {pattern}"
+        if len(all_matches) > _GLOB_RESULT_LIMIT:
+            return (
+                f"Found {len(all_matches)} {result_kind}(s), showing first {_GLOB_RESULT_LIMIT}:\n"
+                + "\n".join(matches)
+                + "\n... (truncated; refine pattern or path)"
+            )
+        return f"Found {len(matches)} {result_kind}(s):\n" + "\n".join(matches)
     except Exception as e:
         return f"Error: {e}"
 

@@ -26,13 +26,19 @@ async def run_subagent(
 
     This is useful when you need the result of a subagent before continuing.
 
+    Before using this tool, first check whether a relevant skill exists.
+    If a relevant skill exists, read its `SKILL.md` fully before deciding to delegate.
+    Do not use a subagent as a shortcut to skip a relevant skill, skip repository understanding,
+    or replace a workflow already defined by a skill. After checking the relevant skill,
+    delegate only when it provides a clear execution benefit.
+
     Unlike async_task (which returns immediately with a task_id),
     this tool waits for the subagent to finish and returns the actual result.
 
     Use this for:
     - Tasks whose result you need immediately
     - Sequential tasks where the next step depends on the previous result
-    - When you need to make decisions based on the subagent output
+    - Cases where delegation is clearly beneficial after relevant skill guidance has been checked
 
     Use async_task instead for:
     - Parallel execution of multiple independent tasks

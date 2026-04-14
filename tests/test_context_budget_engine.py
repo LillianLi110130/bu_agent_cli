@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from types import MethodType
 
 import pytest
 
 from agent_core.agent import Agent, CompactionConfig, ContextBudgetEngine
+from agent_core.agent.budget import BudgetAssessment
+from agent_core.agent.context import ContextManager
 from agent_core.llm.messages import AssistantMessage, BaseMessage, ToolMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
 
@@ -79,12 +82,87 @@ async def test_context_budget_engine_uses_real_prompt_baseline_plus_appended_mes
         AssistantMessage(content="I will inspect the code"),
         ToolMessage(tool_call_id="call-1", tool_name="read", content="long tool output"),
     ]
-    assessment = await engine.assess(model="target-model", messages=current_messages)
+    assessment = await engine.assess(model="baseline-model", messages=current_messages)
 
     incremental = engine.estimate_tokens_for_messages(current_messages[len(prompt_messages) :])
     assert assessment.baseline_prompt_tokens == 120
     assert assessment.incremental_tokens == incremental
     assert assessment.estimated_tokens == 120 + incremental
+
+
+@pytest.mark.asyncio
+async def test_context_budget_engine_reestimates_full_history_when_model_changes():
+    engine = ContextBudgetEngine(config=CompactionConfig())
+    prompt_messages = [UserMessage(content="inspect repo")]
+
+    engine.record_usage(model="baseline-model", messages=prompt_messages, usage=_usage(120))
+
+    current_messages = [
+        *prompt_messages,
+        AssistantMessage(content="Looking into it"),
+        ToolMessage(tool_call_id="call-1", tool_name="read", content="tool output payload"),
+    ]
+
+    assessment = await engine.assess(model="other-model", messages=current_messages)
+
+    full_estimate = engine.estimate_tokens_for_messages(current_messages)
+    assert assessment.baseline_prompt_tokens == 120
+    assert assessment.incremental_tokens == full_estimate
+    assert assessment.estimated_tokens == full_estimate
+
+
+@pytest.mark.asyncio
+async def test_context_maintain_budget_does_not_run_sliding_window_before_compaction():
+    context = ContextManager(
+        messages=[
+            UserMessage(content="first user"),
+            AssistantMessage(content="assistant"),
+            ToolMessage(tool_call_id="call-1", tool_name="read", content="tool result"),
+        ],
+        sliding_window_messages=1,
+    )
+    llm = SimpleNamespace(model="fake-model")
+    slide_calls: list[int] = []
+    compact_calls: list[str | None] = []
+
+    async def fake_assess_budget(self, *, model: str, usage=None, trigger=None):
+        return BudgetAssessment(
+            model=model,
+            context_limit=1000,
+            warn_threshold=100,
+            compact_threshold=800,
+            hard_threshold=920,
+            baseline_prompt_tokens=0,
+            incremental_tokens=150,
+            estimated_tokens=150,
+            message_count=len(self._messages),
+            warn_threshold_ratio=0.1,
+            compact_threshold_ratio=0.8,
+            hard_threshold_ratio=0.92,
+            threshold_utilization=150 / 800,
+            context_utilization=150 / 1000,
+            trigger=trigger,
+        )
+
+    async def fake_slide(self, keep_count: int, llm, pin_roles=("system", "developer"), buffer: int = 10):
+        del keep_count, llm, pin_roles, buffer
+        slide_calls.append(1)
+        return True
+
+    async def fake_compact(self, llm, usage=None, *, trigger=None):
+        del llm, usage
+        compact_calls.append(trigger)
+        return False
+
+    context.assess_budget = MethodType(fake_assess_budget, context)
+    context.apply_sliding_window_by_messages = MethodType(fake_slide, context)
+    context.check_and_compact = MethodType(fake_compact, context)
+
+    assessment = await context.maintain_budget(llm, trigger="post_response")
+
+    assert assessment.estimated_tokens == 150
+    assert slide_calls == []
+    assert compact_calls == []
 
 
 @pytest.mark.asyncio
@@ -156,11 +234,9 @@ async def test_preflight_model_switch_reuses_budget_engine_estimate(monkeypatch:
 
     preflight = await agent.preflight_model_switch("target-model", utilization_limit=0.5)
 
-    expected_incremental = agent._context._budget_engine.estimate_tokens_for_messages(
-        agent.messages[len(prompt_messages) :]
-    )
+    expected_total = agent._context._budget_engine.estimate_tokens_for_messages(agent.messages)
     assert preflight.ok is False
-    assert preflight.estimated_tokens == 180 + expected_incremental
+    assert preflight.estimated_tokens == expected_total
     assert preflight.threshold == int(220 * 0.8)
     assert compact_calls == [True]
     assert "automatic compaction failed" in (preflight.reason or "")

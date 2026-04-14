@@ -174,6 +174,66 @@ async def test_glob_search_skips_ignored_patterns() -> None:
 
 
 @pytest.mark.anyio
+async def test_glob_search_can_match_directories() -> None:
+    workspace = _make_workspace()
+    directory = workspace / "src" / "nested"
+    directory.mkdir(parents=True)
+    (directory / "module.py").write_text("content", encoding="utf-8")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        result = await glob_search.func("**/nested", ctx=ctx, kind="dir")
+
+        assert "src\\nested" in result or "src/nested" in result
+        assert "module.py" not in result
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_glob_search_uses_pathlib_glob_semantics() -> None:
+    workspace = _make_workspace()
+    root_file = workspace / "src" / "a.py"
+    nested_file = workspace / "src" / "nested" / "b.py"
+    unrelated_file = workspace / "other" / "src" / "c.py"
+    root_file.parent.mkdir()
+    nested_file.parent.mkdir()
+    unrelated_file.parent.mkdir(parents=True)
+    root_file.write_text("root", encoding="utf-8")
+    nested_file.write_text("nested", encoding="utf-8")
+    unrelated_file.write_text("unrelated", encoding="utf-8")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        result = await glob_search.func("src/**/*.py", ctx=ctx)
+
+        assert "src\\a.py" in result or "src/a.py" in result
+        assert "src\\nested\\b.py" in result or "src/nested/b.py" in result
+        assert "other" not in result
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_glob_search_reports_truncated_results() -> None:
+    workspace = _make_workspace()
+    for index in range(55):
+        (workspace / f"file_{index:02d}.txt").write_text("content", encoding="utf-8")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        result = await glob_search.func("*.txt", ctx=ctx)
+
+        assert result.startswith("Found 55 file(s), showing first 50:")
+        assert "... (truncated; refine pattern or path)" in result
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
 async def test_glob_search_allows_user_tg_agent_skills_directory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

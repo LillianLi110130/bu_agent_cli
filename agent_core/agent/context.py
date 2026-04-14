@@ -670,22 +670,8 @@ class ContextManager:
         *,
         trigger: str | None = None,
     ) -> BudgetAssessment:
-        """Apply sliding-window cleanup and compaction from one budget assessment path."""
+        """Apply formal compaction from one budget assessment path."""
         assessment = await self.assess_budget(model=llm.model, trigger=trigger)
-
-        should_slide = self.sliding_window_messages is not None and (
-            assessment.needs_warning or len(self._messages) > self.sliding_window_messages
-        )
-        if should_slide:
-            did_slide = await self.apply_sliding_window_by_messages(
-                keep_count=self.sliding_window_messages or 0,
-                llm=llm,
-            )
-            if did_slide:
-                assessment = await self.assess_budget(
-                    model=llm.model,
-                    trigger="sliding_window",
-                )
 
         if assessment.needs_compaction:
             compacted = await self.check_and_compact(llm, trigger="compact_threshold")

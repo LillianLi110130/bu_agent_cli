@@ -22,10 +22,16 @@ async def async_task(
     The task will execute in the background without blocking the main agent.
     Results will be available when the task completes via the `/task` command.
 
+    Before using this tool, first check whether a relevant skill exists.
+    If a relevant skill exists, read its `SKILL.md` fully before deciding to delegate.
+    Do not use background subagents as a substitute for following a relevant skill
+    or for work the main agent can complete directly. Start a background subagent
+    only when the task can proceed independently and delegation provides clear value.
+
     Use this for:
     - Long-running tasks that can run independently
     - Parallel execution of multiple tasks
-    - Tasks that don't require immediate results
+    - Tasks that don't require immediate results, after relevant skill guidance has been checked
 
     Args:
         ctx: Sandbox context containing subagent_manager

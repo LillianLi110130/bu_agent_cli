@@ -12,9 +12,8 @@ import sys
 import threading
 import time
 import hashlib
-from datetime import datetime
 from dataclasses import dataclass
-from html import escape
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,7 +29,13 @@ from agent_core.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from agent_core.agent.hooks import BaseAgentHook
 from agent_core.agent.registry import AgentRegistry
+from agent_core.agent.runtime_events import (
+    ContextMaintenanceRequested,
+    LLMResponseReceived,
+    ToolResultReceived as RuntimeToolResultReceived,
+)
 from agent_core.llm import ChatOpenAI
 from agent_core.llm.messages import (
     ContentPartImageParam,
@@ -55,7 +60,6 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import BashLexer
 from rich.console import Console
-from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
@@ -108,23 +112,17 @@ class _ExecutionOutcome:
 
 
 @dataclass(slots=True)
-class _ContextWindowStatus:
-    """Cached CLI-facing snapshot of the current context window state."""
+class _CLIContextBudgetSnapshot:
+    """CLI-private snapshot for displaying remaining context budget."""
 
-    model: str = ""
-    context_limit: int = 0
-    warn_threshold: int = 0
-    compact_threshold: int = 0
-    hard_threshold: int = 0
-    estimated_tokens: int = 0
-    context_utilization: float = 0.0
-    status: str = "未知"
-    runtime_state: str = "idle"
-    last_updated_at: str | None = None
-    last_compaction_started_at: str | None = None
-    last_compaction_finished_at: str | None = None
-    last_compaction_original_tokens: int | None = None
-    last_compaction_new_tokens: int | None = None
+    model: str
+    estimated_tokens: int
+    context_limit: int
+    remaining_tokens: int
+    context_utilization: float
+    remaining_ratio: float
+    message_count: int
+    trigger: str | None = None
 
 
 class _CLIHumanApprovalHandler:
@@ -138,6 +136,85 @@ class _CLIHumanApprovalHandler:
         request: HumanApprovalRequest,
     ) -> HumanApprovalDecision:
         return await self._cli._request_human_approval(request)
+
+
+@dataclass
+class _CLIContextBudgetHook(BaseAgentHook):
+    """Emit CLI-private budget snapshots after context-changing runtime events."""
+
+    priority: int = 900
+    on_compaction_status: Callable[[str], None] | None = None
+
+    async def before_event(self, event, ctx):
+        if isinstance(event, ContextMaintenanceRequested):
+            assessment = await ctx.agent._context.assess_budget(
+                model=ctx.agent.llm.model,
+                trigger=None,
+            )
+            if self._will_attempt_compaction(ctx, assessment):
+                self._emit_compaction_status("Compaction start")
+        return None
+
+    async def after_event(self, event, ctx, emitted_events):
+        del emitted_events
+        if isinstance(event, LLMResponseReceived):
+            await self._emit_budget(ctx, "post_llm_response")
+        elif isinstance(event, RuntimeToolResultReceived):
+            await self._emit_budget(ctx, "post_tool_result")
+        elif isinstance(event, ContextMaintenanceRequested):
+            snapshot = await self._emit_budget(ctx, None)
+            if snapshot.trigger == "post_compaction":
+                self._emit_compaction_status("Context compacted")
+        return None
+
+    def _emit_compaction_status(self, message: str) -> None:
+        if self.on_compaction_status is not None:
+            self.on_compaction_status(message)
+
+    @staticmethod
+    def _will_attempt_compaction(ctx, assessment) -> bool:
+        if not getattr(assessment, "needs_compaction", False):
+            return False
+        context = ctx.agent._context
+        compaction_service = getattr(context, "_compaction_service", None)
+        if compaction_service is None:
+            return False
+        if not compaction_service.config.enabled:
+            return False
+        messages = context.get_messages()
+        countable_indices = context._countable_indices_from(
+            messages,
+            start_index=context.summarized_boundary,
+        )
+        keep_indices = context._build_recent_keep_indices(
+            messages,
+            countable_indices,
+            compaction_service.config.preserve_recent_messages,
+            token_budget=context._recent_keep_token_budget(assessment),
+        )
+        return any(index not in keep_indices for index in countable_indices)
+
+    @staticmethod
+    async def _emit_budget(ctx, trigger: str | None) -> _CLIContextBudgetSnapshot:
+        assessment = await ctx.agent._context.assess_budget(
+            model=ctx.agent.llm.model,
+            trigger=trigger,
+        )
+        snapshot = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=assessment.estimated_tokens,
+            context_limit=assessment.context_limit,
+            remaining_tokens=max(
+                0,
+                assessment.context_limit - assessment.estimated_tokens,
+            ),
+            context_utilization=assessment.context_utilization,
+            remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        ctx.emit_ui_event(snapshot)
+        return snapshot
 
 
 # =============================================================================
@@ -194,38 +271,20 @@ class _LoadingIndicator:
 class _SafeLoadingIndicator:
     """A loading indicator that avoids ANSI escapes and non-ASCII glyphs."""
 
-    def __init__(
-        self,
-        message: str = "思考中",
-        detail_provider: Callable[[], str] | None = None,
-    ):
+    def __init__(self, message: str = "思考中"):
         self.message = message
-        self._detail_provider = detail_provider
         self._stop_event = threading.Event()
         self._thread = None
         self._frames = ["-", "\\", "|", "/"]
-        self._last_render_width = 0
-
-    def _build_line(self, frame: int) -> str:
-        """Build the current spinner line."""
-        detail = ""
-        if self._detail_provider is not None:
-            try:
-                detail = self._detail_provider() or ""
-            except Exception:
-                detail = ""
-        return f"{self._frames[frame]} {self.message}...{detail}"
 
     def _show_frame(self, frame: int):
         """Show a single frame."""
-        rendered = self._build_line(frame)
-        self._last_render_width = max(self._last_render_width, len(rendered))
-        sys.stdout.write("\r" + rendered.ljust(self._last_render_width))
+        sys.stdout.write(f"\r{self._frames[frame]} {self.message}...")
         sys.stdout.flush()
 
     def _clear(self):
         """Clear the loading line."""
-        clear_width = self._last_render_width or (len(self.message) + 6)
+        clear_width = len(self.message) + 6
         sys.stdout.write("\r" + (" " * clear_width) + "\r")
         sys.stdout.flush()
 
@@ -365,18 +424,10 @@ class TGAgentCLI:
         self._model_pick_order: list[str] = []
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
-        self._context_window_status = _ContextWindowStatus(model=str(self._agent.llm.model))
-        self._context_window_runtime_resume_state = "idle"
-        self._execution_live: Live | None = None
-        self._execution_live_message = "思考中"
-        self._execution_live_spinner_frame = 0
-        self._execution_live_spinner_task: asyncio.Task[Any] | None = None
-        self._execution_live_budget_task: asyncio.Task[Any] | None = None
         self._ralph_handler: RalphSlashHandler | None = None
         self._approval_handler = _CLIHumanApprovalHandler(self)
         self._agent.human_in_loop_handler = self._approval_handler
         self._agent.human_in_loop_config = HumanInLoopConfig(enabled=False)
-        self._agent._context.set_compaction_state_callback(self._on_compaction_state_change)
         self._agent.register_hook(
             ModelRoutingHook(
                 service=self._model_switch_service,
@@ -384,6 +435,9 @@ class TGAgentCLI:
             )
         )
         self._workspace_instruction_state = WorkspaceInstructionState()
+        self._last_context_budget: _CLIContextBudgetSnapshot | None = None
+        self._last_context_budget_status_line: str | None = None
+        self._context_budget_hook_agents: set[int] = set()
 
         if self._bridge_store is not None:
             self._bridge_store.initialize()
@@ -461,6 +515,100 @@ class TGAgentCLI:
             workspace_dir=self._ctx.working_dir,
             state=self._workspace_instruction_state,
         )
+
+    def _ensure_context_budget_hook(self, agent: Agent) -> None:
+        key = id(agent)
+        if key in self._context_budget_hook_agents:
+            return
+        agent.register_hook(
+            _CLIContextBudgetHook(on_compaction_status=self._print_compaction_status)
+        )
+        self._context_budget_hook_agents.add(key)
+
+    async def _refresh_empty_context_budget_display(self, agent: Agent | None = None) -> None:
+        active_agent = agent or self._agent
+        assessment = await active_agent._context.assess_budget(
+            model=active_agent.llm.model,
+            trigger=None,
+        )
+        self._last_context_budget = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=0,
+            context_limit=assessment.context_limit,
+            remaining_tokens=assessment.context_limit,
+            context_utilization=0.0,
+            remaining_ratio=1.0,
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        self._last_context_budget_status_line = None
+
+    async def _refresh_current_context_budget_display(
+        self,
+        agent: Agent | None = None,
+        *,
+        trigger: str | None = None,
+        print_status: bool = False,
+    ) -> None:
+        active_agent = agent or self._agent
+        assessment = await active_agent._context.assess_budget(
+            model=active_agent.llm.model,
+            trigger=trigger,
+        )
+        snapshot = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=assessment.estimated_tokens,
+            context_limit=assessment.context_limit,
+            remaining_tokens=max(0, assessment.context_limit - assessment.estimated_tokens),
+            context_utilization=assessment.context_utilization,
+            remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        self._last_context_budget = snapshot
+        if print_status:
+            self._print_context_budget_status(snapshot)
+
+    def _context_budget_left_percent(self, snapshot: _CLIContextBudgetSnapshot) -> int:
+        return max(0, min(100, round(snapshot.remaining_ratio * 100)))
+
+    def _format_token_count(self, value: int) -> str:
+        if value == 0:
+            return "0k"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}k"
+        return str(value)
+
+    def _format_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> str:
+        percent = self._context_budget_left_percent(snapshot)
+        used = self._format_token_count(snapshot.estimated_tokens)
+        limit = self._format_token_count(snapshot.context_limit)
+        return f"上下文 {percent}% left · {used}/{limit} tokens · {snapshot.model}"
+
+    def _print_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> None:
+        status_line = self._format_context_budget_status(snapshot)
+        if status_line == self._last_context_budget_status_line:
+            return
+        self._last_context_budget_status_line = status_line
+        self._console.print(Text(status_line, style="grey50"))
+
+    def _print_compaction_status(self, message: str) -> None:
+        had_loading = self._loading is not None
+        if had_loading:
+            self._stop_loading(self._loading)
+            self._loading = None
+        self._console.print(Text(message, style="yellow"))
+        if had_loading:
+            self._loading = self._start_loading("思考中")
+
+    def _render_context_budget_toolbar(self) -> str:
+        if self._last_context_budget is None:
+            status = "上下文 100% left"
+        else:
+            status = self._format_context_budget_status(self._last_context_budget)
+        return html_escape(status)
 
     def _build_project_snapshot(self) -> str:
         """Build a lightweight snapshot of the project for summarization."""
@@ -559,248 +707,6 @@ class TGAgentCLI:
             ]
         )
         return snapshot
-
-    @staticmethod
-    def _now_iso() -> str:
-        return datetime.now().astimezone().isoformat(timespec="seconds")
-
-    @staticmethod
-    def _format_token_count(value: int) -> str:
-        if value >= 1_000_000:
-            return f"{value / 1_000_000:.1f}M"
-        if value >= 1_000:
-            return f"{value / 1_000:.1f}k"
-        return str(value)
-
-    def _build_context_window_status_text(self) -> str:
-        """Build the shared status text for input and execution states."""
-        model = self._context_window_status.model or "(unknown)"
-        if self._context_window_status.context_limit > 0:
-            context_text = (
-                f"{self._format_token_count(self._context_window_status.estimated_tokens)}"
-                f"/{self._format_token_count(self._context_window_status.context_limit)}"
-            )
-            utilization_text = f"{self._context_window_status.context_utilization:.0%}"
-        else:
-            context_text = "unknown"
-            utilization_text = "unknown"
-
-        status_text = self._context_window_status.status or "未知"
-        return (
-            f"模型: {model} | 上下文: {context_text} | "
-            f"占用: {utilization_text} | 状态: {status_text}"
-        )
-
-    def _build_execution_status_suffix(self) -> str:
-        """Build the execution-time suffix rendered alongside the spinner."""
-        return f" | {self._build_context_window_status_text()}"
-
-    def _set_execution_live_message(self, message: str) -> None:
-        """Update the current activity label shown in the live footer."""
-        self._execution_live_message = message
-        self._refresh_execution_live()
-
-    def _build_execution_live_renderable(self) -> Panel:
-        """Build the renderable used by the execution live region."""
-        frames = ["-", "\\", "|", "/"]
-        spinner = frames[self._execution_live_spinner_frame % len(frames)]
-
-        footer = Text()
-        footer.append(f"{spinner} {self._execution_live_message}", style="cyan")
-        footer.append("\n")
-        footer.append(self._build_context_window_status_text(), style="white")
-        footer.append("\n")
-        footer.append("按 q 可取消本次运行", style="dim")
-
-        return Panel(footer, title="运行状态", border_style="dim", height=5)
-
-    def _refresh_execution_live(self) -> None:
-        """Refresh the execution live renderable if it is active."""
-        if self._execution_live is None:
-            return
-        self._execution_live.update(self._build_execution_live_renderable(), refresh=True)
-
-    async def _run_execution_live_spinner(self) -> None:
-        """Advance the live spinner while a run is active."""
-        try:
-            while self._execution_live is not None:
-                self._execution_live_spinner_frame = (self._execution_live_spinner_frame + 1) % 4
-                self._refresh_execution_live()
-                await asyncio.sleep(0.08)
-        except asyncio.CancelledError:
-            raise
-
-    async def _run_execution_live_budget_refresh(self) -> None:
-        """Refresh context-window usage while a run is still active."""
-        try:
-            while self._execution_live is not None:
-                await asyncio.sleep(0.75)
-                if self._execution_live is None:
-                    return
-                await self._refresh_context_window_status(trigger="cli_live_tick")
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            return
-
-    def _resume_execution_live(self) -> None:
-        """Resume the fixed execution live area without discarding buffered content."""
-        self._execution_live = Live(
-            self._build_execution_live_renderable(),
-            console=self._console,
-            auto_refresh=False,
-            transient=True,
-            vertical_overflow="crop",
-        )
-        self._execution_live.start()
-        self._refresh_execution_live()
-        self._execution_live_spinner_task = asyncio.create_task(self._run_execution_live_spinner())
-        self._execution_live_budget_task = asyncio.create_task(self._run_execution_live_budget_refresh())
-
-    def _start_execution_live(self, message: str) -> None:
-        """Start the fixed execution live area for one agent run."""
-        self._execution_live_message = message
-        self._execution_live_spinner_frame = 0
-        self._resume_execution_live()
-
-    async def _stop_execution_live(self) -> None:
-        """Stop the fixed execution live area."""
-        spinner_task = self._execution_live_spinner_task
-        self._execution_live_spinner_task = None
-        if spinner_task is not None:
-            spinner_task.cancel()
-            try:
-                await spinner_task
-            except asyncio.CancelledError:
-                pass
-
-        budget_task = self._execution_live_budget_task
-        self._execution_live_budget_task = None
-        if budget_task is not None:
-            budget_task.cancel()
-            try:
-                await budget_task
-            except asyncio.CancelledError:
-                pass
-
-        live = self._execution_live
-        if live is None:
-            return
-
-        self._refresh_execution_live()
-        live.stop()
-        self._execution_live = None
-
-    def _resolve_context_window_status_label(self) -> str:
-        runtime_state = self._context_window_status.runtime_state
-        if runtime_state == "compacting":
-            return "压缩中"
-
-        if self._context_window_status.context_limit <= 0:
-            return "未知"
-
-        estimated_tokens = self._context_window_status.estimated_tokens
-        if estimated_tokens >= self._context_window_status.compact_threshold > 0:
-            return "待压缩"
-        if estimated_tokens >= self._context_window_status.warn_threshold > 0:
-            return "接近压缩"
-        return "正常"
-
-    def _persist_context_window_status(self) -> None:
-        if self._session_runtime is None:
-            return
-
-        payload = {
-            "session_id": self._session_runtime.session_id,
-            "model": self._context_window_status.model,
-            "context_limit": self._context_window_status.context_limit,
-            "warn_threshold": self._context_window_status.warn_threshold,
-            "compact_threshold": self._context_window_status.compact_threshold,
-            "hard_threshold": self._context_window_status.hard_threshold,
-            "estimated_tokens": self._context_window_status.estimated_tokens,
-            "context_utilization": self._context_window_status.context_utilization,
-            "status": self._context_window_status.status,
-            "runtime_state": self._context_window_status.runtime_state,
-            "last_updated_at": self._context_window_status.last_updated_at,
-            "last_compaction_started_at": self._context_window_status.last_compaction_started_at,
-            "last_compaction_finished_at": self._context_window_status.last_compaction_finished_at,
-            "last_compaction_original_tokens": self._context_window_status.last_compaction_original_tokens,
-            "last_compaction_new_tokens": self._context_window_status.last_compaction_new_tokens,
-        }
-        self._session_runtime.context_window_status_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-    def _set_context_window_runtime_state(
-        self,
-        runtime_state: str,
-        *,
-        status: str | None = None,
-    ) -> None:
-        self._context_window_status.runtime_state = runtime_state
-        self._context_window_status.status = status or self._resolve_context_window_status_label()
-        self._context_window_status.last_updated_at = self._now_iso()
-        self._persist_context_window_status()
-        self._refresh_execution_live()
-
-    async def _refresh_context_window_status(self, *, trigger: str | None = None) -> None:
-        model = str(self._agent.llm.model)
-        self._context_window_status.model = model
-        self._context_window_status.last_updated_at = self._now_iso()
-
-        try:
-            assessment = await self._agent._context.assess_budget(model=model, trigger=trigger)
-        except Exception:
-            self._context_window_status.context_limit = 0
-            self._context_window_status.warn_threshold = 0
-            self._context_window_status.compact_threshold = 0
-            self._context_window_status.hard_threshold = 0
-            self._context_window_status.estimated_tokens = 0
-            self._context_window_status.context_utilization = 0.0
-            self._context_window_status.status = "未知"
-            self._persist_context_window_status()
-            self._refresh_execution_live()
-            return
-
-        self._context_window_status.context_limit = int(assessment.context_limit)
-        self._context_window_status.warn_threshold = int(assessment.warn_threshold)
-        self._context_window_status.compact_threshold = int(assessment.compact_threshold)
-        self._context_window_status.hard_threshold = int(assessment.hard_threshold)
-        self._context_window_status.estimated_tokens = int(assessment.estimated_tokens)
-        self._context_window_status.context_utilization = float(assessment.context_utilization)
-        self._context_window_status.status = self._resolve_context_window_status_label()
-        self._persist_context_window_status()
-        self._refresh_execution_live()
-
-    def _build_context_window_toolbar(self) -> HTML:
-        toolbar_text = f" {self._build_context_window_status_text()} "
-        return HTML(f"<style bg='#1f2937' fg='#d1d5db'>{escape(toolbar_text)}</style>")
-
-    def _on_compaction_state_change(self, state: str, result: Any | None) -> None:
-        if state == "start":
-            self._context_window_runtime_resume_state = self._context_window_status.runtime_state
-            self._context_window_status.last_compaction_started_at = self._now_iso()
-            self._set_context_window_runtime_state("compacting", status="压缩中")
-            self._set_execution_live_message("压缩中")
-            self._console.print("[dim]上下文压缩中...[/dim]")
-            return
-
-        if state == "finish" and result is not None:
-            self._context_window_status.last_compaction_finished_at = self._now_iso()
-            self._context_window_status.last_compaction_original_tokens = getattr(
-                result, "original_tokens", None
-            )
-            self._context_window_status.last_compaction_new_tokens = getattr(
-                result, "new_tokens", None
-            )
-
-        if state in {"finish", "error"}:
-            resume_state = self._context_window_runtime_resume_state or "idle"
-            self._set_context_window_runtime_state(resume_state)
-            if self._execution_live is not None:
-                self._set_execution_live_message("思考中" if resume_state != "idle" else "已完成")
-            self._context_window_runtime_resume_state = "idle"
 
     def _print_current_model(self):
         """Print the current model configuration."""
@@ -920,7 +826,10 @@ class TGAgentCLI:
             auto_state=self._model_auto_state,
         )
         if switched:
-            await self._refresh_context_window_status(trigger="model_switch")
+            await self._refresh_current_context_budget_display(
+                trigger="model_switch",
+                print_status=True,
+            )
         return switched
 
     def _store_command_final_content(self, content: str | None) -> None:
@@ -966,10 +875,7 @@ class TGAgentCLI:
 
     def _start_loading(self, message: str = "思考中") -> _SafeLoadingIndicator:
         """Start a loading animation."""
-        loading = _SafeLoadingIndicator(
-            message,
-            detail_provider=self._build_execution_status_suffix,
-        )
+        loading = _SafeLoadingIndicator(message)
         loading.start()
         time.sleep(0.02)
         return loading
@@ -1102,6 +1008,7 @@ class TGAgentCLI:
         # Handle reset command
         if command_name == "reset":
             self._agent.clear_history()
+            await self._refresh_empty_context_budget_display()
             self._console.print("[yellow]会话上下文已重置。[/yellow]")
             return True
 
@@ -1367,17 +1274,18 @@ class TGAgentCLI:
         self._console.print()
         final_response: str | None = None
         active_agent = agent or self._agent
-        streamed_text_fragments: list[str] = []
+        self._ensure_context_budget_hook(active_agent)
 
         # Keep workspace instructions synchronized for the main CLI agent.
         # Dedicated helper agents like /init manage their own injection timing.
         if active_agent is self._agent:
             self._maybe_inject_agents_md()
-            self._set_context_window_runtime_state("generating")
-            await self._refresh_context_window_status(trigger="cli_run_start")
 
-        # Start the fixed live region for this run.
-        self._start_execution_live("思考中")
+        # Start loading animation
+        self._loading = self._start_loading("思考中")
+
+        # Show cancel hint
+        self._console.print("[dim]按 q 可取消本次运行[/dim]")
 
         # Create cancellation event for 'q' key
         import asyncio
@@ -1445,59 +1353,78 @@ class TGAgentCLI:
                 # Cancellation is now handled inside query_stream for immediate response
                 # This check is for final confirmation
                 if cancel_event.is_set():
+                    self._console.print()
                     self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     break
 
+                if isinstance(event, _CLIContextBudgetSnapshot):
+                    self._last_context_budget = event
+                    self._print_context_budget_status(event)
+                    continue
+
                 if isinstance(event, ToolCallEvent):
-                    self._set_execution_live_message("执行工具中")
+                    self._stop_loading(self._loading)
+                    self._loading = None
+
                     self._step_number += 1
                     args_str = str(event.args)[:100]
                     if len(str(event.args)) > 100:
                         args_str += "..."
+                    self._console.print()
                     self._console.print(
-                        Text.assemble(
-                            (f"步骤 {self._step_number}：", self.COLOR_TOOL_CALL),
-                            (event.tool, "bold"),
-                        )
+                        f"[{self.COLOR_TOOL_CALL}]步骤 {self._step_number}：[/] "
+                        f"[bold]{event.tool}[/]"
                     )
-                    self._console.print(Text(f"参数：{args_str}", style="dim"))
-                    if active_agent is self._agent:
-                        await self._refresh_context_window_status(trigger="cli_tool_call")
+                    self._console.print(f"  [dim]参数：{args_str}[/]")
+                    self._console.print("  [dim]（按 q 可取消）[/dim]")
+
+                    # Start loading while the tool runs.
+                    self._loading = self._start_loading("执行中")
 
                 elif isinstance(event, ToolResultEvent):
-                    self._set_execution_live_message("思考中")
+                    self._stop_loading(self._loading)
+                    self._loading = None
+
                     result = str(event.result)
                     if event.is_error:
-                        self._console.print(Text(f"错误：{result[:200]}", style=self.COLOR_ERROR))
+                        self._console.print(f"  [{self.COLOR_ERROR}]错误：{result[:200]}[/]")
                     else:
                         if len(result) > 300:
                             self._console.print(
-                                Text(f"结果：{result[:300]}...", style=self.COLOR_TOOL_RESULT)
+                                f"  [{self.COLOR_TOOL_RESULT}]结果：{result[:300]}...[/]"
                             )
                         else:
-                            self._console.print(Text(f"结果：{result}", style=self.COLOR_TOOL_RESULT))
-                    if active_agent is self._agent:
-                        await self._refresh_context_window_status(trigger="cli_tool_result")
+                            self._console.print(f"  [{self.COLOR_TOOL_RESULT}]结果：{result}[/]")
+
+                    # Restart loading for the next LLM call.
+                    self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
-                    self._set_execution_live_message("思考中")
-                    self._console.print(Text(f"思考：{event.content}", style=self.COLOR_THINKING))
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, TextEvent):
-                    self._set_execution_live_message("输出中")
-                    streamed_text_fragments.append(event.content)
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
-                    self._set_execution_live_message("已完成")
+                    self._stop_loading(self._loading)
+                    self._loading = None
                     final_response = event.content
+                    # Check if this was a cancellation
                     if event.content == "[Cancelled by user]":
+                        self._console.print()
                         self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
-                    if active_agent is self._agent:
-                        await self._refresh_context_window_status(trigger="cli_final_response")
+                    else:
+                        self._console.print()
+                        self._console.print()
 
         except Exception as e:
-            self._set_execution_live_message("运行出错")
-            self._console.print(Text(f"错误：{e}", style=self.COLOR_ERROR))
+            self._stop_loading(self._loading)
+            self._loading = None
+            self._console.print(f"[{self.COLOR_ERROR}]错误：{e}[/]")
         finally:
             # Cancel the listener task
             cancel_event.set()
@@ -1507,18 +1434,10 @@ class TGAgentCLI:
             except (asyncio.CancelledError, Exception):
                 pass
 
-        await self._stop_execution_live()
-        if active_agent is self._agent:
-            self._set_context_window_runtime_state("idle")
-            await self._refresh_context_window_status(trigger="cli_run_end")
-
-        streamed_text = "".join(streamed_text_fragments)
-        if final_response and final_response != "[Cancelled by user]":
-            self._console.print(final_response)
-        elif streamed_text:
-            self._console.print(streamed_text)
-        else:
-            self._console.print()
+        # Ensure loading is stopped
+        self._stop_loading(self._loading)
+        self._loading = None
+        self._console.print()
         return final_response
 
     async def _on_task_completed(self, result: Any):
@@ -1605,8 +1524,6 @@ class TGAgentCLI:
         if self._session_runtime is not None:
             self._session_runtime.touch()
 
-        await self._refresh_context_window_status(trigger="cli_pre_input")
-
         # Handle numbered model picker mode
         if self._model_pick_active:
             if await self._handle_model_pick_input(user_input):
@@ -1638,7 +1555,6 @@ class TGAgentCLI:
             try:
                 handled, final_content = await self._run_slash_command_with_live_capture(user_input)
                 if handled:
-                    await self._refresh_context_window_status(trigger="slash_command")
                     return _ExecutionOutcome(final_content=final_content)
             except EOFError:
                 return _ExecutionOutcome(continue_running=False, final_content="再见！")
@@ -1763,7 +1679,7 @@ class TGAgentCLI:
 
         # Print welcome
         self._print_welcome()
-        await self._refresh_context_window_status(trigger="cli_startup")
+        await self._refresh_empty_context_budget_display()
 
         if self._bridge_store is not None:
             should_continue = await self._drain_bridge_queue()
@@ -1821,19 +1737,21 @@ class TGAgentCLI:
                 "completion-menu.meta.completion": "bg:#00aaaa #000000",
                 "completion-menu.meta.current": "bg:#00ffff #000000",
                 "completion-menu": "bg:#008888 #ffffff",
+                "bottom-toolbar": "noreverse bg:default #777777",
+                "bottom-toolbar.text": "noreverse bg:default #777777",
             }
         )
 
         # Create prompt session with completer
         session = PromptSession(
             message=lambda: HTML("<ansiblue>>> </ansiblue>"),
-            bottom_toolbar=self._build_context_window_toolbar,
             key_bindings=kb,
             completer=threaded_completer,
             complete_while_typing=True,
             auto_suggest=AutoSuggestFromHistory(),
             style=style,
             enable_history_search=True,
+            bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
         )
 
         if self._bridge_store is not None:
@@ -1909,7 +1827,7 @@ class TGAgentCLI:
   [blue]read <file>[/blue]   - 读取文件内容
   [blue]write <file>[/blue]  - 写入文件内容
   [blue]edit <file>[/blue]   - 编辑文件（替换文本）
-  [blue]glob <pattern>[/blue]- 按模式查找文件
+  [blue]glob <pattern>[/blue]- 按模式查找文件或目录
   [blue]grep <pattern>[/blue] - 搜索文件内容
   [blue]todos[/blue]         - 管理待办事项
 
@@ -1930,9 +1848,8 @@ class TGAgentCLI:
         self,
         request: HumanApprovalRequest,
     ) -> HumanApprovalDecision:
-        had_live = self._execution_live is not None
-        if had_live:
-            await self._stop_execution_live()
+        self._stop_loading(self._loading)
+        self._loading = None
 
         args_preview = json.dumps(request.arguments, ensure_ascii=False, default=str)
         if len(args_preview) > 240:
@@ -1963,15 +1880,11 @@ class TGAgentCLI:
         if approved:
             self._console.print("[green]已批准。[/green]")
             self._console.print()
-            if had_live:
-                self._resume_execution_live()
             return HumanApprovalDecision(approved=True)
 
         reason = await self._prompter.prompt_text("拒绝原因", optional=True)
         self._console.print("[yellow]已拒绝。[/yellow]")
         self._console.print()
-        if had_live:
-            self._resume_execution_live()
         return HumanApprovalDecision(approved=False, reason=reason or None)
 
     def _print_slash_help(self):

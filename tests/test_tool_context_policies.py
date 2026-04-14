@@ -125,8 +125,8 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     assert tool_message.text != raw_result
     assert "Bash command: pytest" in tool_message.text
     assert "Exit code: 1" in tool_message.text
-    assert "context-trimmed summary of the bash result" in tool_message.text
-    assert "Do not rerun the same command only to see more output in context." in tool_message.text
+    assert "context-limited summary of the bash result" in tool_message.text
+    assert "Do not repeat the same bash call with identical arguments" in tool_message.text
     assert "Stdout: 90 lines" in tool_message.text
     assert "Stderr: 80 lines" in tool_message.text
     assert "stdout line 0001" in tool_message.text
@@ -134,6 +134,7 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     assert "stderr line 0001" in tool_message.text
     assert "stderr line 0080" in tool_message.text
     assert "Artifact file:" in tool_message.text
+    assert "This artifact contains the full raw tool result." in tool_message.text
 
     artifact_path = runtime.artifacts_dir / "tool" / "call-bash-large.artifact.txt"
     header, body = _read_artifact_parts(artifact_path)
@@ -183,10 +184,11 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     assert len(raw_result) > read.context_config.max_inline_chars
     assert tool_message.text != raw_result
     assert "Read result: [Lines 1-180 of 180]" in tool_message.text
-    assert "This is a context-trimmed preview" in tool_message.text
-    assert "Repeating the same read with identical file_path, offset_line, and n_lines will not reveal more content in context." in tool_message.text
+    assert "This is a context-limited preview of the requested file slice" in tool_message.text
+    assert "Do not repeat the same read call with identical file_path" in tool_message.text
     assert "Context preview:" in tool_message.text
     assert "Artifact file:" in tool_message.text
+    assert "Example: read(file_path=" in tool_message.text
 
     artifact_path = runtime.artifacts_dir / "tool" / "call-read-large.artifact.txt"
     header, body = _read_artifact_parts(artifact_path)
@@ -313,6 +315,7 @@ async def test_read_excel_context_policy_summarizes_large_match_payload(
     assert "Matches returned: 200" in tool_message.text
     assert "Sheet summary: Sheet1 rows=1955, cols=42" in tool_message.text
     assert "Top matches:" in tool_message.text
+    assert "This is a context-limited summary of the workbook result" in tool_message.text
     assert "Artifact file:" in tool_message.text
 
     artifact_path = runtime.artifacts_dir / "tool" / "call-excel.artifact.txt"
