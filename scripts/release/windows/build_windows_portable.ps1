@@ -557,6 +557,8 @@ Workspace behavior:
 Notes:
 - deploy.bat creates %USERPROFILE%\.tg_agent\.venv using the bundled Python runtime.
 - tg-agent and dependencies are installed offline from wheelhouse\.
+- deploy.bat also installs a `tg-agent` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
+- If `tg-agent` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
 "@
     Set-Content -LiteralPath $OutputPath -Value $content -Encoding ASCII
@@ -588,10 +590,167 @@ $VenvDir = Join-Path $InstallRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "tg-agent-entry.py"
+$CommandShim = Join-Path $BinDir "tg-agent.cmd"
 $EnvFile = Join-Path $InstallRoot ".env"
 $WorkerConfig = Join-Path $InstallRoot "tg_crab_worker.json"
 $PackagedEnvFile = Join-Path $AppDir ".env"
 $PackagedWorkerConfig = Join-Path $AppDir "tg_crab_worker.json"
+
+function Add-UserPathEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Entry
+    )
+
+    $normalizedEntry = $Entry.Trim().TrimEnd('\')
+    if (-not $normalizedEntry) {
+        return $false
+    }
+
+    $currentUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $existingEntries = @()
+    if ($currentUserPath) {
+        $existingEntries = @(
+            $currentUserPath -split ';' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ }
+        )
+    }
+
+    $alreadyPresent = $existingEntries |
+        Where-Object { $_.TrimEnd('\') -ieq $normalizedEntry } |
+        Select-Object -First 1
+
+    if (-not $alreadyPresent) {
+        $newUserPath = if ($currentUserPath) {
+            "$currentUserPath;$normalizedEntry"
+        }
+        else {
+            $normalizedEntry
+        }
+
+        [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+    }
+
+    $sessionEntries = @()
+    if ($env:PATH) {
+        $sessionEntries = @(
+            $env:PATH -split ';' |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ }
+        )
+    }
+
+    $sessionHasEntry = $sessionEntries |
+        Where-Object { $_.TrimEnd('\') -ieq $normalizedEntry } |
+        Select-Object -First 1
+
+    if (-not $sessionHasEntry) {
+        $env:PATH = if ($env:PATH) {
+            "$normalizedEntry;$env:PATH"
+        }
+        else {
+            $normalizedEntry
+        }
+    }
+
+    return (-not $alreadyPresent)
+}
+
+function Notify-EnvironmentChange {
+    try {
+        Add-Type -Namespace TgAgentPortable -Name NativeMethods -MemberDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class NativeMethods
+{
+    [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd,
+        uint Msg,
+        UIntPtr wParam,
+        string lParam,
+        uint fuFlags,
+        uint uTimeout,
+        out UIntPtr lpdwResult);
+}
+"@ -ErrorAction SilentlyContinue | Out-Null
+
+        $HWND_BROADCAST = [IntPtr]0xffff
+        $WM_SETTINGCHANGE = 0x001A
+        $SMTO_ABORTIFHUNG = 0x0002
+        $result = [UIntPtr]::Zero
+
+        [TgAgentPortable.NativeMethods]::SendMessageTimeout(
+            $HWND_BROADCAST,
+            $WM_SETTINGCHANGE,
+            [UIntPtr]::Zero,
+            "Environment",
+            $SMTO_ABORTIFHUNG,
+            5000,
+            [ref]$result
+        ) | Out-Null
+    }
+    catch {
+    }
+}
+
+function Get-CommandCandidates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$CommandName
+    )
+
+    $candidates = @()
+
+    try {
+        $matches = & where.exe $CommandName 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return @()
+        }
+
+        foreach ($match in $matches) {
+            $trimmed = $match.Trim()
+            if (-not $trimmed) {
+                continue
+            }
+            if ($trimmed.StartsWith("INFO:", [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            $resolved = [System.IO.Path]::GetFullPath($trimmed)
+            if (-not ($candidates | Where-Object { $_ -ieq $resolved } | Select-Object -First 1)) {
+                $candidates += $resolved
+            }
+        }
+    }
+    catch {
+    }
+
+    return $candidates
+}
+
+function Get-PipUninstallHint {
+    param(
+        [string]$CommandPath
+    )
+
+    if (-not $CommandPath) {
+        return ""
+    }
+
+    $commandDir = Split-Path -Parent $CommandPath
+    if ((Split-Path -Leaf $commandDir) -ieq "Scripts") {
+        $pythonRoot = Split-Path -Parent $commandDir
+        $pythonExe = Join-Path $pythonRoot "python.exe"
+        if (Test-Path -LiteralPath $pythonExe) {
+            return "$pythonExe -m pip uninstall tg-agent-cli"
+        }
+    }
+
+    return ""
+}
 
 if (-not (Test-Path -LiteralPath $RuntimePython)) {
     throw "Bundled Python runtime not found: $RuntimePython"
@@ -639,6 +798,29 @@ $entryShimContent = @(
 ) -join "`r`n"
 Set-Content -LiteralPath $EntryShim -Value $entryShimContent -Encoding UTF8
 
+$commandShimContent = @(
+    '@echo off',
+    'setlocal',
+    'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
+    'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
+    'set "ENTRY_SHIM=%INSTALL_ROOT%\bin\tg-agent-entry.py"',
+    '',
+    'if not exist "%VENV_PYTHON%" (',
+    '    echo tg-agent is not installed.',
+    '    echo Run deploy.bat from the portable bundle first.',
+    '    exit /b 1',
+    ')',
+    'if not exist "%ENTRY_SHIM%" (',
+    '    echo tg-agent entry shim is missing.',
+    '    echo Run deploy.bat from the portable bundle first.',
+    '    exit /b 1',
+    ')',
+    '',
+    '"%VENV_PYTHON%" -u "%ENTRY_SHIM%" %*',
+    'exit /b %ERRORLEVEL%'
+) -join "`r`n"
+Set-Content -LiteralPath $CommandShim -Value $commandShimContent -Encoding ASCII
+
 if ((Test-Path -LiteralPath $PackagedEnvFile) -and -not (Test-Path -LiteralPath $EnvFile)) {
     Copy-Item -LiteralPath $PackagedEnvFile -Destination $EnvFile -Force
 }
@@ -649,6 +831,14 @@ if ((Test-Path -LiteralPath $PackagedWorkerConfig) -and -not (Test-Path -Literal
 if (-not (Test-Path -LiteralPath $LauncherPath)) {
     throw "Launcher missing: $LauncherPath"
 }
+
+$existingTgAgentCommands = @(
+    Get-CommandCandidates -CommandName "tg-agent" |
+        Where-Object { $_ -ine $CommandShim }
+)
+
+$pathUpdated = Add-UserPathEntry -Entry $BinDir
+Notify-EnvironmentChange
 
 if (-not $SkipDesktopShortcut) {
     $desktopDir = Join-Path $UserProfileDir "Desktop"
@@ -665,7 +855,31 @@ if (-not $SkipDesktopShortcut) {
 
 Write-Host "[portable] install root: $InstallRoot"
 Write-Host "[portable] venv ready: $VenvDir"
+Write-Host "[portable] command shim: $CommandShim"
+if ($pathUpdated) {
+    Write-Host "[portable] added to user PATH: $BinDir"
+}
+else {
+    Write-Host "[portable] user PATH already contains: $BinDir"
+}
 Write-Host "[portable] launcher: $LauncherPath"
+Write-Host "[portable] open a new cmd window from Explorer and run: tg-agent"
+Write-Host "[portable] if tg-agent is still not found, sign out and sign back in once."
+if ($existingTgAgentCommands.Count -gt 0) {
+    $conflictingCommand = $existingTgAgentCommands[0]
+    Write-Warning "Detected another tg-agent command on this machine: $conflictingCommand"
+    Write-Warning "The portable install does not overwrite older pip-based tg-agent commands."
+
+    $pipUninstallHint = Get-PipUninstallHint -CommandPath $conflictingCommand
+    if ($pipUninstallHint) {
+        Write-Warning "To avoid command conflicts, uninstall the older copy with: $pipUninstallHint"
+    }
+    else {
+        Write-Warning "To avoid command conflicts, uninstall the older tg-agent copy before using the PATH-based command."
+    }
+
+    Write-Warning "You can always launch the portable install directly with: $CommandShim"
+}
 Write-Host "[portable] start the launcher from your workspace directory."
 '@
 
