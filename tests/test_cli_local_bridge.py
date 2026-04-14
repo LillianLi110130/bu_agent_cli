@@ -89,7 +89,7 @@ async def test_init_command_uses_dedicated_agent_and_injects_immediately(
     workspace_root,
     monkeypatch,
 ):
-    monkeypatch.setenv("TG_AGENT_HOME", str(workspace_root / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(workspace_root))
     cli, _store = _create_cli(workspace_root, monkeypatch)
     init_agent = SimpleNamespace(name="init-agent", bind_session_runtime=lambda runtime: None)
 

@@ -7,6 +7,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+_TG_AGENT_HOME_DIRNAME = ".tg_agent"
+
 
 def is_frozen_app() -> bool:
     """Return whether the current process runs from a frozen executable."""
@@ -23,16 +25,16 @@ def application_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
-def tg_agent_home() -> Path:
-    """Return the user-level state and configuration directory."""
-    configured = os.getenv("TG_AGENT_HOME")
-    if configured:
-        return Path(configured).expanduser().resolve()
-
+def _user_home_dir() -> Path:
     home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
     if home:
-        return (Path(home).expanduser() / ".tg_agent").resolve()
-    return Path("~/.tg_agent").expanduser().resolve()
+        return Path(home).expanduser().resolve()
+    return Path("~").expanduser().resolve()
+
+
+def tg_agent_home() -> Path:
+    """Return the fixed user-level state and configuration directory."""
+    return _user_home_dir() / _TG_AGENT_HOME_DIRNAME
 
 
 def packaged_env_path() -> Path:
@@ -40,8 +42,7 @@ def packaged_env_path() -> Path:
     return application_root() / ".env"
 
 
-def _load_packaged_env_values() -> dict[str, str]:
-    env_path = packaged_env_path()
+def _read_env_values(env_path: Path) -> dict[str, str]:
     if not env_path.exists():
         return {}
 
@@ -79,37 +80,44 @@ def default_runtime_env_values() -> dict[str, str]:
         "LLM_MODEL": "GLM-4.7",
         "LLM_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
     }
-    values.update(_load_packaged_env_values())
+    values.update(_read_env_values(packaged_env_path()))
     for env_name in _load_model_preset_api_key_env_names():
         values.setdefault(env_name, "")
     return values
 
 
-def default_runtime_env_content() -> str:
-    """Return the default CLI runtime env template."""
+def _merge_runtime_env_values(existing_values: dict[str, str] | None = None) -> dict[str, str]:
+    merged_values = default_runtime_env_values()
+    for key, value in (existing_values or {}).items():
+        merged_values[key] = value
+    return merged_values
+
+
+def _render_runtime_env_content(values: dict[str, str]) -> str:
     lines = [
         "# tg-agent runtime configuration",
         "# Refreshed automatically from packaged defaults on CLI launch.",
+        "# Existing user-defined values are preserved when possible.",
         "# Values from the packaged .env are merged here when available.",
-        "# Local edits in this file may be replaced on the next CLI launch.",
     ]
-    for key, value in default_runtime_env_values().items():
+    for key, value in values.items():
         lines.append(f"{key}={value}")
     lines.append("")
     return "\n".join(lines)
 
 
 def ensure_cli_runtime_state() -> Path:
-    """Create default CLI runtime files under ~/.tg_agent and refresh packaged defaults."""
+    """Create default CLI runtime files under ~/.tg_agent without clobbering user values."""
     home_dir = tg_agent_home()
     home_dir.mkdir(parents=True, exist_ok=True)
 
     env_path = home_dir / ".env"
-    env_path.write_text(default_runtime_env_content(), encoding="utf-8")
+    merged_env_values = _merge_runtime_env_values(_read_env_values(env_path))
+    env_path.write_text(_render_runtime_env_content(merged_env_values), encoding="utf-8")
 
     packaged_worker_config = application_root() / "tg_crab_worker.json"
     user_worker_config = home_dir / "tg_crab_worker.json"
-    if packaged_worker_config.exists():
+    if packaged_worker_config.exists() and not user_worker_config.exists():
         shutil.copyfile(packaged_worker_config, user_worker_config)
 
     return home_dir
@@ -117,10 +125,11 @@ def ensure_cli_runtime_state() -> Path:
 
 def runtime_env_files(cwd: Path | None = None) -> list[Path]:
     """Return env files ordered from lowest to highest precedence."""
+    resolved_cwd = (cwd or Path.cwd()).resolve()
     candidate_paths = [
         packaged_env_path(),
         tg_agent_home() / ".env",
-        (cwd or Path.cwd()).resolve() / ".env",
+        resolved_cwd / ".env",
     ]
     unique_paths: list[Path] = []
     seen: set[Path] = set()
@@ -136,10 +145,8 @@ def load_runtime_env(cwd: Path | None = None) -> None:
     """Load runtime env files without overriding shell-provided variables."""
     merged_values: dict[str, str] = {}
     for env_path in runtime_env_files(cwd=cwd):
-        values = dotenv_values(env_path)
-        for key, value in values.items():
-            if key and value is not None:
-                merged_values[key] = value
+        for key, value in _read_env_values(env_path).items():
+            merged_values[key] = value
 
     for key, value in merged_values.items():
         os.environ.setdefault(key, value)

@@ -132,7 +132,6 @@ def test_ensure_cli_runtime_state_creates_default_home_files(
     )
 
     monkeypatch.setenv("HOME", str(home_dir))
-    monkeypatch.delenv("TG_AGENT_HOME", raising=False)
     monkeypatch.setattr("agent_core.runtime_paths.application_root", lambda: package_root)
     monkeypatch.setattr(
         "agent_core.runtime_paths._load_model_preset_api_key_env_names",
@@ -155,7 +154,7 @@ def test_ensure_cli_runtime_state_creates_default_home_files(
     assert '"enable_auth": false' in worker_config.read_text(encoding="utf-8")
 
 
-def test_ensure_cli_runtime_state_overwrites_existing_user_env_with_packaged_defaults(
+def test_ensure_cli_runtime_state_preserves_existing_user_env_and_merges_packaged_defaults(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -175,7 +174,6 @@ def test_ensure_cli_runtime_state_overwrites_existing_user_env_with_packaged_def
     )
 
     monkeypatch.setenv("HOME", str(home_dir))
-    monkeypatch.delenv("TG_AGENT_HOME", raising=False)
     monkeypatch.setattr("agent_core.runtime_paths.application_root", lambda: package_root)
     monkeypatch.setattr(
         "agent_core.runtime_paths._load_model_preset_api_key_env_names",
@@ -185,8 +183,35 @@ def test_ensure_cli_runtime_state_overwrites_existing_user_env_with_packaged_def
     ensure_cli_runtime_state()
 
     env_text = user_env.read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY=" in env_text
-    assert "OPENAI_API_KEY=user-key" not in env_text
-    assert "CUSTOM_MODEL_KEY=packaged-secret" in env_text
-    assert "CUSTOM_MODEL_KEY=user-secret" not in env_text
+    assert "OPENAI_API_KEY=user-key" in env_text
+    assert "CUSTOM_MODEL_KEY=user-secret" in env_text
     assert "ANOTHER_MODEL_KEY=from-package" in env_text
+
+
+def test_ensure_cli_runtime_state_preserves_existing_worker_config(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home_dir = tmp_path / "home"
+    package_root = tmp_path / "package"
+    package_root.mkdir()
+    (package_root / "tg_crab_worker.json").write_text(
+        '{"enable_auth": false, "gateway_base_url": "http://127.0.0.1:8765"}\n',
+        encoding="utf-8",
+    )
+
+    user_worker_config = home_dir / ".tg_agent" / "tg_crab_worker.json"
+    user_worker_config.parent.mkdir(parents=True, exist_ok=True)
+    user_worker_config.write_text(
+        '{"enable_auth": true, "gateway_base_url": "http://127.0.0.1:9988"}\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setattr("agent_core.runtime_paths.application_root", lambda: package_root)
+
+    ensure_cli_runtime_state()
+
+    assert user_worker_config.read_text(encoding="utf-8").strip() == (
+        '{"enable_auth": true, "gateway_base_url": "http://127.0.0.1:9988"}'
+    )

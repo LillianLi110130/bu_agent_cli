@@ -74,7 +74,7 @@ async def test_cli_run_wires_bottom_toolbar_and_persists_context_window_snapshot
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -124,7 +124,7 @@ async def test_compaction_callback_updates_status_snapshot_and_console(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -166,7 +166,7 @@ def test_execution_live_renderable_contains_fixed_status_footer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -200,7 +200,7 @@ async def test_run_agent_renders_execution_state_through_live(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -266,7 +266,7 @@ async def test_run_agent_prints_final_response_when_text_events_are_partial(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -323,7 +323,7 @@ async def test_run_agent_prints_final_suffix_after_streamed_prefix(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -379,7 +379,7 @@ async def test_run_agent_refreshes_context_window_status_during_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -445,7 +445,7 @@ async def test_run_agent_prints_tool_steps_to_console_while_live_handles_preview
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"

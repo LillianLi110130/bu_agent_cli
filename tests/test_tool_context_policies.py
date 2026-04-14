@@ -34,7 +34,7 @@ async def test_bash_context_policy_keeps_small_output_inline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     async def fake_run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
         del command, cwd, timeout
@@ -84,7 +84,7 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     async def fake_run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
         del command, cwd, timeout
@@ -151,7 +151,7 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -200,7 +200,7 @@ async def test_read_context_policy_keeps_small_output_inline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -235,7 +235,7 @@ async def test_read_excel_context_policy_summarizes_large_match_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     @tool(
         "Read workbook",
@@ -327,7 +327,7 @@ async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()

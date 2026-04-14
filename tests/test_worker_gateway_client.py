@@ -55,7 +55,11 @@ def workspace_root() -> Path:
 
 
 @pytest.mark.asyncio
-async def test_gateway_client_refreshes_authorization_from_poll_response(workspace_root: Path):
+async def test_gateway_client_refreshes_authorization_from_poll_response(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root))
     token_path = workspace_root / ".tg_agent" / "token.json"
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(
@@ -94,7 +98,11 @@ async def test_gateway_client_refreshes_authorization_from_poll_response(workspa
 
 
 @pytest.mark.asyncio
-async def test_gateway_client_retries_once_after_refreshing_authorization(workspace_root: Path):
+async def test_gateway_client_retries_once_after_refreshing_authorization(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root))
     token_path = workspace_root / ".tg_agent" / "token.json"
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(
@@ -168,7 +176,11 @@ async def test_gateway_client_consumes_sse_message_event():
 
 
 @pytest.mark.asyncio
-async def test_gateway_client_refreshes_authorization_from_stream_response(workspace_root: Path):
+async def test_gateway_client_refreshes_authorization_from_stream_response(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root))
     token_path = workspace_root / ".tg_agent" / "token.json"
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(

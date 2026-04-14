@@ -236,7 +236,7 @@ async def test_compaction_with_filesystem_stores_persists_checkpoint_and_working
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     llm = FakeCompactionLLM([STRUCTURED_COMPACTION_RESPONSE])
     workspace = tmp_path / "workspace"
     workspace.mkdir()

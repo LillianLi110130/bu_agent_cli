@@ -68,13 +68,17 @@ async def test_fetch_authorization_rejects_unsuccessful_return_code():
             )
 
 
-def test_persisted_auth_result_round_trip(workspace_root: Path):
+def test_persisted_auth_result_round_trip(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root))
     result = auth.AuthBootstrapResult(
         authorization="Bearer abc",
         user_id="user-123",
     )
 
-    auth._persist_auth_result(workspace_root, result)  # noqa: SLF001
+    auth._persist_auth_result(result)  # noqa: SLF001
     loaded = auth.load_persisted_auth_result(workspace_root)
 
     assert loaded == result
@@ -85,7 +89,11 @@ def test_persisted_auth_result_round_trip(workspace_root: Path):
     assert token_payload["user_id"] == "user-123"
 
 
-def test_load_persisted_auth_result_falls_back_to_legacy_tg_crab_path(workspace_root: Path):
+def test_load_persisted_auth_result_falls_back_to_legacy_tg_crab_path(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root))
     legacy_path = workspace_root / ".tg_crab" / "token.json"
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_text(
@@ -108,13 +116,16 @@ def test_load_persisted_auth_result_falls_back_to_legacy_tg_crab_path(workspace_
     )
 
 
-def test_persist_updated_authorization_overwrites_token_and_preserves_user_id(workspace_root: Path):
+def test_persist_updated_authorization_overwrites_token_and_preserves_user_id(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root))
     auth._persist_auth_result(  # noqa: SLF001
-        workspace_root,
         auth.AuthBootstrapResult(
             authorization="Bearer old-token",
             user_id="user-123",
-        ),
+        )
     )
 
     updated = auth.persist_updated_authorization(
@@ -131,6 +142,49 @@ def test_persist_updated_authorization_overwrites_token_and_preserves_user_id(wo
     )
     assert token_payload["authorization"] == "Bearer new-token"
     assert token_payload["user_id"] == "user-123"
+
+
+def test_auth_prefers_user_home_token_path_over_workspace_path(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    home_dir = workspace_root / "home-state"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    preferred_path = home_dir / ".tg_agent" / "token.json"
+    preferred_path.parent.mkdir(parents=True, exist_ok=True)
+    preferred_path.write_text(
+        json.dumps(
+            {
+                "authorization": "Bearer preferred",
+                "user_id": "home-user",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    legacy_path = workspace_root / ".tg_agent" / "token.json"
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "authorization": "Bearer legacy",
+                "user_id": "workspace-user",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = auth.load_persisted_auth_result(workspace_root)
+
+    assert loaded == auth.AuthBootstrapResult(
+        authorization="Bearer preferred",
+        user_id="home-user",
+    )
 
 
 def test_parse_local_callback_url_requires_fixed_port_8088():

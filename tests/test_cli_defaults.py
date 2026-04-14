@@ -82,7 +82,6 @@ def test_parse_args_falls_back_to_packaged_worker_config(monkeypatch):
 
     try:
         monkeypatch.setenv("HOME", str(home_dir.resolve()))
-        monkeypatch.delenv("TG_AGENT_HOME", raising=False)
         monkeypatch.chdir(startup_dir)
         monkeypatch.setattr(sys, "argv", ["claude_code.py"])
 

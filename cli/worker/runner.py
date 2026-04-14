@@ -34,8 +34,9 @@ class WorkerRunner:
         self.gateway_transport = gateway_transport
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
+        resolved_root_dir = Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         self.bridge_store = FileBridgeStore(
-            root_dir=root_dir or Path.cwd(),
+            root_dir=resolved_root_dir,
             session_binding_id=resolve_session_binding_id(worker_id),
         )
         self.bridge_store.initialize()
