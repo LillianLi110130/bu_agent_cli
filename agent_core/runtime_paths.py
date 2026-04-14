@@ -91,7 +91,7 @@ def _merge_runtime_env_values(existing_values: dict[str, str] | None = None) -> 
 
 def _render_runtime_env_content(values: dict[str, str]) -> str:
     lines = [
-        "# tg-agent runtime configuration",
+        "# Crab CLI runtime configuration",
         "# Refreshed automatically from packaged defaults on CLI launch.",
         "# Existing user-defined values are preserved when possible.",
         "# Values from the packaged .env are merged here when available.",

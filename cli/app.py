@@ -1,4 +1,4 @@
-"""CLI Application for TG Agent.
+"""CLI Application for Crab CLI.
 
 Contains the main TGAgentCLI class and loading indicator.
 Pure UI logic - receives pre-configured Agent and context.
@@ -59,7 +59,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import BashLexer
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 
@@ -345,7 +345,7 @@ class _ConsoleMirror:
 
 
 class TGAgentCLI:
-    """Interactive CLI for TG Agent assistant.
+    """Interactive CLI for Crab CLI.
 
     Pure UI class - displays agent events and handles user input.
     """
@@ -1778,17 +1778,39 @@ class TGAgentCLI:
 
     def _print_welcome(self):
         """Print welcome message."""
+        title = Text(justify="center")
+        title.append("Crab", style="bold #ff6b57")
+        title.append(" CLI", style="bold #ffd166")
+
+        subtitle = Text(
+            "让任务横着走，结果稳稳落地。",
+            style="italic #ffb38a",
+            justify="center",
+        )
+
+        tips = Text()
+        tips.append("Enter", style="bold white")
+        tips.append(" 发送消息，", style="white")
+        tips.append("/ + Tab", style="bold cyan")
+        tips.append(" 查看命令\n", style="white")
+        tips.append("@ + Tab", style="bold cyan")
+        tips.append(" 查看技能，", style="white")
+        tips.append('@"<path>"<message>', style="bold #9cd7ff")
+        tips.append(" 发送图片\n", style="white")
+        tips.append("Ctrl+D", style="bold #ffd166")
+        tips.append(" 或 ", style="dim")
+        tips.append("/exit", style="bold cyan")
+        tips.append(" 退出，准备好了就直接开工。", style="dim")
+
+        banner = Group(title, subtitle, Text(""), tips)
+
         self._console.print(
             Panel(
-                f"[bold cyan]TG Agent CLI[/bold cyan]\n\n"
-                f"输入消息后按 Enter 发送。\n"
-                f"按 [cyan]/[/cyan] 可查看可用命令。\n"
-                f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
-                f'可使用 [cyan]@"<path>"<message>[/cyan] 或 '
-                f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
-                f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
-                title="[bold blue]欢迎[/bold blue]",
-                border_style="bright_blue",
+                banner,
+                title="[bold #ffd166]Welcome Aboard[/bold #ffd166]",
+                subtitle="[dim]scuttle mode engaged[/dim]",
+                border_style="#ff7a59",
+                padding=(1, 2),
             )
         )
 

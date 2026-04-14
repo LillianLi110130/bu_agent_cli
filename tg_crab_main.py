@@ -1,5 +1,5 @@
 """
-Claude Code CLI - An interactive coding assistant with file operations.
+Crab CLI - An interactive coding assistant with file operations.
 
 Includes bash, file operations (read/write/edit), search (glob/grep),
 todo management, and task completion - all with dependency injection
@@ -324,7 +324,7 @@ def _build_worker_process_command(
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Claude Code CLI - Interactive coding assistant")
+    parser = argparse.ArgumentParser(description="Crab CLI - Interactive coding assistant")
     parser.add_argument(
         "--model",
         "-m",

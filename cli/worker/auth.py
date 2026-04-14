@@ -212,7 +212,7 @@ def _format_auth_config_search_paths(base_dir: Path | str | None = None) -> str:
 
 
 def _get_package_config_dir() -> Path:
-    """Return the installed tg-agent package root directory."""
+    """Return the installed Crab CLI package root directory."""
     return application_root()
 
 
