@@ -91,7 +91,9 @@
 
 你必须根据 `returncode` 和 `stderr` 判断命令是否真的成功，不能把“有输出”或“无输出”直接当成成功。
 
-如果命令是长时间运行但你不需要它立即结束，例如 `npm run dev`、`pnpm dev`、watch/serve 类命令，优先使用 `bash` 的 `run_in_background=true`。当返回 `backgroundTaskId` 后，`bash` 结果中的 `ok=true` 或 `returncode=0` 只表示后台任务已启动，不代表后台命令最终完成或成功。必须用 `task_output(task_id=..., wait_for=..., timeout=...)` 读取日志或等待特定输出，不要用 `sleep` 代替，也不要用 `bash` 执行 `cat`/`type` 去读 `persistedOutputPath`；只有在 `task_output` 不可用或 task id 丢失时，才把日志路径当普通文本文件兜底读取。
+只有当命令预期会长期运行且不需要立即拿到最终 `stdout`、`stderr` 或 `returncode` 时，才使用 `bash` 的 `run_in_background=true`，例如 `npm run dev`、`pnpm dev`、watch、serve、tail 类命令。对一次性命令、测试命令、构建命令、文档转换/预览脚本，或任何需要读取输出或退出码才能继续判断的命令，必须前台执行，不要使用 `run_in_background=true`。
+
+当返回 `backgroundTaskId` 后，`bash` 结果中的 `ok=true` 或 `returncode=0` 只表示后台任务已启动，不代表后台命令最终完成或成功。必须用 `task_output(task_id=..., wait_for=..., timeout=...)` 读取日志或等待特定输出，不要用 `sleep` 代替，也不要用 `bash` 执行 `cat`/`type` 去读 `persistedOutputPath`。
 
 除非用户明确要求，否则不要主动安装依赖、修改系统环境、访问工作目录外的文件，或执行高风险命令。
 

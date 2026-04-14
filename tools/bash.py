@@ -27,6 +27,10 @@ async def bash(
 ) -> str:
     """Run a command in the current OS shell within the sandbox working directory."""
     try:
+        run_in_background = _normalize_run_in_background(run_in_background)
+        if run_in_background is None:
+            return "Error: run_in_background must be a JSON boolean true/false, not a string."
+
         if run_in_background:
             if ctx.shell_task_manager is None:
                 return "Error: Shell task manager not initialized"
@@ -138,6 +142,18 @@ def _close_process_pipes(process: subprocess.Popen) -> None:
 
 def _decode_process_stream(data: bytes | str | None) -> str:
     return decode_process_stream(data)
+
+
+def _normalize_run_in_background(value: bool | str) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return None
 
 
 def _format_bash_result(
