@@ -894,6 +894,12 @@ class TGAgentCLI:
             result = await callback()
         return result, capture.get().strip()
 
+    def _print_remote_reset_console_output(self, final_content: str | None) -> None:
+        """Print the local console hints for a remote `/reset` completion."""
+        self._console.print("[yellow]会话上下文已重置。[/yellow]")
+        if final_content:
+            self._console.print(final_content)
+
     async def _run_slash_command_with_live_capture(
         self,
         user_input: str,
@@ -1660,6 +1666,9 @@ class TGAgentCLI:
                     error_message=str(exc),
                 )
                 raise
+
+            if request.source == "remote" and request.content.strip() == "/reset":
+                self._print_remote_reset_console_output(outcome.final_content)
 
             self._bridge_store.complete_request(request, final_content=outcome.final_content)
             if not outcome.continue_running:
