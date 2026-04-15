@@ -23,6 +23,7 @@ class WorkerRunner:
         gateway_client: Any,
         model: str | None,
         root_dir: str | Path | None,
+        gateway_transport: str = "sse",
         result_poll_interval_seconds: float = 0.5,
         empty_poll_sleep_seconds: float = 0.1,
     ) -> None:
@@ -30,10 +31,12 @@ class WorkerRunner:
         self.gateway_client = gateway_client
         self.model = model
         self.root_dir = root_dir
+        self.gateway_transport = gateway_transport
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
+        resolved_root_dir = Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         self.bridge_store = FileBridgeStore(
-            root_dir=root_dir or Path.cwd(),
+            root_dir=resolved_root_dir,
             session_binding_id=resolve_session_binding_id(worker_id),
         )
         self.bridge_store.initialize()
@@ -52,27 +55,51 @@ class WorkerRunner:
             )
 
         try:
-            while not self._stop_event.is_set():
-                try:
-                    messages = await self.gateway_client.poll(worker_id=self.worker_id)
-                except httpx.ReadTimeout as exc:
-                    logger.warning(
-                        f"Worker poll timed out for worker_id={self.worker_id}, continuing next poll: {exc}"
-                    )
-                    continue
-                if not messages:
-                    await asyncio.sleep(self.empty_poll_sleep_seconds)
-                    continue
-
-                for message in messages:
-                    task = asyncio.create_task(self._process_message(message))
-                    self._completion_tasks.add(task)
-                    task.add_done_callback(self._completion_tasks.discard)
+            if self.gateway_transport == "sse":
+                await self._run_stream_loop()
+            else:
+                await self._run_poll_loop()
         finally:
             self._stop_event.set()
             if self._completion_tasks:
                 await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
             await self.gateway_client.offline(worker_id=self.worker_id)
+
+    async def _run_poll_loop(self) -> None:
+        """Consume remote messages via long polling."""
+        while not self._stop_event.is_set():
+            try:
+                messages = await self.gateway_client.poll(worker_id=self.worker_id)
+            except httpx.ReadTimeout as exc:
+                logger.warning(
+                    f"Worker poll timed out for worker_id={self.worker_id}, continuing next poll: {exc}"
+                )
+                continue
+            if not messages:
+                await asyncio.sleep(self.empty_poll_sleep_seconds)
+                continue
+
+            for message in messages:
+                task = asyncio.create_task(self._process_message(message))
+                self._completion_tasks.add(task)
+                task.add_done_callback(self._completion_tasks.discard)
+
+    async def _run_stream_loop(self) -> None:
+        """Consume remote messages via a persistent SSE stream."""
+        while not self._stop_event.is_set():
+            try:
+                async for event in self.gateway_client.stream_events(worker_id=self.worker_id):
+                    if self._stop_event.is_set():
+                        break
+                    if event.event != "message" or event.message is None:
+                        continue
+                    await self._process_message(event.message)
+            except (httpx.HTTPError, httpx.ReadTimeout) as exc:
+                logger.warning(
+                    f"Worker stream failed for worker_id={self.worker_id}, reconnecting: {exc}"
+                )
+            if not self._stop_event.is_set():
+                await asyncio.sleep(self.empty_poll_sleep_seconds)
 
     async def _process_message(self, message: Any) -> None:
         """Process one polled message."""

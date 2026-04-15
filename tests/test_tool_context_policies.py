@@ -7,13 +7,14 @@ from pathlib import Path
 import pytest
 
 from agent_core import Agent
-from agent_core.tools import tool
 from agent_core.llm.messages import Function, ToolCall
+from agent_core.tools import tool
 from cli.session_runtime import CLISessionRuntime
 from cli.worker.runtime_factory import EchoLLM
 from tools.bash import _AsyncShellResult, bash
 from tools.files import read
 from tools.sandbox import SandboxContext, get_sandbox_context
+from tools.task_output import task_output
 
 
 def _read_artifact_parts(path: Path) -> tuple[dict[str, str], str]:
@@ -29,12 +30,17 @@ def _read_artifact_parts(path: Path) -> tuple[dict[str, str], str]:
     return header, body
 
 
+def test_task_output_context_policy_trims_inline_output() -> None:
+    assert task_output.context_config.policy == "trim"
+    assert task_output.context_config.max_inline_chars == 6400
+
+
 @pytest.mark.asyncio
 async def test_bash_context_policy_keeps_small_output_inline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     async def fake_run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
         del command, cwd, timeout
@@ -84,14 +90,18 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     async def fake_run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShellResult:
         del command, cwd, timeout
         return _AsyncShellResult(
             returncode=1,
-            stdout="".join(f"stdout line {index:04d} " + ("x" * 40) + "\n" for index in range(1, 91)),
-            stderr="".join(f"stderr line {index:04d} " + ("y" * 40) + "\n" for index in range(1, 81)),
+            stdout="".join(
+                f"stdout line {index:04d} " + ("x" * 40) + "\n" for index in range(1, 91)
+            ),
+            stderr="".join(
+                f"stderr line {index:04d} " + ("y" * 40) + "\n" for index in range(1, 81)
+            ),
         )
 
     bash_module = importlib.import_module("tools.bash")
@@ -152,7 +162,7 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -202,7 +212,7 @@ async def test_read_context_policy_keeps_small_output_inline(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -237,7 +247,7 @@ async def test_read_excel_context_policy_summarizes_large_match_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     @tool(
         "Read workbook",
@@ -330,12 +340,12 @@ async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     target = workspace / "large.txt"
-    target.write_text("".join(f"line {i:04d}\n" for i in range(1, 301)), "utf-8")
+    target.write_text("".join(f"line {i:04d}\n" for i in range(1, 901)), "utf-8")
 
     sandbox = SandboxContext.create(workspace)
     runtime = CLISessionRuntime.create_for_context(sandbox)
@@ -390,6 +400,8 @@ async def test_reading_runtime_artifact_requires_window_and_skips_repersist(
     )
 
     expected_end = artifact_body_start_line + 39
-    assert artifact_tool_message.text.startswith(f"[Lines {artifact_body_start_line}-{expected_end}")
+    assert artifact_tool_message.text.startswith(
+        f"[Lines {artifact_body_start_line}-{expected_end}"
+    )
     assert "Artifact file:" not in artifact_tool_message.text
     assert not (runtime.artifacts_dir / "tool" / "call-read-artifact-slice.artifact.txt").exists()

@@ -16,6 +16,8 @@ import pytest
 import cli.app as app_module
 from agent_core import Agent
 from agent_core.agent.events import FinalResponseEvent
+from agent_core.llm.messages import AssistantMessage, UserMessage
+from agent_core.llm.views import ChatInvokeCompletion
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
 from cli.slash_commands import SlashCommandRegistry
@@ -59,6 +61,15 @@ def _create_cli(workspace_root: Path, monkeypatch):
     return cli, store
 
 
+def test_remote_reset_startup_prompt_is_loaded_from_prompt_file(workspace_root, monkeypatch):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+    prompt_path = workspace_root / "remote_reset_startup.md"
+    prompt_path.write_text("自定义启动提示", encoding="utf-8")
+    monkeypatch.setattr(app_module, "_REMOTE_RESET_STARTUP_PROMPT_PATH", prompt_path)
+
+    assert cli._build_remote_reset_startup_prompt() == "自定义启动提示\n\n当前运行模型：echo-worker"
+
+
 @pytest.mark.asyncio
 async def test_local_bridge_drains_enqueued_input_through_execution(workspace_root, monkeypatch):
     cli, store = _create_cli(workspace_root, monkeypatch)
@@ -89,7 +100,7 @@ async def test_init_command_uses_dedicated_agent_and_injects_immediately(
     workspace_root,
     monkeypatch,
 ):
-    monkeypatch.setenv("TG_AGENT_HOME", str(workspace_root / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(workspace_root))
     cli, _store = _create_cli(workspace_root, monkeypatch)
     init_agent = SimpleNamespace(name="init-agent", bind_session_runtime=lambda runtime: None)
 
@@ -231,6 +242,93 @@ async def test_slash_command_final_content_is_captured(workspace_root, monkeypat
     assert result.input_kind == "slash"
     assert str(workspace_root).replace("\n", "") in result.final_content.replace("\n", "")
     assert "\x1b" not in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_local_reset_does_not_trigger_startup_bootstrap(workspace_root, monkeypatch):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+
+    async def fail_query(message: str):
+        raise AssertionError(f"local /reset should not call query: {message}")
+
+    monkeypatch.setattr(cli._agent, "query", fail_query)
+
+    handled = await cli._handle_slash_command("/reset")
+
+    assert handled is True
+
+
+@pytest.mark.asyncio
+async def test_remote_reset_bootstraps_new_session_and_returns_greeting(
+    workspace_root,
+    monkeypatch,
+):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    (workspace_root / "TGAGENTS.md").write_text("repo rules", encoding="utf-8")
+    cli._agent._context.add_message(UserMessage(content="old question"))
+    cli._agent._context.add_message(AssistantMessage(content="old answer"))
+
+    seen_user_prompts: list[str] = []
+
+    async def fake_ainvoke(messages, tools=None, tool_choice=None, **kwargs):
+        del tools, tool_choice, kwargs
+        for message in reversed(messages):
+            if getattr(message, "role", None) == "user":
+                seen_user_prompts.append(str(getattr(message, "content", "")))
+                break
+        return ChatInvokeCompletion(content="你好呀，想做什么？")
+
+    async def fail_run_agent(user_input, has_image=False, agent=None):
+        del user_input, has_image, agent
+        raise AssertionError("remote /reset should not go through _run_agent")
+
+    monkeypatch.setattr(cli._agent.llm, "ainvoke", fake_ainvoke)
+    monkeypatch.setattr(cli, "_run_agent", fail_run_agent)
+
+    store.enqueue_text(
+        "/reset",
+        source="remote",
+        source_meta={"delivery_id": "delivery-reset-1"},
+        remote_response_required=True,
+        request_id="remote-reset-1",
+    )
+
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    result = store.find_result("remote-reset-1")
+    assert result is not None
+    assert result.final_status == "completed"
+    assert result.final_content == "你好呀，想做什么？"
+    assert seen_user_prompts
+    assert "已通过 /clear 命令启动了新会话" in seen_user_prompts[-1]
+    assert "当前运行模型：echo-worker" in seen_user_prompts[-1]
+    assert "GLM-4.7" not in seen_user_prompts[-1]
+
+    system_contents = [
+        str(getattr(message, "content", ""))
+        for message in cli._agent.messages
+        if message.role == "system"
+    ]
+    assert "test" in system_contents
+    assert "repo rules" in system_contents
+    assert all("old question" not in content for content in system_contents)
+    assert all("old answer" not in content for content in system_contents)
+
+    user_contents = [
+        str(getattr(message, "content", ""))
+        for message in cli._agent.messages
+        if message.role == "user"
+    ]
+    assert any("已通过 /clear 命令启动了新会话" in content for content in user_contents)
+    assert all("old question" not in content for content in user_contents)
+
+    assistant_contents = [
+        str(getattr(message, "content", ""))
+        for message in cli._agent.messages
+        if message.role == "assistant"
+    ]
+    assert assistant_contents == ["你好呀，想做什么？"]
 
 
 @pytest.mark.asyncio

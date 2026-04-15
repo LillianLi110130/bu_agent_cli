@@ -160,7 +160,8 @@ class ContextBudgetEngine:
     ) -> tuple[int, int]:
         """Estimate current prompt tokens from the latest real baseline."""
         baseline_is_usable = (
-            self.baseline_message_count > 0
+            self.baseline_model == model
+            and self.baseline_message_count > 0
             and self.baseline_message_count <= len(messages)
         )
         if not baseline_is_usable:

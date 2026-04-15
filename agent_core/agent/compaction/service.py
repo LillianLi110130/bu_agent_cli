@@ -26,6 +26,7 @@ from agent_core.llm.messages import (
     BaseMessage,
     UserMessage,
 )
+
 if TYPE_CHECKING:
     from agent_core.llm.base import BaseChatModel
     from agent_core.llm.views import ChatInvokeUsage
@@ -147,7 +148,8 @@ class CompactionService:
 
         if should:
             log.info(
-                f"Compaction triggered: {self._last_usage.total_tokens} tokens >= {threshold} threshold "
+                f"Compaction triggered: {self._last_usage.total_tokens} tokens >= "
+                f"{threshold} threshold "
                 f"(model: {model}, ratio: {self.budget_engine.compact_threshold_ratio})"
             )
 
@@ -157,18 +159,23 @@ class CompactionService:
         self,
         messages: list[BaseMessage],
         llm: BaseChatModel | None = None,
+        reference_messages: list[BaseMessage] | None = None,
     ) -> CompactionResult:
         """Perform compaction on the message history.
 
         This method:
         1. Prepares the messages for summarization (removing pending tool calls)
-        2. Appends the summary prompt as a user message
-        3. Calls the LLM to generate a summary
-        4. Extracts the summary and returns it
+        2. Optionally appends a recent-tail reference message for completion-state checks
+        3. Appends the summary prompt as a user message
+        4. Calls the LLM to generate a summary
+        5. Extracts the summary and returns it
 
         Args:
                 messages: The current message history to compact.
                 llm: Optional LLM to use for summarization. Falls back to self.llm.
+                reference_messages: Recent messages that will remain verbatim outside the
+                    compacted working set. Used only to avoid marking already-completed work
+                    as remaining.
 
         Returns:
                 CompactionResult containing the summary and token information.
@@ -190,6 +197,14 @@ class CompactionService:
 
         # Prepare messages for summarization
         prepared_messages = self._prepare_messages_for_summary(messages)
+        if reference_messages:
+            prepared_messages.append(
+                UserMessage(
+                    content=self._render_recent_tail_reference(
+                        self._prepare_messages_for_summary(reference_messages)
+                    )
+                )
+            )
 
         # Add the summary prompt
         prepared_messages.append(UserMessage(content=self.config.summary_prompt))
@@ -202,7 +217,9 @@ class CompactionService:
         # Extract summary from tags if present
         extracted_summary = self._extract_summary(summary_text)
         extracted_working_state = self._extract_working_state(summary_text)
-        checkpoint_ref = self._extract_checkpoint_ref(summary_text) or self._generate_checkpoint_ref()
+        checkpoint_ref = (
+            self._extract_checkpoint_ref(summary_text) or self._generate_checkpoint_ref()
+        )
 
         new_tokens = response.usage.completion_tokens if response.usage else 0
 
@@ -341,6 +358,32 @@ class CompactionService:
 
         return prepared
 
+    def _render_recent_tail_reference(self, messages: list[BaseMessage]) -> str:
+        """Render recent messages that remain outside the compacted segment."""
+        lines = [
+            "<recent_tail_reference>",
+            "The following recent messages are NOT being compacted and will remain verbatim.",
+            "Use them only to decide whether requests in the compacted segment were already "
+            "answered or completed.",
+            "Do not repeat their details in the summary unless required for continuity.",
+            "Do not list actions as remaining if these messages already answered or completed "
+            "them.",
+            "",
+        ]
+        for index, message in enumerate(messages, start=1):
+            lines.append(f"[{index}] role={message.role}")
+            if isinstance(message.content, str):
+                content = message.content
+            else:
+                try:
+                    content = message.model_dump_json()
+                except Exception:
+                    content = str(message.content)
+            lines.append(content.strip() if content.strip() else "(empty)")
+            lines.append("")
+        lines.append("</recent_tail_reference>")
+        return "\n".join(lines).strip()
+
     def _extract_summary(self, text: str) -> str:
         """Extract summary content from <summary></summary> tags.
 
@@ -377,9 +420,7 @@ class CompactionService:
         return CompactionWorkingState(
             user_goal=self._coerce_string(payload.get("user_goal")),
             user_constraints=self._coerce_string_list(payload.get("user_constraints")),
-            confirmed_conclusions=self._coerce_string_list(
-                payload.get("confirmed_conclusions")
-            ),
+            confirmed_conclusions=self._coerce_string_list(payload.get("confirmed_conclusions")),
             files_reviewed=self._coerce_string_list(payload.get("files_reviewed")),
             files_modified=self._coerce_string_list(payload.get("files_modified")),
             failed_attempts=self._coerce_string_list(payload.get("failed_attempts")),
@@ -469,17 +510,23 @@ class CompactionService:
             failed_attempts=self._dedupe_preserve_order(
                 [*previous_state.failed_attempts, *current_state.failed_attempts]
             ),
-            remaining_actions=self._dedupe_preserve_order(
-                [*previous_state.remaining_actions, *current_state.remaining_actions]
+            remaining_actions=(
+                self._dedupe_preserve_order(current_state.remaining_actions)
+                if current_state.remaining_actions
+                else self._dedupe_preserve_order(previous_state.remaining_actions)
             ),
             artifact_refs=self._dedupe_preserve_order(
                 [*previous_state.artifact_refs, *current_state.artifact_refs]
             ),
-            recent_history_notes=self._dedupe_preserve_order(
-                [*previous_state.recent_history_notes, *current_state.recent_history_notes]
+            recent_history_notes=(
+                self._dedupe_preserve_order(current_state.recent_history_notes)
+                if current_state.recent_history_notes
+                else self._dedupe_preserve_order(previous_state.recent_history_notes)
             ),
         )
-        summary_parts = [part.strip() for part in [previous.summary or "", current.summary or ""] if part.strip()]
+        summary_parts = [
+            part.strip() for part in [previous.summary or "", current.summary or ""] if part.strip()
+        ]
         return CompactionResult(
             compacted=True,
             original_tokens=current.original_tokens,

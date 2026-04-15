@@ -48,7 +48,7 @@ def _normalize_pattern(pattern: str) -> str:
 
 
 def _default_user_tgagent_dir() -> Path:
-    """Return the user's ~/.tg_agent directory using the current environment."""
+    """Return the user's fixed ~/.tg_agent directory."""
     home = os.environ.get("HOME") or os.environ.get("USERPROFILE")
     if home:
         return Path(home).expanduser() / ".tg_agent"

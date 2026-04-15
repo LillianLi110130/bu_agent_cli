@@ -1,4 +1,4 @@
-"""Slash command system for Claude Code CLI."""
+"""Slash command system for Crab CLI."""
 
 from collections import OrderedDict
 from dataclasses import dataclass, field

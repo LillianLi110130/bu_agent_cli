@@ -21,11 +21,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="BU Agent worker")
     parser.add_argument("--worker-id", required=True, help="Stable worker identifier")
     parser.add_argument("--gateway-base-url", required=True, help="Gateway base URL")
+    parser.add_argument(
+        "--gateway-transport",
+        choices=("poll", "sse"),
+        default="sse",
+        help="Gateway transport mode (default: sse)",
+    )
     parser.add_argument("--model", default=None, help="Optional model override")
     parser.add_argument(
         "--config-dir",
         default=None,
         help="Optional startup config directory (default: current working directory)",
+    )
+    parser.add_argument(
+        "--config-source-dir",
+        default=None,
+        help="Optional directory used to load worker config (default: config-dir)",
     )
     parser.add_argument("--root-dir", default=None, help="Optional workspace root directory")
     return parser.parse_args()
@@ -51,7 +62,8 @@ async def async_main() -> None:
         from cli.worker.auth import load_persisted_auth_result as load_persisted_auth_result_fn
 
     base_dir = Path(args.config_dir or Path.cwd()).resolve()
-    auth_config = load_auth_config_fn(base_dir=base_dir)
+    config_source_dir = Path(args.config_source_dir or base_dir).resolve()
+    auth_config = load_auth_config_fn(base_dir=config_source_dir)
     authorization: str | None = None
     if auth_config.enable_auth:
         persisted_auth = load_persisted_auth_result_fn(base_dir=base_dir)
@@ -59,7 +71,10 @@ async def async_main() -> None:
             raise RuntimeError("Worker auth is enabled but no persisted auth result was found")
         authorization = persisted_auth.authorization
 
-    client_kwargs: dict[str, Any] = {"base_url": args.gateway_base_url}
+    client_kwargs: dict[str, Any] = {
+        "base_url": args.gateway_base_url,
+        "base_dir": base_dir,
+    }
     if authorization is not None:
         client_kwargs["authorization"] = authorization
 
@@ -69,6 +84,7 @@ async def async_main() -> None:
         gateway_client=client,
         model=args.model,
         root_dir=args.root_dir,
+        gateway_transport=args.gateway_transport,
     )
     await runner.run_forever()
 

@@ -96,7 +96,7 @@ bootstrap 侧则改为复用共享 discovery 结果，而不是只读 `_SKILLS_D
 - `cli/at_commands.py`
   - `AtCommandRegistry` 从单目录发现扩展为多目录发现
   - 兼容旧调用方式
-- `claude_code.py`
+- `tg_crab_main.py`
   - `create_runtime_registries()` 改为基于 `workspace_root` 构造合并后的 skill registry
   - CLI system prompt 自动复用新的 registry 数据
 - `agent_core/bootstrap/agent_factory.py`

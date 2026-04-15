@@ -8,15 +8,19 @@ from types import MethodType
 
 import pytest
 
-from agent_core.agent.compaction import CompactionConfig, CompactionService
-from agent_core.agent.context import ContextManager
 from agent_core.agent.budget import BudgetAssessment
+from agent_core.agent.compaction import (
+    CompactionConfig,
+    CompactionResult,
+    CompactionService,
+    CompactionWorkingState,
+)
+from agent_core.agent.context import ContextManager
+from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
 from agent_core.llm.messages import AssistantMessage, BaseMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
-from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
 from cli.session_runtime import CLISessionRuntime
 from tools import SandboxContext
-
 
 STRUCTURED_COMPACTION_RESPONSE = """<summary>
 Investigated the bug and preserved the next steps.
@@ -94,6 +98,43 @@ async def test_compaction_service_parses_structured_working_state():
     assert "Checkpoint Ref: compaction-inline-1" in compacted_message.content
 
 
+def test_compaction_merge_replaces_stale_active_state():
+    service = CompactionService(config=CompactionConfig())
+    previous = CompactionResult(
+        compacted=True,
+        summary="previous summary",
+        working_state=CompactionWorkingState(
+            confirmed_conclusions=["Git repository path was unknown"],
+            remaining_actions=["Ask user for the git repository path"],
+            recent_history_notes=["User was chatting casually"],
+        ),
+        checkpoint_ref="checkpoint://0001",
+    )
+    current = CompactionResult(
+        compacted=True,
+        summary="current summary",
+        working_state=CompactionWorkingState(
+            confirmed_conclusions=["Git pull completed successfully"],
+            remaining_actions=["Check shutdown task configuration"],
+            recent_history_notes=["Windows shutdown prevention query is in progress"],
+        ),
+        checkpoint_ref="checkpoint://0002",
+    )
+
+    merged = service.merge_results(previous, current)
+
+    assert merged.working_state is not None
+    assert merged.working_state.confirmed_conclusions == [
+        "Git repository path was unknown",
+        "Git pull completed successfully",
+    ]
+    assert merged.working_state.remaining_actions == ["Check shutdown task configuration"]
+    assert merged.working_state.recent_history_notes == [
+        "Windows shutdown prevention query is in progress"
+    ]
+    assert merged.checkpoint_ref == "checkpoint://0002"
+
+
 @pytest.mark.asyncio
 async def test_check_and_compact_injects_working_set_plus_recent_history():
     llm = FakeCompactionLLM([STRUCTURED_COMPACTION_RESPONSE])
@@ -139,6 +180,55 @@ async def test_check_and_compact_injects_working_set_plus_recent_history():
     assert "[Compacted Working Set]" in contents[0]
     assert contents[1:] == ["assistant-2", "user-3"]
     assert context.summarized_boundary == 1
+
+
+@pytest.mark.asyncio
+async def test_check_and_compact_passes_recent_tail_as_reference():
+    llm = FakeCompactionLLM([STRUCTURED_COMPACTION_RESPONSE])
+    context = ContextManager(
+        messages=[
+            UserMessage(content="rope是怎么实现的"),
+            AssistantMessage(content="RoPE rotates query/key pairs with sinusoidal angles."),
+            UserMessage(content="再看看DDP怎么做的"),
+        ]
+    )
+    context.configure_compaction(
+        config=CompactionConfig(preserve_recent_messages=2, preserve_recent_token_ratio=1.0),
+        llm=llm,
+        token_cost=None,
+    )
+
+    async def fake_assess_budget(self, *, model: str, usage=None, trigger=None):
+        return BudgetAssessment(
+            model=model,
+            context_limit=2000,
+            warn_threshold=1000,
+            compact_threshold=1000,
+            hard_threshold=1800,
+            baseline_prompt_tokens=0,
+            incremental_tokens=1200,
+            estimated_tokens=1200,
+            message_count=len(self._messages),
+            warn_threshold_ratio=0.5,
+            compact_threshold_ratio=0.5,
+            hard_threshold_ratio=0.9,
+            threshold_utilization=1.2,
+            context_utilization=0.6,
+            trigger=trigger,
+        )
+
+    context.assess_budget = MethodType(fake_assess_budget, context)
+    changed = await context.check_and_compact(llm)
+
+    assert changed is True
+    compaction_input = "\n".join(
+        str(getattr(message, "content", "")) for message in llm.invocations[0]
+    )
+    assert "rope是怎么实现的" in compaction_input
+    assert "<recent_tail_reference>" in compaction_input
+    assert "RoPE rotates query/key pairs with sinusoidal angles." in compaction_input
+    assert "再看看DDP怎么做的" in compaction_input
+    assert "Do not list actions as remaining if these messages already answered" in compaction_input
 
 
 @pytest.mark.asyncio
@@ -236,7 +326,7 @@ async def test_compaction_with_filesystem_stores_persists_checkpoint_and_working
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     llm = FakeCompactionLLM([STRUCTURED_COMPACTION_RESPONSE])
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -303,3 +393,55 @@ async def test_compaction_with_filesystem_stores_persists_checkpoint_and_working
     compacted_content = str(context.get_messages()[0].content)
     assert "Checkpoint Ref: checkpoint://0001" in compacted_content
     assert f"Checkpoint Path: {checkpoint_path}" in compacted_content
+
+
+def test_working_state_store_replaces_stale_active_state(tmp_path: Path):
+    state_path = tmp_path / "working_state.json"
+    store = WorkingStateStore(state_path, session_id="session-1")
+    store.ensure_initialized()
+    state_path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "goal": "Prevent computer from auto-shutting down",
+                "constraints": ["Windows environment"],
+                "confirmed_facts": ["Git repository path was unknown"],
+                "decisions": [],
+                "failed_attempts": [],
+                "files_checked": [],
+                "files_modified": [],
+                "open_questions": ["User was chatting casually"],
+                "next_steps": ["Ask user for the git repository path"],
+                "artifact_refs": [],
+                "checkpoint_refs": ["checkpoint://0001"],
+                "checkpoint_paths": [],
+                "last_compacted_at": "2026-04-14T08:00:00+08:00",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    store.write_result(
+        CompactionResult(
+            compacted=True,
+            summary="current summary",
+            working_state=CompactionWorkingState(
+                confirmed_conclusions=["Git pull completed successfully"],
+                remaining_actions=["Check shutdown task configuration"],
+                recent_history_notes=["Windows shutdown prevention query is in progress"],
+            ),
+            checkpoint_ref="checkpoint://0002",
+            checkpoint_path=str(tmp_path / "0002.jsonl"),
+        )
+    )
+
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    assert payload["confirmed_facts"] == [
+        "Git repository path was unknown",
+        "Git pull completed successfully",
+    ]
+    assert payload["next_steps"] == ["Check shutdown task configuration"]
+    assert payload["open_questions"] == ["Windows shutdown prevention query is in progress"]
+    assert payload["checkpoint_refs"] == ["checkpoint://0001", "checkpoint://0002"]

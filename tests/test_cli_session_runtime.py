@@ -40,7 +40,7 @@ async def test_cli_session_runtime_creates_rollout_dir_and_meta(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ctx = SandboxContext.create(workspace)
@@ -64,6 +64,7 @@ async def test_cli_session_runtime_creates_rollout_dir_and_meta(
     assert runtime.checkpoints_dir.exists()
     assert runtime.artifacts_dir.exists()
     assert runtime.working_state_path == expected_rollout / "working_state.json"
+    assert runtime.context_window_status_path == expected_rollout / "context_window_status.json"
     assert runtime.meta_path.exists()
     assert runtime.root_dir.resolve() in {path.resolve() for path in ctx.allowed_dirs}
 
@@ -82,7 +83,7 @@ async def test_helper_top_level_runtime_creates_init_rollout_dir_and_meta(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     ctx = SandboxContext.create(workspace)
@@ -104,6 +105,7 @@ async def test_helper_top_level_runtime_creates_init_rollout_dir_and_meta(
     assert runtime.checkpoints_dir.exists()
     assert runtime.artifacts_dir.exists()
     assert runtime.meta_path.exists()
+    assert runtime.context_window_status_path == runtime.rollout_dir / "context_window_status.json"
     assert runtime.root_dir.resolve() in {path.resolve() for path in ctx.allowed_dirs}
 
     meta = json.loads(runtime.meta_path.read_text(encoding="utf-8"))
@@ -121,7 +123,7 @@ async def test_cli_input_touches_bound_session_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"
@@ -156,7 +158,7 @@ async def test_bound_session_runtime_persists_large_tool_output(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     @tool("Emit a large output payload")
     async def emit_large_output() -> str:
@@ -189,7 +191,7 @@ async def test_run_init_agent_binds_independent_helper_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("TG_AGENT_HOME", str(tmp_path / ".tg_agent"))
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
 
     workspace = tmp_path / "workspace"

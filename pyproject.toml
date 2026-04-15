@@ -9,6 +9,7 @@ dependencies = [
     "openai>=2.15,<3",
     "httpx>=0.27,<0.28",
     "trafilatura>=1.12,<2",
+    "lxml_html_clean>=0.4,<1",
     "markdown-it-py>=2.2,<3",
     "prompt-toolkit>=3.0,<4",
     "packaging>=23,<25",
@@ -38,7 +39,7 @@ server = [
 ]
 
 [project.scripts]
-tg-agent = "claude_code:cli_main"
+tg-agent = "tg_crab_main:cli_main"
 
 [build-system]
 requires = ["hatchling"]
@@ -49,7 +50,7 @@ build-backend = "hatchling.build"
 "cli" = "tg_agent_cli/cli"
 "tools" = "tg_agent_cli/tools"
 "tg_mem" = "tg_agent_cli/tg_mem"
-"claude_code.py" = "tg_agent_cli/claude_code.py"
+"tg_crab_main.py" = "tg_agent_cli/tg_crab_main.py"
 "config" = "tg_agent_cli/config"
 "ralph_init.py" = "tg_agent_cli/ralph_init.py"
 "ralph_loop.py" = "tg_agent_cli/ralph_loop.py"
@@ -67,7 +68,7 @@ include = [
     "cli/**",
     "tools/**",
     "tg_mem/**",
-    "claude_code.py",
+    "tg_crab_main.py",
     "config/**",
     "ralph_init.py",
     "ralph_loop.py",

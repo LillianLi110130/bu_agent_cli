@@ -17,8 +17,9 @@ class FileBridgeStore:
 
     VERSION = 1
 
-    def __init__(self, root_dir: Path | str, session_binding_id: str = "local-cli") -> None:
-        self.workspace_root = Path(root_dir).resolve()
+    def __init__(self, root_dir: Path | str | None = None, session_binding_id: str = "local-cli") -> None:
+        resolved_root = Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
+        self.workspace_root = resolved_root
         self.session_binding_id = session_binding_id
         self.bridge_dir = self.workspace_root / ".tg_agent" / "im_bridge" / session_binding_id
         self.state_dir = self.bridge_dir / "state"

@@ -1,4 +1,4 @@
-"""CLI Application for TG Agent.
+"""CLI Application for Crab CLI.
 
 Contains the main TGAgentCLI class and loading indicator.
 Pure UI logic - receives pre-configured Agent and context.
@@ -7,12 +7,14 @@ Pure UI logic - receives pre-configured Agent and context.
 import json
 import asyncio
 import io
+import logging
 import os
 import sys
 import threading
 import time
 import hashlib
 from dataclasses import dataclass
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Callable
 
@@ -28,7 +30,13 @@ from agent_core.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from agent_core.agent.hooks import BaseAgentHook
 from agent_core.agent.registry import AgentRegistry
+from agent_core.agent.runtime_events import (
+    ContextMaintenanceRequested,
+    LLMResponseReceived,
+    ToolResultReceived as RuntimeToolResultReceived,
+)
 from agent_core.llm import ChatOpenAI
 from agent_core.llm.messages import (
     ContentPartImageParam,
@@ -46,14 +54,16 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
+from agent_core.runtime_paths import application_root
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import BashLexer
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
+from rich.text import Text
 
 from cli.slash_commands import (
     SlashCommand,
@@ -94,6 +104,12 @@ from tools import SandboxContext, SecurityError
 
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
 
+logger = logging.getLogger("cli.app")
+
+_REMOTE_RESET_STARTUP_PROMPT_PATH = (
+    application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
+)
+
 
 @dataclass
 class _ExecutionOutcome:
@@ -101,6 +117,20 @@ class _ExecutionOutcome:
 
     continue_running: bool = True
     final_content: str = ""
+
+
+@dataclass(slots=True)
+class _CLIContextBudgetSnapshot:
+    """CLI-private snapshot for displaying remaining context budget."""
+
+    model: str
+    estimated_tokens: int
+    context_limit: int
+    remaining_tokens: int
+    context_utilization: float
+    remaining_ratio: float
+    message_count: int
+    trigger: str | None = None
 
 
 class _CLIHumanApprovalHandler:
@@ -114,6 +144,85 @@ class _CLIHumanApprovalHandler:
         request: HumanApprovalRequest,
     ) -> HumanApprovalDecision:
         return await self._cli._request_human_approval(request)
+
+
+@dataclass
+class _CLIContextBudgetHook(BaseAgentHook):
+    """Emit CLI-private budget snapshots after context-changing runtime events."""
+
+    priority: int = 900
+    on_compaction_status: Callable[[str], None] | None = None
+
+    async def before_event(self, event, ctx):
+        if isinstance(event, ContextMaintenanceRequested):
+            assessment = await ctx.agent._context.assess_budget(
+                model=ctx.agent.llm.model,
+                trigger=None,
+            )
+            if self._will_attempt_compaction(ctx, assessment):
+                self._emit_compaction_status("Compaction start")
+        return None
+
+    async def after_event(self, event, ctx, emitted_events):
+        del emitted_events
+        if isinstance(event, LLMResponseReceived):
+            await self._emit_budget(ctx, "post_llm_response")
+        elif isinstance(event, RuntimeToolResultReceived):
+            await self._emit_budget(ctx, "post_tool_result")
+        elif isinstance(event, ContextMaintenanceRequested):
+            snapshot = await self._emit_budget(ctx, None)
+            if snapshot.trigger == "post_compaction":
+                self._emit_compaction_status("Context compacted")
+        return None
+
+    def _emit_compaction_status(self, message: str) -> None:
+        if self.on_compaction_status is not None:
+            self.on_compaction_status(message)
+
+    @staticmethod
+    def _will_attempt_compaction(ctx, assessment) -> bool:
+        if not getattr(assessment, "needs_compaction", False):
+            return False
+        context = ctx.agent._context
+        compaction_service = getattr(context, "_compaction_service", None)
+        if compaction_service is None:
+            return False
+        if not compaction_service.config.enabled:
+            return False
+        messages = context.get_messages()
+        countable_indices = context._countable_indices_from(
+            messages,
+            start_index=context.summarized_boundary,
+        )
+        keep_indices = context._build_recent_keep_indices(
+            messages,
+            countable_indices,
+            compaction_service.config.preserve_recent_messages,
+            token_budget=context._recent_keep_token_budget(assessment),
+        )
+        return any(index not in keep_indices for index in countable_indices)
+
+    @staticmethod
+    async def _emit_budget(ctx, trigger: str | None) -> _CLIContextBudgetSnapshot:
+        assessment = await ctx.agent._context.assess_budget(
+            model=ctx.agent.llm.model,
+            trigger=trigger,
+        )
+        snapshot = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=assessment.estimated_tokens,
+            context_limit=assessment.context_limit,
+            remaining_tokens=max(
+                0,
+                assessment.context_limit - assessment.estimated_tokens,
+            ),
+            context_utilization=assessment.context_utilization,
+            remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        ctx.emit_ui_event(snapshot)
+        return snapshot
 
 
 # =============================================================================
@@ -244,7 +353,7 @@ class _ConsoleMirror:
 
 
 class TGAgentCLI:
-    """Interactive CLI for TG Agent assistant.
+    """Interactive CLI for Crab CLI.
 
     Pure UI class - displays agent events and handles user input.
     """
@@ -334,6 +443,9 @@ class TGAgentCLI:
             )
         )
         self._workspace_instruction_state = WorkspaceInstructionState()
+        self._last_context_budget: _CLIContextBudgetSnapshot | None = None
+        self._last_context_budget_status_line: str | None = None
+        self._context_budget_hook_agents: set[int] = set()
 
         if self._bridge_store is not None:
             self._bridge_store.initialize()
@@ -411,6 +523,129 @@ class TGAgentCLI:
             workspace_dir=self._ctx.working_dir,
             state=self._workspace_instruction_state,
         )
+
+    def _build_remote_reset_startup_prompt(self) -> str:
+        """Build the hidden startup prompt used after a remote `/reset`."""
+        startup_prompt = _REMOTE_RESET_STARTUP_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        return f"{startup_prompt}\n\n当前运行模型：{self._agent.llm.model}"
+
+    async def _handle_reset_command(self, *, source: str = "local") -> str:
+        """Reset conversation state, with remote bootstrap support."""
+        self._agent.clear_history()
+        await self._refresh_empty_context_budget_display()
+
+        if source != "remote":
+            self._console.print("[yellow]会话上下文已重置。[/yellow]")
+            return "会话上下文已重置。"
+
+        self._maybe_inject_agents_md()
+        fallback_message = "会话已重置，但启动问候生成失败，请直接发送你的需求。"
+
+        try:
+            startup_prompt = self._build_remote_reset_startup_prompt()
+            final_content = (await self._agent.query(startup_prompt)).strip()
+        except Exception:
+            logger.exception("Failed to bootstrap remote session after /reset")
+            self._agent.clear_history()
+            await self._refresh_empty_context_budget_display()
+            self._maybe_inject_agents_md()
+            return fallback_message
+
+        return final_content or fallback_message
+
+    def _ensure_context_budget_hook(self, agent: Agent) -> None:
+        key = id(agent)
+        if key in self._context_budget_hook_agents:
+            return
+        agent.register_hook(
+            _CLIContextBudgetHook(on_compaction_status=self._print_compaction_status)
+        )
+        self._context_budget_hook_agents.add(key)
+
+    async def _refresh_empty_context_budget_display(self, agent: Agent | None = None) -> None:
+        active_agent = agent or self._agent
+        assessment = await active_agent._context.assess_budget(
+            model=active_agent.llm.model,
+            trigger=None,
+        )
+        self._last_context_budget = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=0,
+            context_limit=assessment.context_limit,
+            remaining_tokens=assessment.context_limit,
+            context_utilization=0.0,
+            remaining_ratio=1.0,
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        self._last_context_budget_status_line = None
+
+    async def _refresh_current_context_budget_display(
+        self,
+        agent: Agent | None = None,
+        *,
+        trigger: str | None = None,
+        print_status: bool = False,
+    ) -> None:
+        active_agent = agent or self._agent
+        assessment = await active_agent._context.assess_budget(
+            model=active_agent.llm.model,
+            trigger=trigger,
+        )
+        snapshot = _CLIContextBudgetSnapshot(
+            model=assessment.model,
+            estimated_tokens=assessment.estimated_tokens,
+            context_limit=assessment.context_limit,
+            remaining_tokens=max(0, assessment.context_limit - assessment.estimated_tokens),
+            context_utilization=assessment.context_utilization,
+            remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
+            message_count=assessment.message_count,
+            trigger=assessment.trigger,
+        )
+        self._last_context_budget = snapshot
+        if print_status:
+            self._print_context_budget_status(snapshot)
+
+    def _context_budget_left_percent(self, snapshot: _CLIContextBudgetSnapshot) -> int:
+        return max(0, min(100, round(snapshot.remaining_ratio * 100)))
+
+    def _format_token_count(self, value: int) -> str:
+        if value == 0:
+            return "0k"
+        if value >= 1_000_000:
+            return f"{value / 1_000_000:.1f}M"
+        if value >= 1_000:
+            return f"{value / 1_000:.1f}k"
+        return str(value)
+
+    def _format_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> str:
+        percent = self._context_budget_left_percent(snapshot)
+        used = self._format_token_count(snapshot.estimated_tokens)
+        limit = self._format_token_count(snapshot.context_limit)
+        return f"上下文 {percent}% left · {used}/{limit} tokens · {snapshot.model}"
+
+    def _print_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> None:
+        status_line = self._format_context_budget_status(snapshot)
+        if status_line == self._last_context_budget_status_line:
+            return
+        self._last_context_budget_status_line = status_line
+        self._console.print(Text(status_line, style="grey50"))
+
+    def _print_compaction_status(self, message: str) -> None:
+        had_loading = self._loading is not None
+        if had_loading:
+            self._stop_loading(self._loading)
+            self._loading = None
+        self._console.print(Text(message, style="yellow"))
+        if had_loading:
+            self._loading = self._start_loading("思考中")
+
+    def _render_context_budget_toolbar(self) -> str:
+        if self._last_context_budget is None:
+            status = "上下文 100% left"
+        else:
+            status = self._format_context_budget_status(self._last_context_budget)
+        return html_escape(status)
 
     def _build_project_snapshot(self) -> str:
         """Build a lightweight snapshot of the project for summarization."""
@@ -622,11 +857,17 @@ class TGAgentCLI:
 
     async def _switch_model_preset(self, preset_name: str, *, manual: bool = True) -> bool:
         """Switch to a configured model preset without clearing conversation context."""
-        return await self._model_switch_service.switch_model_preset(
+        switched = await self._model_switch_service.switch_model_preset(
             preset_name,
             manual=manual,
             auto_state=self._model_auto_state,
         )
+        if switched:
+            await self._refresh_current_context_budget_display(
+                trigger="model_switch",
+                print_status=True,
+            )
+        return switched
 
     def _store_command_final_content(self, content: str | None) -> None:
         """Persist the latest non-agent command output for bridge results."""
@@ -653,7 +894,12 @@ class TGAgentCLI:
             result = await callback()
         return result, capture.get().strip()
 
-    async def _run_slash_command_with_live_capture(self, user_input: str) -> tuple[bool, str]:
+    async def _run_slash_command_with_live_capture(
+        self,
+        user_input: str,
+        *,
+        source: str = "local",
+    ) -> tuple[bool, str]:
         """Execute one slash command with live colored output and plain-text recording."""
         original_console = self._console
         original_model_console = self._model_switch_service._console
@@ -662,7 +908,7 @@ class TGAgentCLI:
         self._model_switch_service._console = mirror
         self._store_command_final_content("")
         try:
-            handled = await self._handle_slash_command(user_input)
+            handled = await self._handle_slash_command(user_input, source=source)
         finally:
             self._console = original_console
             self._model_switch_service._console = original_model_console
@@ -726,11 +972,12 @@ class TGAgentCLI:
         )
         self._console.print()
 
-    async def _handle_slash_command(self, text: str) -> bool:
+    async def _handle_slash_command(self, text: str, *, source: str = "local") -> bool:
         """Handle a slash command.
 
         Args:
             text: The slash command text
+            source: Input source, such as ``local`` or ``remote``
 
         Returns:
             True if the command was handled, False otherwise
@@ -803,8 +1050,9 @@ class TGAgentCLI:
 
         # Handle reset command
         if command_name == "reset":
-            self._agent.clear_history()
-            self._console.print("[yellow]会话上下文已重置。[/yellow]")
+            reset_message = await self._handle_reset_command(source=source)
+            if source == "remote":
+                self._store_command_final_content(reset_message)
             return True
 
         if command_name == "init":
@@ -1069,6 +1317,7 @@ class TGAgentCLI:
         self._console.print()
         final_response: str | None = None
         active_agent = agent or self._agent
+        self._ensure_context_budget_hook(active_agent)
 
         # Keep workspace instructions synchronized for the main CLI agent.
         # Dedicated helper agents like /init manage their own injection timing.
@@ -1150,6 +1399,11 @@ class TGAgentCLI:
                     self._console.print()
                     self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     break
+
+                if isinstance(event, _CLIContextBudgetSnapshot):
+                    self._last_context_budget = event
+                    self._print_context_budget_status(event)
+                    continue
 
                 if isinstance(event, ToolCallEvent):
                     self._stop_loading(self._loading)
@@ -1304,7 +1558,12 @@ class TGAgentCLI:
         normalized = user_input.strip().lower()
         return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
 
-    async def _execute_input_text(self, user_input: str) -> _ExecutionOutcome:
+    async def _execute_input_text(
+        self,
+        user_input: str,
+        *,
+        source: str = "local",
+    ) -> _ExecutionOutcome:
         """Execute one normalized line of user input."""
         user_input = user_input.strip()
         if not user_input:
@@ -1342,7 +1601,10 @@ class TGAgentCLI:
         # Handle slash commands
         if is_slash_command(user_input):
             try:
-                handled, final_content = await self._run_slash_command_with_live_capture(user_input)
+                handled, final_content = await self._run_slash_command_with_live_capture(
+                    user_input,
+                    source=source,
+                )
                 if handled:
                     return _ExecutionOutcome(final_content=final_content)
             except EOFError:
@@ -1389,7 +1651,7 @@ class TGAgentCLI:
                     self._console.print(f"[dim]{preview}[/dim]")
 
             try:
-                outcome = await self._execute_input_text(request.content)
+                outcome = await self._execute_input_text(request.content, source=request.source)
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
@@ -1468,6 +1730,7 @@ class TGAgentCLI:
 
         # Print welcome
         self._print_welcome()
+        await self._refresh_empty_context_budget_display()
 
         if self._bridge_store is not None:
             should_continue = await self._drain_bridge_queue()
@@ -1525,6 +1788,8 @@ class TGAgentCLI:
                 "completion-menu.meta.completion": "bg:#00aaaa #000000",
                 "completion-menu.meta.current": "bg:#00ffff #000000",
                 "completion-menu": "bg:#008888 #ffffff",
+                "bottom-toolbar": "noreverse bg:default #777777",
+                "bottom-toolbar.text": "noreverse bg:default #777777",
             }
         )
 
@@ -1537,6 +1802,7 @@ class TGAgentCLI:
             auto_suggest=AutoSuggestFromHistory(),
             style=style,
             enable_history_search=True,
+            bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
         )
 
         if self._bridge_store is not None:
@@ -1563,17 +1829,39 @@ class TGAgentCLI:
 
     def _print_welcome(self):
         """Print welcome message."""
+        title = Text(justify="center")
+        title.append("Crab", style="bold #ff6b57")
+        title.append(" CLI", style="bold #ffd166")
+
+        subtitle = Text(
+            "让任务横着走，结果稳稳落地。",
+            style="italic #ffb38a",
+            justify="center",
+        )
+
+        tips = Text()
+        tips.append("Enter", style="bold white")
+        tips.append(" 发送消息，", style="white")
+        tips.append("/ + Tab", style="bold cyan")
+        tips.append(" 查看命令\n", style="white")
+        tips.append("@ + Tab", style="bold cyan")
+        tips.append(" 查看技能，", style="white")
+        tips.append('@"<path>"<message>', style="bold #9cd7ff")
+        tips.append(" 发送图片\n", style="white")
+        tips.append("Ctrl+D", style="bold #ffd166")
+        tips.append(" 或 ", style="dim")
+        tips.append("/exit", style="bold cyan")
+        tips.append(" 退出，准备好了就直接开工。", style="dim")
+
+        banner = Group(title, subtitle, Text(""), tips)
+
         self._console.print(
             Panel(
-                f"[bold cyan]TG Agent CLI[/bold cyan]\n\n"
-                f"输入消息后按 Enter 发送。\n"
-                f"按 [cyan]/[/cyan] 可查看可用命令。\n"
-                f"按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 可查看可用技能。\n"
-                f'可使用 [cyan]@"<path>"<message>[/cyan] 或 '
-                f"[cyan]@'<path>'<message>[/cyan] 发送图片输入。\n"
-                f"按 Ctrl+D 或输入 [cyan]/exit[/cyan] 退出。\n",
-                title="[bold blue]欢迎[/bold blue]",
-                border_style="bright_blue",
+                banner,
+                title="[bold #ffd166]Welcome Aboard[/bold #ffd166]",
+                subtitle="[dim]scuttle mode engaged[/dim]",
+                border_style="#ff7a59",
+                padding=(1, 2),
             )
         )
 
@@ -1612,7 +1900,7 @@ class TGAgentCLI:
   [blue]read <file>[/blue]   - 读取文件内容
   [blue]write <file>[/blue]  - 写入文件内容
   [blue]edit <file>[/blue]   - 编辑文件（替换文本）
-  [blue]glob <pattern>[/blue]- 按模式查找文件
+  [blue]glob <pattern>[/blue]- 按模式查找文件或目录
   [blue]grep <pattern>[/blue] - 搜索文件内容
   [blue]todos[/blue]         - 管理待办事项
 

@@ -7,10 +7,13 @@ and a role-based index for fast grouping.
 
 from __future__ import annotations
 
-from collections import defaultdict
-from typing import Iterable, Iterator, Sequence, TYPE_CHECKING
-
+import json
 import logging
+import re
+from collections import defaultdict
+from inspect import signature
+from pathlib import Path
+from typing import TYPE_CHECKING, Iterable, Iterator, Sequence
 
 from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
 from agent_core.agent.compaction import (
@@ -20,26 +23,21 @@ from agent_core.agent.compaction import (
     CompactionWorkingState,
 )
 from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
-import re
-
-logger = logging.getLogger("agent_core.agent")
-
 from agent_core.llm.messages import (
     AssistantMessage,
     BaseMessage,
     ContentPartTextParam,
-    DeveloperMessage,
     ToolMessage,
     UserMessage,
 )
-from agent_core.llm.views import ChatInvokeUsage
+
+logger = logging.getLogger("agent_core.agent")
 
 if TYPE_CHECKING:
     from agent_core.llm.base import BaseChatModel
     from agent_core.llm.views import ChatInvokeUsage
     from agent_core.tokens import TokenCost
     from agent_core.tools.decorator import Tool
-    from pathlib import Path
 
 
 class ContextManager:
@@ -61,6 +59,9 @@ class ContextManager:
         self._checkpoint_store: CheckpointStore | None = None
         self._working_state_store: WorkingStateStore | None = None
         self._artifact_refs: list[str] = []
+        self._compaction_state_callback: Callable[[str, CompactionResult | None], None] | None = (
+            None
+        )
         if messages:
             self.replace_messages(messages)
 
@@ -139,6 +140,22 @@ class ContextManager:
         if self._working_state_store is not None:
             self._working_state_store.ensure_initialized()
 
+    def set_compaction_state_callback(
+        self,
+        callback: Callable[[str, CompactionResult | None], None] | None,
+    ) -> None:
+        """Register a lightweight callback for compaction lifecycle state changes."""
+        self._compaction_state_callback = callback
+
+    def _emit_compaction_state(
+        self,
+        state: str,
+        result: CompactionResult | None = None,
+    ) -> None:
+        if self._compaction_state_callback is None:
+            return
+        self._compaction_state_callback(state, result)
+
     def _register_artifact_ref(self, path: str) -> str:
         self._artifact_refs = self._dedupe_preserve_order([*self._artifact_refs, path])
         return path
@@ -178,6 +195,8 @@ class ContextManager:
         self,
         messages: Sequence[BaseMessage],
         llm: "BaseChatModel",
+        *,
+        reference_messages: Sequence[BaseMessage] | None = None,
     ) -> CompactionResult:
         """Compact a message segment, checkpointing the raw messages first when configured."""
         if self._compaction_service is None:
@@ -187,7 +206,14 @@ class ContextManager:
         if self._checkpoint_store is not None and messages:
             checkpoint_record = self._checkpoint_store.save_messages(messages)
 
-        result = await self._compaction_service.compact(list(messages), llm)
+        compact_kwargs = {}
+        if (
+            reference_messages
+            and "reference_messages" in signature(self._compaction_service.compact).parameters
+        ):
+            compact_kwargs["reference_messages"] = list(reference_messages)
+
+        result = await self._compaction_service.compact(list(messages), llm, **compact_kwargs)
         if checkpoint_record is not None:
             result.checkpoint_ref = checkpoint_record.reference
             result.checkpoint_path = str(checkpoint_record.path)
@@ -361,9 +387,6 @@ class ContextManager:
         storage_path: "Path | None" = None,
     ) -> None:
         """Destroy old ephemeral tool outputs, keeping last N per tool."""
-        from pathlib import Path
-        import json
-
         # Group ephemeral messages by tool name, preserving order
         ephemeral_by_tool: dict[str, list[ToolMessage]] = {}
 
@@ -647,22 +670,8 @@ class ContextManager:
         *,
         trigger: str | None = None,
     ) -> BudgetAssessment:
-        """Apply sliding-window cleanup and compaction from one budget assessment path."""
+        """Apply formal compaction from one budget assessment path."""
         assessment = await self.assess_budget(model=llm.model, trigger=trigger)
-
-        should_slide = self.sliding_window_messages is not None and (
-            assessment.needs_warning or len(self._messages) > self.sliding_window_messages
-        )
-        if should_slide:
-            did_slide = await self.apply_sliding_window_by_messages(
-                keep_count=self.sliding_window_messages or 0,
-                llm=llm,
-            )
-            if did_slide:
-                assessment = await self.assess_budget(
-                    model=llm.model,
-                    trigger="sliding_window",
-                )
 
         if assessment.needs_compaction:
             compacted = await self.check_and_compact(llm, trigger="compact_threshold")
@@ -710,15 +719,19 @@ class ContextManager:
         if not compacted_indices:
             return False
 
-        result = await self.compact_messages([self._messages[i] for i in compacted_indices], llm)
-        if not (result.summary or "").strip():
-            return False
-
         recent_messages = self._collect_recent_messages(
             self._messages,
             start_index=self._summarized_boundary,
             keep_indices=keep_indices,
         )
+        result = await self.compact_messages(
+            [self._messages[i] for i in compacted_indices],
+            llm,
+            reference_messages=recent_messages,
+        )
+        if not (result.summary or "").strip():
+            return False
+
         self.apply_compaction_result(result, recent_messages=recent_messages)
         if self._budget_engine is not None:
             self._budget_engine.note_trigger(trigger or "compact_threshold")
@@ -815,7 +828,9 @@ class ContextManager:
                 messages,
                 keep_indices | {index},
             )
-            new_indices = [i for i in candidate_indices if i not in keep_indices and i in countable_indices]
+            new_indices = [
+                i for i in candidate_indices if i not in keep_indices and i in countable_indices
+            ]
             if not new_indices:
                 continue
 
@@ -881,7 +896,9 @@ class ContextManager:
 
         pinned_roles = set(pin_roles)
         rest: list[BaseMessage] = [
-            m for i, m in enumerate(messages) if i >= self._summarized_boundary and m.role not in pinned_roles
+            m
+            for i, m in enumerate(messages)
+            if i >= self._summarized_boundary and m.role not in pinned_roles
         ]
 
         # Build rounds: each round starts with a user message
@@ -906,5 +923,7 @@ class ContextManager:
         if not (result.summary or "").strip():
             return False
 
-        self.apply_compaction_result(result, recent_messages=[msg for r in tail_rounds for msg in r])
+        self.apply_compaction_result(
+            result, recent_messages=[msg for r in tail_rounds for msg in r]
+        )
         return True

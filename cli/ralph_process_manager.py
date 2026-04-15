@@ -13,8 +13,9 @@ from cli.ralph_models import RalphRunRecord, now_iso
 class RalphProcessManager:
     """Manage long-running Ralph loop processes."""
 
-    def __init__(self, workspace_root: Path):
-        self._workspace_root = workspace_root.resolve()
+    def __init__(self, workspace_root: Path | None):
+        resolved_root = workspace_root.resolve() if workspace_root is not None else Path.cwd().resolve()
+        self._workspace_root = resolved_root
         self._state_dir = self._workspace_root / ".tg_agent" / "ralph"
         self._log_dir = self._state_dir / "process_logs"
         self._state_file = self._state_dir / "runs.json"

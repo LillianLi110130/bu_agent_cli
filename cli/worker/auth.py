@@ -212,7 +212,7 @@ def _format_auth_config_search_paths(base_dir: Path | str | None = None) -> str:
 
 
 def _get_package_config_dir() -> Path:
-    """Return the installed tg-agent package root directory."""
+    """Return the installed Crab CLI package root directory."""
     return application_root()
 
 
@@ -242,7 +242,7 @@ async def authenticate_startup(
         if owns_client:
             await http_client.aclose()
 
-    _persist_auth_result(base_dir=resolved_base_dir, auth_result=auth_result)
+    _persist_auth_result(auth_result=auth_result)
     logger.info("Worker auth bootstrap succeeded")
     return auth_result
 
@@ -327,9 +327,41 @@ async def _fetch_authorization(
     return AuthBootstrapResult(authorization=authorization, user_id=user_id)
 
 
-def _persist_auth_result(base_dir: Path, auth_result: AuthBootstrapResult) -> None:
-    """Persist the authorization state to .tg_agent/token.json."""
-    token_path = base_dir / ".tg_agent" / "token.json"
+def _persist_auth_result(auth_result: AuthBootstrapResult) -> None:
+    """Persist the authorization state to the fixed user-level token path."""
+    token_path = tg_agent_home() / "token.json"
+    _write_auth_result(token_path=token_path, auth_result=auth_result)
+
+
+def persist_updated_authorization(
+    *,
+    base_dir: Path | str | None,
+    authorization: str,
+) -> AuthBootstrapResult | None:
+    """Persist a refreshed Authorization token while preserving the current user id."""
+    normalized_authorization = _normalize_optional_string(authorization)
+    if not normalized_authorization:
+        return None
+
+    existing_result = load_persisted_auth_result(base_dir)
+    if existing_result is None:
+        logger.warning("Skipping Authorization refresh persistence because no token file exists")
+        return None
+
+    if existing_result.authorization == normalized_authorization:
+        return existing_result
+
+    updated_result = AuthBootstrapResult(
+        authorization=normalized_authorization,
+        user_id=existing_result.user_id,
+    )
+    _persist_auth_result(updated_result)
+    logger.info("Persisted refreshed Authorization token to user token.json")
+    return updated_result
+
+
+def _write_auth_result(*, token_path: Path, auth_result: AuthBootstrapResult) -> None:
+    """Write one auth result payload to the target token path."""
     token_path.parent.mkdir(parents=True, exist_ok=True)
     token_path.write_text(
         json.dumps(
@@ -346,14 +378,28 @@ def _persist_auth_result(base_dir: Path, auth_result: AuthBootstrapResult) -> No
 
 def _resolve_auth_result_path(base_dir: Path | str | None) -> Path | None:
     """Return the preferred auth result path, with legacy fallback support."""
-    resolved_base_dir = Path(base_dir or Path.cwd())
-    preferred_path = resolved_base_dir / ".tg_agent" / "token.json"
+    preferred_path = tg_agent_home() / "token.json"
     if preferred_path.exists():
         return preferred_path
 
-    legacy_path = resolved_base_dir / ".tg_crab" / "token.json"
-    if legacy_path.exists():
-        return legacy_path
+    legacy_search_roots: list[Path] = []
+    if base_dir is not None:
+        legacy_search_roots.append(Path(base_dir).resolve())
+    legacy_search_roots.append(tg_agent_home())
+
+    seen: set[Path] = set()
+    for search_root in legacy_search_roots:
+        if search_root in seen:
+            continue
+        seen.add(search_root)
+
+        legacy_workspace_path = search_root / ".tg_agent" / "token.json"
+        if legacy_workspace_path.exists():
+            return legacy_workspace_path
+
+        legacy_crab_path = search_root / ".tg_crab" / "token.json"
+        if legacy_crab_path.exists():
+            return legacy_crab_path
     return None
 
 

@@ -146,7 +146,9 @@ class ArtifactStore:
         target_dir = self.root_dir / _sanitize_segment(category)
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{_sanitize_segment(name)}.json"
-        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        target.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
         return target
 
     def _category_dir(self, category: str) -> Path:
@@ -263,6 +265,16 @@ class WorkingStateStore:
     ) -> dict[str, object]:
         existing = self._load_payload()
         working_state = result.working_state or CompactionWorkingState()
+        open_questions = (
+            _dedupe_preserve_order(working_state.recent_history_notes)
+            if working_state.recent_history_notes
+            else self._read_list(existing, "open_questions")
+        )
+        next_steps = (
+            _dedupe_preserve_order(working_state.remaining_actions)
+            if working_state.remaining_actions
+            else self._read_list(existing, "next_steps")
+        )
 
         payload: dict[str, object] = {
             "session_id": self.session_id,
@@ -298,18 +310,8 @@ class WorkingStateStore:
                     *working_state.files_modified,
                 ]
             ),
-            "open_questions": _dedupe_preserve_order(
-                [
-                    *self._read_list(existing, "open_questions"),
-                    *working_state.recent_history_notes,
-                ]
-            ),
-            "next_steps": _dedupe_preserve_order(
-                [
-                    *self._read_list(existing, "next_steps"),
-                    *working_state.remaining_actions,
-                ]
-            ),
+            "open_questions": open_questions,
+            "next_steps": next_steps,
             "artifact_refs": _dedupe_preserve_order(
                 [
                     *self._read_list(existing, "artifact_refs"),
@@ -329,7 +331,9 @@ class WorkingStateStore:
                     result.checkpoint_path or "",
                 ]
             ),
-            "last_compacted_at": _now_iso() if result.compacted else existing.get("last_compacted_at"),
+            "last_compacted_at": (
+                _now_iso() if result.compacted else existing.get("last_compacted_at")
+            ),
         }
         self.path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

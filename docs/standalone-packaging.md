@@ -98,6 +98,70 @@ CLI 启动时会按以下顺序读取配置：
 
 首次启动时，如果 `~/.tg_agent/tg_crab_worker.json` 不存在，会自动从包内默认配置复制过去。
 
+## Windows Portable Bundle
+
+如果需要做一个“带 Python 运行时”的 Windows 便携包，而不是只发 `wheel`，可以使用仓库里的发布脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\build_windows_portable.ps1 -PythonExecutable <your-python.exe>
+```
+
+这里的 `python.exe` 应该来自标准 CPython 安装目录，而不是 conda 环境。这个方案会裁出一个最小化的 `python-runtime/`，专门给便携包安装脚本创建 `~/.tg_agent/.venv` 使用。
+
+如果你已经提前准备好了匹配当前 Python 版本的离线 `wheelhouse`，可以额外传：
+
+```powershell
+-SourceWheelhouse <path-to-wheelhouse>
+```
+
+不传时，脚本会尝试用 `pip wheel .` 为当前 Python 版本自动构建完整依赖 wheelhouse。
+
+如果你想先单独生成 wheelhouse，再喂给 portable 打包脚本，可以先执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\build_wheelhouse.ps1 -PythonExecutable <your-python.exe> -Clean
+```
+
+然后再执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\build_windows_portable.ps1 -PythonExecutable <your-python.exe> -SourceWheelhouse .\dist\package\windows\wheelhouse
+```
+
+默认产物会生成到：
+
+```text
+dist/release/tg-agent-windows-x64-v<version>-portable/
+```
+
+目录中会包含：
+- `deploy.bat`
+- `win_deploy.ps1`
+- `tg-agent-launcher.bat`
+- `python-runtime/`
+- `wheelhouse/`
+- `app/`
+
+安装/启动语义：
+- 全局配置固定使用用户目录 `~/.tg_agent`
+- workspace 不会写死到用户目录下的某个默认子目录
+- 从终端启动 `tg-agent-launcher.bat` 时，默认使用当前工作目录作为 workspace
+- 如果用户直接从 bundle 目录双击启动，则 launcher 会回落到桌面目录，避免把运行时状态写进安装目录
+- 部署脚本会用 bundle 内置的 `python-runtime/python.exe` 在 `~/.tg_agent/.venv` 里离线安装 `tg-agent`
+- 用户机器不需要单独安装 Python，也不需要安装 conda
+
+构建完成后可以再执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\verify_windows_portable.ps1
+```
+
+如需带一次实际 smoke 验证：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\verify_windows_portable.ps1 -RunSmoke
+```
+
 ## 需要注意的边界
 
 ### 1. 用户机器仍然需要 Python

@@ -1,2 +1,2 @@
-"""CLI package for tg-agent-cli."""
+"""CLI package for Crab CLI."""
 

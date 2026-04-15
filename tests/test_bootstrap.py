@@ -142,6 +142,22 @@ def test_build_system_prompt_accepts_runtime_registries(
     assert str(workspace) in prompt
 
 
+def test_build_system_prompt_explains_background_bash_output_flow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+
+    prompt = module.build_system_prompt(tmp_path)
+
+    assert "`bash` 的 `run_in_background=true`" in prompt
+    assert "`ok=true`" in prompt
+    assert "不代表后台命令最终完成或成功" in prompt
+    assert "`task_output(task_id=..., wait_for=..., timeout=...)`" in prompt
+    assert "不要用 `bash` 执行 `cat`/`type` 去读 `persistedOutputPath`" in prompt
+
+
 def test_build_system_prompt_includes_user_and_workspace_skills(
     tmp_path: Path,
     monkeypatch,
@@ -165,7 +181,8 @@ def test_build_system_prompt_includes_user_and_workspace_skills(
     assert "builtin-only" in prompt
     assert "user-only" in prompt
     assert "project-only" in prompt
-    assert str(home_dir / ".tg_agent" / "skills" / ".builtin" / "builtin-only").lower() in prompt.lower()
+    builtin_skill_path = home_dir / ".tg_agent" / "skills" / ".builtin" / "builtin-only"
+    assert str(builtin_skill_path).lower() in prompt.lower()
 
 
 def test_build_system_prompt_prefers_project_skill_metadata(
@@ -304,6 +321,28 @@ def test_create_subagent_factory_excludes_project_context(monkeypatch) -> None:
     assert "## System Information" in agent.system_prompt
     assert "# Project Context" not in agent.system_prompt
     assert "The following project context files have been loaded:" not in agent.system_prompt
+
+
+def test_tg_crab_main_build_system_prompt_includes_project_context(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("tg_crab_main")
+    skill_module = _load_module("cli.at_commands")
+    registry_module = _load_module("agent_core.agent.registry")
+
+    monkeypatch.setattr(module, "build_project_context", lambda: "PROJECT_CONTEXT_MARKER")
+
+    skill_registry = skill_module.AtCommandRegistry(skill_dirs=[tmp_path / "skills"])
+    agent_registry = registry_module.AgentRegistry(tmp_path / "agents")
+
+    prompt = module._build_system_prompt(
+        tmp_path,
+        skill_registry=skill_registry,
+        agent_registry=agent_registry,
+    )
+
+    assert "PROJECT_CONTEXT_MARKER" in prompt
 
 
 def test_sync_workspace_agents_md_deduplicates_and_replaces_content(tmp_path: Path) -> None:

@@ -15,7 +15,7 @@
 
 ## 架构概览
 
-- 入口层：`claude_code.py`
+- 入口层：`tg_crab_main.py`
   - 负责组装 LLM、Agent、工具、Sandbox、系统提示词
 - UI 层：`cli/`
   - `cli/app.py`：交互循环、事件渲染、slash 命令
@@ -53,7 +53,7 @@ pip install -e .
 bu-agent
 
 # 方式 2：直接运行脚本
-python claude_code.py
+python tg_crab_main.py
 
 # 指定模型
 bu-agent --model gpt-4o
@@ -246,7 +246,7 @@ docs/spec/<spec_name>/
 
 ```text
 bu_agent_cli/
-├── claude_code.py
+├── tg_crab_main.py
 ├── cli/
 │   ├── app.py
 │   └── slash_commands.py
