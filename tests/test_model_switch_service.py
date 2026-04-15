@@ -210,6 +210,7 @@ async def test_switch_model_preset_updates_llm_and_manual_auto_state(
             context_limit=1000,
             threshold_utilization=0.1,
             compacted=True,
+            token_estimate_source="local_full",
         )
 
     monkeypatch.setattr("cli.model_switch_service.ChatOpenAI", FakeChatOpenAI)
@@ -229,6 +230,10 @@ async def test_switch_model_preset_updates_llm_and_manual_auto_state(
     assert auto_state.auto_switched is False
     assert auto_state.auto_from_preset is None
     assert any("已在切换前压缩上下文" in message for message in console.messages)
+    assert any(
+        "切换模型后使用本地估算，下一次模型返回 usage 后校准" in message
+        for message in console.messages
+    )
 
 
 def test_set_llm_updates_compaction_service_reference():

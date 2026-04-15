@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ class WorkerRunner:
         model: str | None,
         root_dir: str | Path | None,
         gateway_transport: str = "sse",
+        stream_max_session_seconds: float = 20 * 60,
         result_poll_interval_seconds: float = 0.5,
         empty_poll_sleep_seconds: float = 0.1,
     ) -> None:
@@ -32,6 +34,7 @@ class WorkerRunner:
         self.model = model
         self.root_dir = root_dir
         self.gateway_transport = gateway_transport
+        self.stream_max_session_seconds = stream_max_session_seconds
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
         resolved_root_dir = Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
@@ -80,26 +83,73 @@ class WorkerRunner:
                 continue
 
             for message in messages:
-                task = asyncio.create_task(self._process_message(message))
-                self._completion_tasks.add(task)
-                task.add_done_callback(self._completion_tasks.discard)
+                self._schedule_message_processing(message)
 
     async def _run_stream_loop(self) -> None:
         """Consume remote messages via a persistent SSE stream."""
         while not self._stop_event.is_set():
+            stream_iter = self.gateway_client.stream_events(worker_id=self.worker_id)
+            stream_session_deadline = self._get_stream_session_deadline()
+            reconnect_delay_seconds = self.empty_poll_sleep_seconds
             try:
-                async for event in self.gateway_client.stream_events(worker_id=self.worker_id):
+                while not self._stop_event.is_set():
+                    event = await self._next_stream_event(
+                        stream_iter=stream_iter,
+                        deadline=stream_session_deadline,
+                    )
                     if self._stop_event.is_set():
                         break
                     if event.event != "message" or event.message is None:
                         continue
-                    await self._process_message(event.message)
+                    self._schedule_message_processing(event.message)
+            except StopAsyncIteration:
+                logger.info(
+                    f"Worker stream closed normally for worker_id={self.worker_id}, reconnecting"
+                )
+            except asyncio.TimeoutError:
+                logger.info(
+                    "Worker stream session reached reconnect deadline for "
+                    f"worker_id={self.worker_id}, reconnecting"
+                )
+                reconnect_delay_seconds = 0.0
             except (httpx.HTTPError, httpx.ReadTimeout) as exc:
                 logger.warning(
                     f"Worker stream failed for worker_id={self.worker_id}, reconnecting: {exc}"
                 )
+            finally:
+                aclose = getattr(stream_iter, "aclose", None)
+                if callable(aclose):
+                    with contextlib.suppress(Exception):
+                        await aclose()
             if not self._stop_event.is_set():
-                await asyncio.sleep(self.empty_poll_sleep_seconds)
+                await asyncio.sleep(reconnect_delay_seconds)
+
+    def _schedule_message_processing(self, message: Any) -> None:
+        """Process one remote message in the background while intake continues."""
+        task = asyncio.create_task(self._process_message(message))
+        self._completion_tasks.add(task)
+        task.add_done_callback(self._completion_tasks.discard)
+
+    def _get_stream_session_deadline(self) -> float | None:
+        """Return the deadline for the current SSE session, if enabled."""
+        if self.stream_max_session_seconds <= 0:
+            return None
+        return asyncio.get_running_loop().time() + self.stream_max_session_seconds
+
+    async def _next_stream_event(
+        self,
+        *,
+        stream_iter: Any,
+        deadline: float | None,
+    ) -> Any:
+        """Read the next SSE event, proactively rotating the stream near its deadline."""
+        if deadline is None:
+            return await anext(stream_iter)
+
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(anext(stream_iter), timeout=remaining)
 
     async def _process_message(self, message: Any) -> None:
         """Process one polled message."""

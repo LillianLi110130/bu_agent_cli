@@ -59,9 +59,6 @@ class ContextManager:
         self._checkpoint_store: CheckpointStore | None = None
         self._working_state_store: WorkingStateStore | None = None
         self._artifact_refs: list[str] = []
-        self._compaction_state_callback: Callable[[str, CompactionResult | None], None] | None = (
-            None
-        )
         if messages:
             self.replace_messages(messages)
 
@@ -139,22 +136,6 @@ class ContextManager:
         self._working_state_store = working_state_store
         if self._working_state_store is not None:
             self._working_state_store.ensure_initialized()
-
-    def set_compaction_state_callback(
-        self,
-        callback: Callable[[str, CompactionResult | None], None] | None,
-    ) -> None:
-        """Register a lightweight callback for compaction lifecycle state changes."""
-        self._compaction_state_callback = callback
-
-    def _emit_compaction_state(
-        self,
-        state: str,
-        result: CompactionResult | None = None,
-    ) -> None:
-        if self._compaction_state_callback is None:
-            return
-        self._compaction_state_callback(state, result)
 
     def _register_artifact_ref(self, path: str) -> str:
         self._artifact_refs = self._dedupe_preserve_order([*self._artifact_refs, path])
@@ -656,6 +637,7 @@ class ContextManager:
                 threshold_utilization=0.0,
                 context_utilization=0.0,
                 trigger=trigger,
+                token_estimate_source="unknown",
             )
         return await self._budget_engine.assess(
             model=model,

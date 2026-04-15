@@ -122,7 +122,8 @@ class ThinkTagParser:
     """解析流式文本中的 think 标签，支持流式输出思考内容."""
 
     def __init__(self) -> None:
-        self.in_think = False
+        self.in_think = False   # 当前是否在think中
+        self.think_end = False  # think是否已经结束
         self.tag_buffer = ""
         self.filtered_content = ""
         self.think_id = "think_0"
@@ -135,39 +136,52 @@ class ThinkTagParser:
         事件类型: "start", "end", 或 None
         一个 delta 要么是 normal，要么是 think，不会同时存在
         """
-        self.tag_buffer += delta
 
-        if not self.in_think:
-            # 查找开标签
+        # 当前llm调用如果已经结束了think，则不需要再积累了，后面的都认为是text输出
+        if not self.think_end:
+            self.tag_buffer += delta
+
+
+        if not self.in_think:   # 当前不在think中
+            # 查找开始标签
             idx = self.tag_buffer.find(_THINK_OPEN_TAG)
             if idx != -1:
-                # 找到了开标签
+                # 找到了开始标签
                 normal_text = self.tag_buffer[:idx]
-                self.tag_buffer = self.tag_buffer[idx + self._open_len :]
+                # 裁掉<think>, 从think标签之后的内容开始
+                self.tag_buffer = self.tag_buffer[idx + self._open_len:]
                 self.in_think = True
                 if normal_text:
                     self.filtered_content += normal_text
                 return normal_text or None, None, "start", False
-            # 没找到开标签，输出安全部分（保留末尾可能构成标签的部分）
+            # 没找到开标签
+            # 如果think阶段已经结束了，当前内容都是安全的，可以直接输出
+            if self.think_end:
+                self.filtered_content += delta
+                return delta or None, None, None, False
+            # 输出安全部分（保留末尾可能构成标签的部分）
             if len(self.tag_buffer) > self._open_len:
-                safe = self.tag_buffer[: -self._open_len]
-                self.tag_buffer = self.tag_buffer[-self._open_len :]
+                safe = self.tag_buffer[:-self._open_len]
+                self.tag_buffer = self.tag_buffer[-self._open_len:]
                 if safe:
                     self.filtered_content += safe
                 return safe or None, None, None, False
-        else:
+        else:   # 当前在think中
             # 查找闭标签
             idx = self.tag_buffer.find(_THINK_CLOSE_TAG)
             if idx != -1:
                 # 找到了闭标签
                 think_content = self.tag_buffer[:idx]
-                self.tag_buffer = self.tag_buffer[idx + self._close_len :]
+                # # 裁掉</think>，从think闭标签之后的内容开始(后面不需要了，一次llm调用只会有一次think事件)
+                # self.tag_buffer = self.tag_buffer[idx + self._close_len:]
+                self.tag_buffer = ""
                 self.in_think = False
+                self.think_end = True
                 return None, think_content or None, "end", True
             # 没找到闭标签，输出安全部分
             if len(self.tag_buffer) > self._close_len:
-                safe = self.tag_buffer[: -self._close_len]
-                self.tag_buffer = self.tag_buffer[-self._close_len :]
+                safe = self.tag_buffer[:-self._close_len]   # 取前面减去闭标签的部分
+                self.tag_buffer = self.tag_buffer[-self._close_len:]    # 取后面闭标签长度之后的部分
                 if safe:
                     return None, safe, None, False
 
@@ -204,6 +218,7 @@ class ModelSwitchPreflightResult:
     threshold_utilization: float
     compacted: bool = False
     reason: str | None = None
+    token_estimate_source: str = "unknown"
 
 
 @dataclass
@@ -269,11 +284,7 @@ class Agent:
     _hook_manager: HookManager = field(default_factory=HookManager, repr=False)
     _cancel_event: asyncio.Event | None = field(default=None, init=False, repr=False)
     """Cancellation event for interrupting long-running operations."""
-    task_complete_exc_type: type[TaskComplete] = field(
-        default=TaskComplete,
-        init=False,
-        repr=False,
-    )
+    task_complete_exc_type: type[TaskComplete] = field(default=TaskComplete, init=False, repr=False)
 
     def __post_init__(self):
         # Validate that all tools are Tool instances
@@ -1370,7 +1381,6 @@ class Agent:
                         f"⚠️ Got rate limit error, retrying in {total_delay:.1f}s... "
                         f"(attempt {attempt + 1}/{self.llm_max_retries})"
                     )
-                    # Sleep with cancellation support
                     await self._sleep_with_cancel(total_delay)
                     continue
                 raise
@@ -1570,6 +1580,7 @@ Keep the summary brief but informative."""
                 threshold_utilization=0.0,
                 compacted=False,
                 reason="Compaction service unavailable; skipping preflight.",
+                token_estimate_source="unknown",
             )
 
         assessment = await self._context.assess_budget(
@@ -1581,6 +1592,7 @@ Keep the summary brief but informative."""
         threshold = int(assessment.compact_threshold)
         context_limit = int(assessment.context_limit)
         threshold_utilization = float(assessment.threshold_utilization)
+        token_estimate_source = assessment.token_estimate_source
 
         if threshold == 0 or threshold_utilization < utilization_limit:
             return ModelSwitchPreflightResult(
@@ -1591,6 +1603,7 @@ Keep the summary brief but informative."""
                 context_limit=context_limit,
                 threshold_utilization=threshold_utilization,
                 compacted=False,
+                token_estimate_source=token_estimate_source,
             )
 
         if not self._context._compaction_service.config.enabled:
@@ -1603,6 +1616,7 @@ Keep the summary brief but informative."""
                 threshold_utilization=threshold_utilization,
                 compacted=False,
                 reason="Context too large for target model and compaction is disabled.",
+                token_estimate_source=token_estimate_source,
             )
 
         compacted = await self._compact_messages_now()
@@ -1616,6 +1630,7 @@ Keep the summary brief but informative."""
                 threshold_utilization=threshold_utilization,
                 compacted=False,
                 reason="Context too large and automatic compaction failed.",
+                token_estimate_source=token_estimate_source,
             )
 
         reassessment = await self._context.assess_budget(
@@ -1627,6 +1642,7 @@ Keep the summary brief but informative."""
         new_threshold = int(reassessment.compact_threshold)
         new_context_limit = int(reassessment.context_limit)
         new_utilization = float(reassessment.threshold_utilization)
+        new_token_estimate_source = reassessment.token_estimate_source
 
         if new_threshold > 0 and new_utilization >= utilization_limit:
             return ModelSwitchPreflightResult(
@@ -1641,6 +1657,7 @@ Keep the summary brief but informative."""
                     "Context is still too large for target model after compaction. "
                     "Try a larger-context model."
                 ),
+                token_estimate_source=new_token_estimate_source,
             )
 
         return ModelSwitchPreflightResult(
@@ -1652,6 +1669,7 @@ Keep the summary brief but informative."""
             threshold_utilization=new_utilization,
             compacted=True,
             reason="Context compacted before model switch.",
+            token_estimate_source=new_token_estimate_source,
         )
 
     @observe(name="agent_query")
@@ -1768,8 +1786,10 @@ Keep the summary brief but informative."""
             response_usage = None
             think_parser = ThinkTagParser()
             prompt_messages = self._context.get_messages()
+            last_is_thinking = False  # 上一个消息是否为思考
 
             try:
+                # 流式输出，工具调用参数会在 astream 中完整累积
                 stream_iter = self.llm.astream(
                     messages=prompt_messages,
                     tools=self.tool_definitions if self.tools else None,
@@ -1777,23 +1797,30 @@ Keep the summary brief but informative."""
                 )
 
                 async for chunk in stream_iter:
+                    # 累积增量内容
                     if chunk.delta:
                         normal_text, think_content, event_type, _ = think_parser.feed(chunk.delta)
                         if normal_text is not None:
-                            yield TextDeltaEvent(delta=normal_text)
+                            if last_is_thinking and normal_text.strip() == "":
+                                continue
+                            else:
+                                last_is_thinking = False
+                                yield TextDeltaEvent(delta=normal_text)
                         if event_type == "start":
                             yield ThinkingStartEvent(think_id=think_parser.think_id)
                         elif think_content is not None:
-                            yield ThinkingDeltaEvent(
-                                delta=think_content, think_id=think_parser.think_id
-                            )
+                            yield ThinkingDeltaEvent(delta=think_content, think_id=think_parser.think_id)
                         if event_type == "end":
+                            # 思考结束时，将上一个是思考消息的标识符设置为True
+                            last_is_thinking = True
                             yield ThinkingEndEvent(think_id=think_parser.think_id)
 
+                    # 累积工具调用（只在流结束时返回完整信息）
                     if chunk.tool_calls:
                         print(chunk)
                         accumulated_tool_calls = chunk.tool_calls
 
+                    # 保存 usage
                     if chunk.usage:
                         response_usage = chunk.usage
 
@@ -1804,6 +1831,7 @@ Keep the summary brief but informative."""
 
                 # 获取过滤后的内容（不含 think 标签）
                 final_content = think_parser.get_filtered_content()
+
                 has_tools = len(accumulated_tool_calls) > 0
                 tool_calls = accumulated_tool_calls if has_tools else None
 
@@ -1870,7 +1898,6 @@ Keep the summary brief but informative."""
                 )
 
                 step_start_time = time.time()
-
                 try:
                     tool_result = await self._execute_tool_call(tool_call)
                     self._context.add_message(tool_result)

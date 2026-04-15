@@ -74,7 +74,6 @@ async def test_worker_runner_bridges_remote_message_and_completes(workspace_root
 
         assert state.is_online("worker-1") is False
         assert state.completions[0]["worker_id"] == "worker-1"
-        assert state.completions[0]["input_content"] == "remote hello"
         assert state.completions[0]["final_content"] == "remote done"
 
 
@@ -149,6 +148,100 @@ async def test_worker_runner_bridges_remote_message_and_completes_via_sse(worksp
 
 
 @pytest.mark.asyncio
+async def test_worker_runner_keeps_streaming_while_previous_remote_request_is_processing(
+    workspace_root: Path,
+):
+    class FakeSSEGatewayClient:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[WorkerStreamEvent] = asyncio.Queue()
+            self.online_calls: list[str] = []
+            self.offline_calls: list[str] = []
+            self.completions: list[dict[str, str]] = []
+
+        async def online(self, worker_id: str) -> bool:
+            self.online_calls.append(worker_id)
+            return True
+
+        async def offline(self, worker_id: str) -> bool:
+            self.offline_calls.append(worker_id)
+            return True
+
+        async def complete(self, worker_id: str, final_content: str) -> bool:
+            self.completions.append(
+                {"worker_id": worker_id, "final_content": final_content}
+            )
+            return True
+
+        async def stream_events(self, worker_id: str):
+            yield WorkerStreamEvent(event="ready", payload={"worker_id": worker_id})
+            while True:
+                event = await self.queue.get()
+                yield event
+
+    gateway_client = FakeSSEGatewayClient()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=gateway_client,
+        model=None,
+        root_dir=workspace_root,
+        gateway_transport="sse",
+        result_poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(runner.run_forever())
+
+    store = FileBridgeStore(
+        workspace_root,
+        session_binding_id=resolve_session_binding_id("worker-1"),
+    )
+
+    await _wait_until(lambda: gateway_client.online_calls == ["worker-1"])
+    await gateway_client.queue.put(
+        WorkerStreamEvent(
+            event="message",
+            message=WorkerMessage(content="remote first sse"),
+            payload={"content": "remote first sse"},
+        )
+    )
+    await _wait_until(lambda: store.pending_count() == 1)
+
+    first = store.claim_next_pending()
+    assert first is not None
+    assert first.content == "remote first sse"
+
+    await gateway_client.queue.put(
+        WorkerStreamEvent(
+            event="message",
+            message=WorkerMessage(content="remote second sse"),
+            payload={"content": "remote second sse"},
+        )
+    )
+    await _wait_until(lambda: store.pending_count() == 1)
+
+    second = store.claim_next_pending()
+    assert second is not None
+    assert second.content == "remote second sse"
+
+    store.complete_request(first, final_content="done first sse")
+    await _wait_until(lambda: len(gateway_client.completions) == 1)
+    assert gateway_client.completions[0] == {
+        "worker_id": "worker-1",
+        "final_content": "done first sse",
+    }
+
+    store.complete_request(second, final_content="done second sse")
+    await _wait_until(lambda: len(gateway_client.completions) == 2)
+    runner.stop()
+    await gateway_client.queue.put(WorkerStreamEvent(event="heartbeat", payload={"ts": 1}))
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert gateway_client.offline_calls == ["worker-1"]
+    assert gateway_client.completions[1] == {
+        "worker_id": "worker-1",
+        "final_content": "done second sse",
+    }
+
+
+@pytest.mark.asyncio
 async def test_worker_runner_uses_local_request_id_for_remote_message(workspace_root: Path):
     state = MockGatewayState()
     app = create_mock_gateway_app(state)
@@ -188,7 +281,6 @@ async def test_worker_runner_uses_local_request_id_for_remote_message(workspace_
 
         assert request_id.startswith("req_")
         assert state.completions[0]["worker_id"] == "worker-1"
-        assert state.completions[0]["input_content"] == "remote cached"
         assert state.completions[0]["final_content"] == "cached done"
         assert store.pending_count() == 0
 
@@ -235,7 +327,6 @@ async def test_worker_runner_keeps_polling_while_previous_remote_request_is_proc
 
         store.complete_request(first, final_content="done first")
         await _wait_until(lambda: len(state.completions) == 1)
-        assert state.completions[0]["input_content"] == "remote first"
         assert state.completions[0]["final_content"] == "done first"
 
         store.complete_request(second, final_content="done second")
@@ -243,7 +334,6 @@ async def test_worker_runner_keeps_polling_while_previous_remote_request_is_proc
         runner.stop()
         await asyncio.wait_for(task, timeout=1.0)
 
-        assert state.completions[1]["input_content"] == "remote second"
         assert state.completions[1]["final_content"] == "done second"
 
 

@@ -131,6 +131,7 @@ class _CLIContextBudgetSnapshot:
     remaining_ratio: float
     message_count: int
     trigger: str | None = None
+    token_estimate_source: str = "unknown"
 
 
 class _CLIHumanApprovalHandler:
@@ -220,6 +221,7 @@ class _CLIContextBudgetHook(BaseAgentHook):
             remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
             message_count=assessment.message_count,
             trigger=assessment.trigger,
+            token_estimate_source=assessment.token_estimate_source,
         )
         ctx.emit_ui_event(snapshot)
         return snapshot
@@ -577,6 +579,7 @@ class TGAgentCLI:
             remaining_ratio=1.0,
             message_count=assessment.message_count,
             trigger=assessment.trigger,
+            token_estimate_source="empty",
         )
         self._last_context_budget_status_line = None
 
@@ -601,6 +604,7 @@ class TGAgentCLI:
             remaining_ratio=max(0.0, 1.0 - assessment.context_utilization),
             message_count=assessment.message_count,
             trigger=assessment.trigger,
+            token_estimate_source=assessment.token_estimate_source,
         )
         self._last_context_budget = snapshot
         if print_status:
@@ -621,6 +625,8 @@ class TGAgentCLI:
     def _format_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> str:
         percent = self._context_budget_left_percent(snapshot)
         used = self._format_token_count(snapshot.estimated_tokens)
+        if snapshot.token_estimate_source == "local_full" and snapshot.estimated_tokens > 0:
+            used = f"约 {used}"
         limit = self._format_token_count(snapshot.context_limit)
         return f"上下文 {percent}% left · {used}/{limit} tokens · {snapshot.model}"
 

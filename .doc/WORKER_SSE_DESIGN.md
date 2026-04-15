@@ -809,12 +809,13 @@ worker 行为建议：
 如果你希望在现有代码结构上低风险演进，我现在更建议按两阶段来做：
 
 1. 第一阶段先不引入 `client_instance_id`，也不引入 `delivery_id`
-2. 第一阶段只把下行从 `poll` 改成 `GET /api/worker/stream`，并保持单连接、单 inflight、串行完成
-3. `online / complete / offline` 先尽量复用现有字段和实现
-4. 本地 `FileBridgeStore` 和 CLI 执行链路尽量不动
-5. 第二阶段再补 `client_instance_id + delivery_id + heartbeat + lease + 幂等`
-6. 第二阶段稳定后，再考虑彻底下线轮询
+2. 第一阶段只把下行从 `poll` 改成 `GET /api/worker/stream`
+3. 如果真实后端不维护任务状态，可以先保持“单 `worker_id` 单活跃 stream + worker 本地 pending 队列”的简化模型
+4. `online / complete / offline` 先尽量复用现有字段和实现
+5. 本地 `FileBridgeStore` 和 CLI 执行链路尽量不动
+6. 第二阶段再补 `client_instance_id + delivery_id + heartbeat + lease + 幂等`
+7. 第二阶段稳定后，再考虑彻底下线轮询
 
 一句话总结：
 
-最务实的改法是“先把 poll 换成 SSE，再把协议补强成显式 delivery 模型”。第一阶段先解决传输方式，第二阶段再解决并发、重连、幂等和实例身份。
+最务实的改法是“先把 poll 换成 SSE，再视后端复杂度决定是否补强协议”。如果后端当前不维护任务状态，第一阶段可以先用简化模型跑起来；第二阶段再解决 delivery、实例身份、幂等和精确恢复。
