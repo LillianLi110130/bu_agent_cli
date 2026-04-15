@@ -29,7 +29,7 @@ def workspace_root() -> Path:
 
 
 @pytest.mark.asyncio
-async def test_fetch_authorization_extracts_authorization_and_userno():
+async def test_fetch_authorization_extracts_authorization_and_ystid():
     app = create_mock_auth_app()
     transport = httpx.ASGITransport(app=app)
 
@@ -41,7 +41,7 @@ async def test_fetch_authorization_extracts_authorization_and_userno():
         )
 
     assert result.authorization == "Bearer mock-token"
-    assert result.user_id == "mock-user-123"
+    assert result.user_id == "mock-yst-123"
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_fetch_authorization_rejects_unsuccessful_return_code():
             200,
             headers={"Authorization": "Bearer mock-token"},
             json={
-                "body": {"userNo": "mock-user-123"},
+                "body": {"ystId": "mock-yst-123"},
                 "errorMsg": "login failed",
                 "returnCode": "ERR0001",
             },
@@ -218,6 +218,7 @@ def test_load_auth_config_falls_back_to_package_install_dir(
     workspace_root: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.setenv("HOME", str(workspace_root / "home-state"))
     package_root = workspace_root / "installed-package"
     package_root.mkdir(parents=True, exist_ok=True)
     (package_root / "tg_crab_worker.json").write_text(
@@ -256,7 +257,7 @@ def test_tg_crab_main_authentication_overrides_worker_id(
         assert Path(base_dir) == config_root
         return auth.AuthBootstrapResult(
             authorization="Bearer mock-token",
-            user_id="mock-user-123",
+            user_id="mock-yst-123",
         )
 
     monkeypatch.setattr(tg_crab_main, "load_auth_config", fake_load_auth_config)
@@ -271,7 +272,7 @@ def test_tg_crab_main_authentication_overrides_worker_id(
     asyncio.run(tg_crab_main._authenticate_worker_startup(args))
 
     assert calls == [config_root]
-    assert args.im_worker_id == "mock-user-123"
+    assert args.im_worker_id == "mock-yst-123"
 
 
 @pytest.mark.asyncio
@@ -297,5 +298,4 @@ async def test_mock_auth_server_authorize_and_login():
         assert login.headers["Authorization"] == "Bearer mock-token"
         payload = login.json()
         assert payload["returnCode"] == "SUC0000"
-        assert payload["body"]["userNo"] == "mock-user-123"
         assert payload["body"]["ystId"] == "mock-yst-123"

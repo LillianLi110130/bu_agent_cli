@@ -31,7 +31,16 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
             calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
-        def __init__(self, *, worker_id, gateway_client, model, root_dir, gateway_transport):
+        def __init__(
+            self,
+            *,
+            worker_id,
+            gateway_client,
+            model,
+            root_dir,
+            gateway_transport,
+            stream_max_session_seconds,
+        ):
             calls.append(
                 (
                     "runner",
@@ -39,6 +48,7 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
                     model,
                     root_dir,
                     gateway_transport,
+                    stream_max_session_seconds,
                     type(gateway_client).__name__,
                 )
             )
@@ -84,7 +94,7 @@ def test_async_main_uses_config_dir_for_auth(monkeypatch):
             ("load_auth_config", config_dir.resolve()),
             ("load_persisted_auth_result", config_dir.resolve()),
             ("client", "http://127.0.0.1:8765", "Bearer test-token", config_dir.resolve()),
-            ("runner", "worker-1", None, str(workspace_root), "sse", "FakeGatewayClient"),
+            ("runner", "worker-1", None, str(workspace_root), "sse", 1200.0, "FakeGatewayClient"),
             ("run_forever",),
         ]
     finally:
@@ -115,7 +125,16 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
             calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
-        def __init__(self, *, worker_id, gateway_client, model, root_dir, gateway_transport):
+        def __init__(
+            self,
+            *,
+            worker_id,
+            gateway_client,
+            model,
+            root_dir,
+            gateway_transport,
+            stream_max_session_seconds,
+        ):
             calls.append(
                 (
                     "runner",
@@ -123,6 +142,7 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
                     model,
                     root_dir,
                     gateway_transport,
+                    stream_max_session_seconds,
                     type(gateway_client).__name__,
                 )
             )
@@ -170,7 +190,7 @@ def test_async_main_can_read_auth_config_from_source_dir(monkeypatch):
             ("load_auth_config", config_source_dir.resolve()),
             ("load_persisted_auth_result", config_dir.resolve()),
             ("client", "http://127.0.0.1:8765", "Bearer source-token", config_dir.resolve()),
-            ("runner", "worker-1", None, str(workspace_root), "sse", "FakeGatewayClient"),
+            ("runner", "worker-1", None, str(workspace_root), "sse", 1200.0, "FakeGatewayClient"),
             ("run_forever",),
         ]
     finally:
@@ -198,8 +218,17 @@ def test_async_main_passes_sse_gateway_transport(monkeypatch):
             calls.append(("client", base_url, authorization, base_dir))
 
     class FakeRunner:
-        def __init__(self, *, worker_id, gateway_client, model, root_dir, gateway_transport):
-            calls.append(("runner", worker_id, gateway_transport))
+        def __init__(
+            self,
+            *,
+            worker_id,
+            gateway_client,
+            model,
+            root_dir,
+            gateway_transport,
+            stream_max_session_seconds,
+        ):
+            calls.append(("runner", worker_id, gateway_transport, stream_max_session_seconds))
 
         async def run_forever(self) -> None:
             calls.append(("run_forever",))
@@ -233,7 +262,7 @@ def test_async_main_passes_sse_gateway_transport(monkeypatch):
 
     try:
         asyncio.run(worker_main.async_main())
-        assert ("runner", "worker-1", "sse") in calls
+        assert ("runner", "worker-1", "sse", 1200.0) in calls
     finally:
         if root.exists():
             shutil.rmtree(root)

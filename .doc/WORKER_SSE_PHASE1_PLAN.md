@@ -54,6 +54,29 @@
 
 ## 4. 第一阶段预期效果
 
+### 4.0 补充前提
+
+结合当前真实后端的实现方式，第一阶段可以采用更简化的前提：
+
+- 后端不维护任务状态
+- 后端不区分 queued / inflight / completed
+- 只要 worker 通过 `poll` 或 `stream` 收到消息，后端就视为已经下发
+- 收到 `complete` 后，后端直接把结果发回 IM
+- 后端不需要把 `complete` 精确关联到某一条任务
+
+这意味着第一阶段的重点可以收敛为：
+
+- 把下行从 `poll` 改成 SSE
+- 保持单 `worker_id` 单活跃 SSE 连接
+- worker 持续接收消息并落到本地 pending
+- 本地 CLI 按自己的节奏串行执行
+
+在这个前提下，第一阶段不需要强行引入：
+
+- `delivery_id`
+- `client_instance_id`
+- 服务端 inflight / lease / ack 状态机
+
 做完之后，可以达到：
 
 - 消息下发变成实时推送，不再依赖下一次轮询
@@ -65,8 +88,9 @@
 但也必须接受这些限制：
 
 - 一个 `worker_id` 仍然只能按“单实例”理解
-- 同一时刻只适合单连接、单 inflight
-- 不适合正式支持并发消息处理
+- 同一时刻只保留一个活跃 SSE 连接
+- 后端不负责判断某条任务是否仍在执行
+- 远程消息可以持续进入本地 pending，但本地执行节奏仍由 CLI 自己控制
 - 断线恢复能力有限
 - `complete` 关联关系仍然偏弱
 
@@ -268,7 +292,7 @@ worker 收到 SSE `message` 后，继续沿用现在的桥接方式：
 
 - 一个 `worker_id` 基本只会启动一个 worker 进程
 - 远程消息量不高
-- 单条串行处理可以接受
+- 允许消息先进入本地 pending，再由 CLI 串行处理
 - 当前最迫切需求是降低轮询开销、提高下发实时性
 
 ### 10.3 不适合场景
@@ -295,7 +319,8 @@ worker 收到 SSE `message` 后，继续沿用现在的桥接方式：
 
 - `gateway_client` 增加 SSE 建连与事件读取能力
 - `runner` 从 poll loop 改成 stream consume loop
-- 收到 `message` 后继续写本地 bridge
+- 收到 `message` 后立即写入本地 bridge / pending
+- `stream` 自己继续读取后续消息，不必等待前一条任务 `complete`
 - 本地结果完成后继续调用现有 `complete`
 - 增加断线重连
 
@@ -314,6 +339,7 @@ worker 收到 SSE `message` 后，继续沿用现在的桥接方式：
 - worker 启动后可成功建立 SSE 连接
 - 远程消息可通过 SSE 推送到 worker
 - worker 可继续通过本地 bridge 触发 CLI 处理
+- worker 在当前任务执行期间仍可继续接收新消息并落到 pending
 - 最终结果仍可通过现有 `complete` 回传
 - worker 退出时可正常 `offline`
 

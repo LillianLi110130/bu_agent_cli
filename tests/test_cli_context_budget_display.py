@@ -106,6 +106,50 @@ async def test_context_budget_toolbar_defaults_to_100_left(
     assert toolbar == "上下文 100% left · 0k/128.0k tokens · fake-model"
 
 
+def test_context_budget_status_marks_full_local_estimate_as_approximate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = Agent(llm=FakeLLM([]), tools=[])
+    cli = _make_cli(tmp_path, monkeypatch, agent)
+    snapshot = _CLIContextBudgetSnapshot(
+        model="target-model",
+        estimated_tokens=2400,
+        context_limit=250000,
+        remaining_tokens=247600,
+        context_utilization=2400 / 250000,
+        remaining_ratio=1 - 2400 / 250000,
+        message_count=3,
+        token_estimate_source="local_full",
+    )
+
+    status = cli._format_context_budget_status(snapshot)
+
+    assert status == "上下文 99% left · 约 2.4k/250.0k tokens · target-model"
+
+
+def test_context_budget_status_keeps_provider_usage_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = Agent(llm=FakeLLM([]), tools=[])
+    cli = _make_cli(tmp_path, monkeypatch, agent)
+    snapshot = _CLIContextBudgetSnapshot(
+        model="target-model",
+        estimated_tokens=4900,
+        context_limit=128000,
+        remaining_tokens=123100,
+        context_utilization=4900 / 128000,
+        remaining_ratio=1 - 4900 / 128000,
+        message_count=3,
+        token_estimate_source="provider_baseline",
+    )
+
+    status = cli._format_context_budget_status(snapshot)
+
+    assert status == "上下文 96% left · 4.9k/128.0k tokens · target-model"
+
+
 @pytest.mark.asyncio
 async def test_reset_command_restores_context_budget_toolbar_to_100_left(
     tmp_path: Path,

@@ -102,6 +102,42 @@ def test_top_level_console_outputs_plain_text():
     assert capture.get() == "再见！\n"
 
 
+def test_build_system_prompt_delegates_to_agent_factory(monkeypatch, tmp_path):
+    class FakeSkillRegistry:
+        def get_all(self):
+            return []
+
+    class FakeAgentRegistry:
+        def list_callable_agents(self):
+            return []
+
+        def get_config(self, _name):
+            return None
+
+    captured: dict[str, object] = {}
+
+    def fake_build_system_prompt(working_dir, *, skill_registry=None, agent_registry=None):
+        captured["working_dir"] = working_dir
+        captured["skill_registry"] = skill_registry
+        captured["agent_registry"] = agent_registry
+        return "shared prompt"
+
+    monkeypatch.setattr(claude_code, "build_shared_system_prompt", fake_build_system_prompt)
+
+    skill_registry = FakeSkillRegistry()
+    agent_registry = FakeAgentRegistry()
+    prompt = claude_code._build_system_prompt(
+        tmp_path,
+        skill_registry=skill_registry,
+        agent_registry=agent_registry,
+    )
+
+    assert prompt == "shared prompt"
+    assert captured["working_dir"] == tmp_path
+    assert captured["skill_registry"] is skill_registry
+    assert captured["agent_registry"] is agent_registry
+
+
 @pytest.mark.asyncio
 async def test_parent_process_marks_worker_offline(monkeypatch):
     calls: list[tuple[str, str]] = []

@@ -320,9 +320,9 @@ async def _fetch_authorization(
     if not isinstance(body, dict):
         raise ValueError("Login response missing body object")
 
-    user_id = _normalize_optional_string(body.get("userNo"))
+    user_id = _normalize_optional_string(body.get("ystId"))
     if not user_id:
-        raise ValueError("Login response missing body.userNo in JSON body")
+        raise ValueError("Login response missing body.ystId in JSON body")
 
     return AuthBootstrapResult(authorization=authorization, user_id=user_id)
 

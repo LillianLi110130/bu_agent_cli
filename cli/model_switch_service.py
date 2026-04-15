@@ -498,6 +498,11 @@ class ModelSwitchService:
             self._print("[yellow]为适配目标模型，已在切换前压缩上下文。[/yellow]")
         self._print(f"[green]模型已切换：[/] [dim]{old_model}[/dim] -> [cyan]{model}[/cyan]")
         self._print(f"[dim]已保留上下文（{len(self._agent.messages)} 条消息）。[/dim]")
+        if (
+            getattr(preflight, "token_estimate_source", None) == "local_full"
+            and preflight.estimated_tokens > 0
+        ):
+            self._print("[dim]切换模型后使用本地估算，下一次模型返回 usage 后校准。[/dim]")
 
     async def switch_model_preset(
         self,

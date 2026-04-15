@@ -27,6 +27,12 @@ def parse_args() -> argparse.Namespace:
         default="sse",
         help="Gateway transport mode (default: sse)",
     )
+    parser.add_argument(
+        "--gateway-stream-max-session-seconds",
+        type=float,
+        default=20 * 60,
+        help="Rotate SSE sessions after this many seconds (default: 1200, set <=0 to disable)",
+    )
     parser.add_argument("--model", default=None, help="Optional model override")
     parser.add_argument(
         "--config-dir",
@@ -85,6 +91,7 @@ async def async_main() -> None:
         model=args.model,
         root_dir=args.root_dir,
         gateway_transport=args.gateway_transport,
+        stream_max_session_seconds=args.gateway_stream_max_session_seconds,
     )
     await runner.run_forever()
 
