@@ -88,6 +88,7 @@ async def test_context_budget_engine_uses_real_prompt_baseline_plus_appended_mes
     assert assessment.baseline_prompt_tokens == 120
     assert assessment.incremental_tokens == incremental
     assert assessment.estimated_tokens == 120 + incremental
+    assert assessment.token_estimate_source == "provider_baseline_plus_delta"
 
 
 @pytest.mark.asyncio
@@ -109,6 +110,7 @@ async def test_context_budget_engine_reestimates_full_history_when_model_changes
     assert assessment.baseline_prompt_tokens == 120
     assert assessment.incremental_tokens == full_estimate
     assert assessment.estimated_tokens == full_estimate
+    assert assessment.token_estimate_source == "local_full"
 
 
 @pytest.mark.asyncio

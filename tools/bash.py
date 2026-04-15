@@ -8,9 +8,8 @@ import subprocess
 from typing import Annotated
 
 from agent_core.tools import Depends, tool
-
-from tools.shell_tasks import decode_process_stream, terminate_process_tree
 from tools.sandbox import SandboxContext, get_sandbox_context
+from tools.shell_tasks import decode_process_stream, terminate_process_tree
 
 
 @tool(
@@ -18,7 +17,7 @@ from tools.sandbox import SandboxContext, get_sandbox_context
     "On Windows, use cmd or PowerShell compatible syntax and avoid Unix-only "
     "patterns such as heredoc, python3, or file.",
     context_policy="trim",
-    context_max_inline_chars=2400,
+    context_max_inline_chars=6400,
 )
 async def bash(
     command: str,
@@ -28,6 +27,10 @@ async def bash(
 ) -> str:
     """Run a command in the current OS shell within the sandbox working directory."""
     try:
+        run_in_background = _normalize_run_in_background(run_in_background)
+        if run_in_background is None:
+            return "Error: run_in_background must be a JSON boolean true/false, not a string."
+
         if run_in_background:
             if ctx.shell_task_manager is None:
                 return "Error: Shell task manager not initialized"
@@ -139,6 +142,18 @@ def _close_process_pipes(process: subprocess.Popen) -> None:
 
 def _decode_process_stream(data: bytes | str | None) -> str:
     return decode_process_stream(data)
+
+
+def _normalize_run_in_background(value: bool | str) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+    return None
 
 
 def _format_bash_result(

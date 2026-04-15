@@ -64,7 +64,6 @@ async def test_cli_session_runtime_creates_rollout_dir_and_meta(
     assert runtime.checkpoints_dir.exists()
     assert runtime.artifacts_dir.exists()
     assert runtime.working_state_path == expected_rollout / "working_state.json"
-    assert runtime.context_window_status_path == expected_rollout / "context_window_status.json"
     assert runtime.meta_path.exists()
     assert runtime.root_dir.resolve() in {path.resolve() for path in ctx.allowed_dirs}
 
@@ -105,7 +104,6 @@ async def test_helper_top_level_runtime_creates_init_rollout_dir_and_meta(
     assert runtime.checkpoints_dir.exists()
     assert runtime.artifacts_dir.exists()
     assert runtime.meta_path.exists()
-    assert runtime.context_window_status_path == runtime.rollout_dir / "context_window_status.json"
     assert runtime.root_dir.resolve() in {path.resolve() for path in ctx.allowed_dirs}
 
     meta = json.loads(runtime.meta_path.read_text(encoding="utf-8"))

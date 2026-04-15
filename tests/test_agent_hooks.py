@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 import json
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -610,7 +610,10 @@ async def test_bash_file_task_guard_hook_blocks_text_search_commands():
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"grep TODO src/app.py"}'),
+                        function=Function(
+                            name="bash",
+                            arguments='{"command":"grep TODO src/app.py"}',
+                        ),
                     )
                 ]
             ),
@@ -674,6 +677,53 @@ async def test_bash_file_task_guard_hook_blocks_file_read_commands():
 
 
 @pytest.mark.asyncio
+async def test_bash_file_task_guard_hook_points_shell_task_logs_to_task_output():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    command = (
+        "sleep 3 && cat "
+        "/home/user/project/.tg_agent/shell_tasks/22b62dbb/58983d6c.log"
+    )
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(
+                            name="bash",
+                            arguments=json.dumps({"command": command}),
+                        ),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[BashFileTaskGuardHook()],
+    )
+
+    result = await agent.query("read the background task log")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "background shell task log" in tool_messages[0].text
+    assert 'task_output(task_id="58983d6c"' in tool_messages[0].text
+    assert "`sleep` or `cat`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
 async def test_bash_file_task_guard_hook_allows_non_file_shell_commands():
     called = {"value": False}
 
@@ -688,7 +738,10 @@ async def test_bash_file_task_guard_hook_allows_non_file_shell_commands():
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"python -c \\"print(123)\\""}'),
+                        function=Function(
+                            name="bash",
+                            arguments='{"command":"python -c \\"print(123)\\""}',
+                        ),
                     )
                 ]
             ),

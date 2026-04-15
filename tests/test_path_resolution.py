@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import importlib
+import json
 import shutil
 import uuid
 from pathlib import Path
-import importlib
-import json
 
 import pytest
 
 from tools.files import read
-from tools.resolve_path import resolve_path
-from tools.search import glob_search
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
+from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext
+from tools.search import glob_search
 
 
 def _make_workspace() -> Path:
@@ -97,7 +97,8 @@ async def test_read_tool_uses_resolved_real_path():
 
 def test_decode_process_stream_handles_gbk_output(monkeypatch: pytest.MonkeyPatch):
     bash_module = importlib.import_module("tools.bash")
-    monkeypatch.setattr(bash_module, "_shell_output_encodings", lambda: ["utf-8", "gbk"])
+    shell_tasks_module = importlib.import_module("tools.shell_tasks")
+    monkeypatch.setattr(shell_tasks_module, "shell_output_encodings", lambda: ["utf-8", "gbk"])
 
     decoded = bash_module._decode_process_stream("中文目录".encode("gbk"))
 
@@ -206,6 +207,7 @@ def test_format_bash_result_includes_return_code_and_streams():
             stdout="out\n",
             stderr="err\n",
             timed_out=False,
+            interrupted=False,
         )
     )
 

@@ -88,7 +88,7 @@ def _display_path(path: Path, ctx: SandboxContext) -> str:
 @tool(
     "Find files or directories matching a glob pattern",
     context_policy="trim",
-    context_max_inline_chars=1600,
+    context_max_inline_chars=6400,
 )
 async def glob_search(
     pattern: str,
@@ -127,7 +127,7 @@ async def glob_search(
         return f"Error: {e}"
 
 
-@tool("Search file contents with regex", context_policy="trim", context_max_inline_chars=1800)
+@tool("Search file contents with regex", context_policy="trim", context_max_inline_chars=6400)
 async def grep(
     pattern: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],

@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
 from tools.bash import bash
+from tools.sandbox import SandboxContext, get_sandbox_context
 from tools.task_cancel import task_cancel
 from tools.task_output import task_output
-from tools.sandbox import SandboxContext, get_sandbox_context
 
 
 def _python_command(source: str) -> str:
@@ -102,6 +102,59 @@ async def test_bash_can_run_command_in_background_and_read_output(workspace_root
     assert output_payload["task_id"] == task_id
     assert output_payload["matched"] is True
     assert "ready" in output_payload["output"]
+
+
+@pytest.mark.asyncio
+async def test_bash_normalizes_false_string_run_in_background(workspace_root: Path) -> None:
+    ctx = SandboxContext.create(workspace_root)
+
+    result = await bash.execute(
+        command=_python_command("print('hello')"),
+        timeout=5,
+        run_in_background="false",
+        _overrides={get_sandbox_context: lambda: ctx},
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["stdout"].strip() == "hello"
+    assert payload["backgroundTaskId"] is None
+    assert payload["persistedOutputPath"] is None
+    assert ctx.shell_task_manager is not None
+    assert ctx.shell_task_manager.list_tasks() == []
+
+
+@pytest.mark.asyncio
+async def test_bash_normalizes_true_string_run_in_background(workspace_root: Path) -> None:
+    ctx = SandboxContext.create(workspace_root)
+
+    result = await bash.execute(
+        command=_python_command("import time; time.sleep(0.1); print('ready')"),
+        timeout=5,
+        run_in_background="true",
+        _overrides={get_sandbox_context: lambda: ctx},
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["backgroundTaskId"]
+    assert payload["persistedOutputPath"]
+
+
+@pytest.mark.asyncio
+async def test_bash_rejects_invalid_string_run_in_background(workspace_root: Path) -> None:
+    ctx = SandboxContext.create(workspace_root)
+
+    result = await bash.execute(
+        command=_python_command("print('hello')"),
+        timeout=5,
+        run_in_background="no",
+        _overrides={get_sandbox_context: lambda: ctx},
+    )
+
+    assert "run_in_background must be a JSON boolean" in result
+    assert ctx.shell_task_manager is not None
+    assert ctx.shell_task_manager.list_tasks() == []
 
 
 @pytest.mark.asyncio

@@ -11,15 +11,15 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from agent_core.agent.events import HiddenUserMessageEvent
 from agent_core.agent.hitl import HumanApprovalRequest
-from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
 from agent_core.agent.runtime_events import (
     FinishRequested,
     IterationStarted,
-    RuntimeEvent,
     RunFinished,
+    RuntimeEvent,
     ToolCallRequested,
     ToolResultReceived,
 )
+from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
 from agent_core.llm.messages import BaseMessage, ToolMessage, UserMessage
 
 if TYPE_CHECKING:
@@ -65,6 +65,10 @@ _BASH_FILE_READ_RE = re.compile(
     r"gc\b|"
     r"git\s+show\b"
     r")"
+)
+_SHELL_TASK_LOG_PATH_RE = re.compile(
+    r"(?i)(?:^|[\\/\s\"'])(?:\.tg_agent|\.tgagent)[\\/]"
+    r"shell_tasks[\\/][^\\/\s\"']+[\\/]([A-Za-z0-9_-]+)\.log\b"
 )
 
 
@@ -363,19 +367,28 @@ class BashFileTaskGuardHook(BaseAgentHook):
 
     @staticmethod
     def _build_guidance(command: str) -> str | None:
+        shell_task_match = _SHELL_TASK_LOG_PATH_RE.search(command)
+        if shell_task_match and _BASH_FILE_READ_RE.search(command):
+            task_id = shell_task_match.group(1)
+            return (
+                "Error: This `bash` command is polling or reading a background shell task log.\n"
+                f'Use `task_output(task_id="{task_id}", wait_for=..., timeout=...)` instead.\n'
+                "`task_output` handles waiting and returns the task status, return code, log path, "
+                "and output. Do not use `sleep` or `cat` to read this log."
+            )
         if _BASH_FILE_DISCOVERY_RE.search(command):
             return (
                 "Error: This `bash` command is doing file discovery or directory listing.\n"
                 "Use `glob_search` to list files and folders, and `resolve_path` first if the "
                 "target path is fuzzy.\n"
-                "Do not retry the same discovery step with `bash`, because that bypasses sandbox and "
-                ".tgagentignore protections."
+                "Do not retry the same discovery step with `bash`, because that bypasses "
+                "sandbox and .tgagentignore protections."
             )
         if _BASH_TEXT_SEARCH_RE.search(command):
             return (
                 "Error: This `bash` command is doing text search inside files.\n"
-                "Use `grep` for content search, and `resolve_path` first when the search scope path "
-                "is ambiguous.\n"
+                "Use `grep` for content search, and `resolve_path` first when the search "
+                "scope path is ambiguous.\n"
                 "Do not retry the same search step with `bash`, because that bypasses sandbox and "
                 ".tgagentignore protections."
             )
