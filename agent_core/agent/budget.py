@@ -40,6 +40,7 @@ class BudgetAssessment:
     threshold_utilization: float
     context_utilization: float
     trigger: str | None = None
+    token_estimate_source: str = "unknown"
 
     @property
     def needs_warning(self) -> bool:
@@ -157,8 +158,11 @@ class ContextBudgetEngine:
         *,
         model: str,
         messages: Sequence[BaseMessage],
-    ) -> tuple[int, int]:
+    ) -> tuple[int, int, str]:
         """Estimate current prompt tokens from the latest real baseline."""
+        if not messages:
+            return 0, 0, "empty"
+
         baseline_is_usable = (
             self.baseline_model == model
             and self.baseline_message_count > 0
@@ -166,12 +170,14 @@ class ContextBudgetEngine:
         )
         if not baseline_is_usable:
             total_estimate = self.estimate_tokens_for_messages(messages)
-            return total_estimate, total_estimate
+            return total_estimate, total_estimate, "local_full"
 
         incremental_messages = messages[self.baseline_message_count :]
         incremental_tokens = self.estimate_tokens_for_messages(incremental_messages)
         estimated_total = self.baseline_prompt_tokens + incremental_tokens
-        return estimated_total, incremental_tokens
+        if incremental_tokens > 0:
+            return estimated_total, incremental_tokens, "provider_baseline_plus_delta"
+        return estimated_total, incremental_tokens, "provider_baseline"
 
     async def assess(
         self,
@@ -189,9 +195,11 @@ class ContextBudgetEngine:
         warn_threshold = int(context_limit * self.warn_threshold_ratio)
         compact_threshold = int(context_limit * self.compact_threshold_ratio)
         hard_threshold = int(context_limit * self.hard_threshold_ratio)
-        estimated_tokens, incremental_tokens = self.estimate_current_tokens(
-            model=model,
-            messages=messages,
+        estimated_tokens, incremental_tokens, token_estimate_source = (
+            self.estimate_current_tokens(
+                model=model,
+                messages=messages,
+            )
         )
 
         assessment = BudgetAssessment(
@@ -200,9 +208,9 @@ class ContextBudgetEngine:
             warn_threshold=warn_threshold,
             compact_threshold=compact_threshold,
             hard_threshold=hard_threshold,
-            baseline_prompt_tokens=self.baseline_prompt_tokens
-            if self.baseline_message_count > 0
-            else 0,
+            baseline_prompt_tokens=(
+                self.baseline_prompt_tokens if self.baseline_message_count > 0 else 0
+            ),
             incremental_tokens=incremental_tokens,
             estimated_tokens=estimated_tokens,
             message_count=len(messages),
@@ -212,6 +220,7 @@ class ContextBudgetEngine:
             threshold_utilization=estimated_tokens / max(1, compact_threshold),
             context_utilization=estimated_tokens / max(1, context_limit),
             trigger=trigger or self.last_trigger,
+            token_estimate_source=token_estimate_source,
         )
         self.last_assessment = assessment
         if trigger is not None:
