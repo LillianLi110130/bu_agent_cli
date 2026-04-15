@@ -442,9 +442,6 @@ class TGAgentCLI:
         if self._bridge_store is not None:
             self._bridge_store.initialize()
 
-        if context.subagent_manager:
-            context.subagent_manager.set_result_callback(self._on_task_completed)
-
     def _load_model_presets(self) -> dict[str, ModelPreset]:
         """Load model presets from config/model_presets.json."""
         if not self._model_presets_path.exists():
@@ -1022,8 +1019,8 @@ class TGAgentCLI:
                 shell_tasks = [task.to_dict() for task in self._ctx.shell_task_manager.list_tasks()]
 
             subagent_tasks = None
-            if self._ctx.subagent_manager is not None:
-                subagent_tasks = self._ctx.subagent_manager.list_all_tasks()
+            if self._ctx.subagent_executor is not None:
+                subagent_tasks = self._ctx.subagent_executor.list_all_tasks()
 
             tasks_info = json.dumps(
                 {
@@ -1049,8 +1046,8 @@ class TGAgentCLI:
                 if shell_task is not None:
                     task_info = json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
 
-            if task_info is None and self._ctx.subagent_manager is not None:
-                task_info = self._ctx.subagent_manager.get_task_status(task_id)
+            if task_info is None and self._ctx.subagent_executor is not None:
+                task_info = self._ctx.subagent_executor.get_task_status(task_id)
 
             if task_info is None:
                 self._console.print(f"[red]未找到任务“{task_id}”。[/red]")
@@ -1072,10 +1069,10 @@ class TGAgentCLI:
                     result = await self._ctx.shell_task_manager.cancel(task_id)
 
             if result is None:
-                if self._ctx.subagent_manager is None:
+                if self._ctx.subagent_executor is None:
                     self._console.print("[yellow]没有可用的后台任务管理器。[/yellow]")
                     return True
-                result = await self._ctx.subagent_manager.cancel_task(task_id)
+                result = await self._ctx.subagent_executor.cancel_task(task_id)
 
             self._console.print(result)
             return True
@@ -1126,6 +1123,7 @@ class TGAgentCLI:
             handler = AgentSlashHandler(
                 registry=self._agent_registry,
                 console=self._console,
+                workspace_root=self._ctx.working_dir,
             )
             return await handler.handle(args)
 
@@ -1444,9 +1442,9 @@ class TGAgentCLI:
         """Handle background task completion notification.
 
         Args:
-            result: TaskResult from SubagentManager
+            result: TaskResult from background subagent task manager
         """
-        from agent_core.agent.subagent_manager import TaskResult
+        from agent_core.task import SubagentTaskResult as TaskResult
         from rich.panel import Panel
 
         if not isinstance(result, TaskResult):
@@ -1614,6 +1612,19 @@ class TGAgentCLI:
             if not outcome.continue_running:
                 return False
 
+    async def _consume_subagent_notifications(self) -> None:
+        """Render background subagent completion notifications from the shared queue."""
+        queue = self._ctx.subagent_events
+        if queue is None:
+            return
+
+        while True:
+            result = await queue.get()
+            try:
+                await self._on_task_completed(result)
+            finally:
+                queue.task_done()
+
     async def _run_with_bridge_session(self, session: Any) -> None:
         """Run the interactive loop while continuously draining bridge requests."""
         prompt_task: asyncio.Task | None = None
@@ -1681,100 +1692,109 @@ class TGAgentCLI:
         self._print_welcome()
         await self._refresh_empty_context_budget_display()
 
-        if self._bridge_store is not None:
-            should_continue = await self._drain_bridge_queue()
-            if not should_continue:
-                return
+        notification_task = asyncio.create_task(self._consume_subagent_notifications())
 
-        # Create key bindings
-        kb = KeyBindings()
-
-        @kb.add("c-d")
-        def _exit(event):  # noqa: D401
-            event.app.exit(exception=EOFError)
-
-        @kb.add("enter")
-        def _enter(event):  # noqa: D401
-            """Accept @ completion with Enter instead of submitting immediately."""
-            buffer = event.current_buffer
-            complete_state = buffer.complete_state
-
-            # When selecting @skill completion, Enter should apply completion
-            # and keep input in the prompt for the user to continue typing.
-            if complete_state and buffer.text.lstrip().startswith("@"):
-                completion = complete_state.current_completion
-                if completion is None and complete_state.completions:
-                    completion = complete_state.completions[0]
-
-                if completion is not None:
-                    buffer.apply_completion(completion)
-                    skill_name, message = parse_at_command(buffer.text)
-                    if skill_name and not message and not buffer.text.endswith(" "):
-                        buffer.insert_text(" ")
+        try:
+            if self._bridge_store is not None:
+                should_continue = await self._drain_bridge_queue()
+                if not should_continue:
                     return
 
-            buffer.validate_and_handle()
+            # Create key bindings
+            kb = KeyBindings()
 
-        # Mark as intentionally used
-        _ = _exit
-        _ = _enter
+            @kb.add("c-d")
+            def _exit(event):  # noqa: D401
+                event.app.exit(exception=EOFError)
 
-        # Create slash command completer
-        slash_completer = SlashCommandCompleter(self._slash_registry)
-        # Create at command completer
-        at_completer = AtCommandCompleter(self._at_registry)
-        # Use merged completer to handle both / and @
-        from prompt_toolkit.completion import merge_completers
+            @kb.add("enter")
+            def _enter(event):  # noqa: D401
+                """Accept @ completion with Enter instead of submitting immediately."""
+                buffer = event.current_buffer
+                complete_state = buffer.complete_state
 
-        merged_completer = merge_completers([slash_completer, at_completer])
-        threaded_completer = ThreadedCompleter(merged_completer)
+                # When selecting @skill completion, Enter should apply completion
+                # and keep input in the prompt for the user to continue typing.
+                if complete_state and buffer.text.lstrip().startswith("@"):
+                    completion = complete_state.current_completion
+                    if completion is None and complete_state.completions:
+                        completion = complete_state.completions[0]
 
-        # Define style for better visual feedback
-        style = Style.from_dict(
-            {
-                "completion-menu.completion": "bg:#008888 #ffffff",
-                "completion-menu.completion.current": "bg:#ffffff #000000",
-                "completion-menu.meta.completion": "bg:#00aaaa #000000",
-                "completion-menu.meta.current": "bg:#00ffff #000000",
-                "completion-menu": "bg:#008888 #ffffff",
-                "bottom-toolbar": "noreverse bg:default #777777",
-                "bottom-toolbar.text": "noreverse bg:default #777777",
-            }
-        )
+                    if completion is not None:
+                        buffer.apply_completion(completion)
+                        skill_name, message = parse_at_command(buffer.text)
+                        if skill_name and not message and not buffer.text.endswith(" "):
+                            buffer.insert_text(" ")
+                        return
 
-        # Create prompt session with completer
-        session = PromptSession(
-            message=lambda: HTML("<ansiblue>>> </ansiblue>"),
-            key_bindings=kb,
-            completer=threaded_completer,
-            complete_while_typing=True,
-            auto_suggest=AutoSuggestFromHistory(),
-            style=style,
-            enable_history_search=True,
-            bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
-        )
+                buffer.validate_and_handle()
 
-        if self._bridge_store is not None:
-            with patch_stdout(raw=True):
-                await self._run_with_bridge_session(session)
-            return
+            # Mark as intentionally used
+            _ = _exit
+            _ = _enter
 
-        while True:
+            # Create slash command completer
+            slash_completer = SlashCommandCompleter(self._slash_registry)
+            # Create at command completer
+            at_completer = AtCommandCompleter(self._at_registry)
+            # Use merged completer to handle both / and @
+            from prompt_toolkit.completion import merge_completers
+
+            merged_completer = merge_completers([slash_completer, at_completer])
+            threaded_completer = ThreadedCompleter(merged_completer)
+
+            # Define style for better visual feedback
+            style = Style.from_dict(
+                {
+                    "completion-menu.completion": "bg:#008888 #ffffff",
+                    "completion-menu.completion.current": "bg:#ffffff #000000",
+                    "completion-menu.meta.completion": "bg:#00aaaa #000000",
+                    "completion-menu.meta.current": "bg:#00ffff #000000",
+                    "completion-menu": "bg:#008888 #ffffff",
+                    "bottom-toolbar": "noreverse bg:default #777777",
+                    "bottom-toolbar.text": "noreverse bg:default #777777",
+                }
+            )
+
+            # Create prompt session with completer
+            session = PromptSession(
+                message=lambda: HTML("<ansiblue>>> </ansiblue>"),
+                key_bindings=kb,
+                completer=threaded_completer,
+                complete_while_typing=True,
+                auto_suggest=AutoSuggestFromHistory(),
+                style=style,
+                enable_history_search=True,
+                bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
+            )
+
+            if self._bridge_store is not None:
+                with patch_stdout(raw=True):
+                    await self._run_with_bridge_session(session)
+                return
+
+            while True:
+                try:
+                    user_input = await session.prompt_async()
+                except EOFError:
+                    self._console.print("\n[yellow]再见！[/yellow]")
+                    break
+                except KeyboardInterrupt:
+                    continue
+
+                user_input = user_input.strip()
+                if not user_input:
+                    continue
+
+                outcome = await self._execute_input_text(user_input)
+                if not outcome.continue_running:
+                    break
+        finally:
+            notification_task.cancel()
             try:
-                user_input = await session.prompt_async()
-            except EOFError:
-                self._console.print("\n[yellow]再见！[/yellow]")
-                break
-            except KeyboardInterrupt:
-                continue
-
-            user_input = user_input.strip()
-            if not user_input:
-                continue
-
-            outcome = await self._execute_input_text(user_input)
-            if not outcome.continue_running:
-                break
+                await notification_task
+            except asyncio.CancelledError:
+                pass
 
     def _print_welcome(self):
         """Print welcome message."""
@@ -1972,7 +1992,7 @@ class TGAgentCLI:
 
     async def _on_task_completed(self, result: Any):
         """Handle background task completion notification."""
-        from agent_core.agent.subagent_manager import TaskResult
+        from agent_core.task import SubagentTaskResult as TaskResult
         from rich.panel import Panel
 
         if not isinstance(result, TaskResult):

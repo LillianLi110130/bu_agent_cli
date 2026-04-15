@@ -34,10 +34,12 @@ from agent_core.agent import (
     BashFileTaskGuardHook,
     ExcelReadGuardHook,
     HumanApprovalHook,
+    SubagentCompletionHook,
     build_default_approval_policy,
 )
 from agent_core.agent.config import AgentConfig
-from agent_core.agent.registry import AgentRegistry
+from agent_core.agent.registry import AgentRegistry, default_agent_sources
+from agent_core.task import SubagentTaskManager
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
@@ -61,6 +63,7 @@ from cli.worker.auth import (
 )
 from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
+from tools.sandbox import get_current_agent
 
 # =============================================================================
 # Prompt & Skills Loading
@@ -73,8 +76,6 @@ _SKILLS_DIR = _SCRIPT_DIR / "skills"
 _AGENTS_DIR = _PROMPTS_DIR / "agents"
 _PLUGINS_DIR = _SCRIPT_DIR / "plugins"
 _INTERNAL_WORKER_FLAG = "--run-worker-internal"
-
-
 @dataclass(slots=True)
 class RuntimeRegistries:
     slash_registry: SlashCommandRegistry
@@ -185,7 +186,6 @@ def create_runtime_registries(
     plugin_dir: Path | None = None,
     plugin_dirs: list[tuple[str, Path]] | None = None,
     skills_dir: Path | None = None,
-    agents_dir: Path | None = None,
 ) -> RuntimeRegistries:
     """Create shared registries for built-ins and workspace plugins."""
     slash_registry = SlashCommandRegistry()
@@ -194,7 +194,12 @@ def create_runtime_registries(
         builtin_skills_dir=skills_dir or _SKILLS_DIR,
     )
     skill_registry = AtCommandRegistry(skill_dirs=resolved_skill_dirs)
-    agent_registry = AgentRegistry(agents_dir or _AGENTS_DIR)
+    agent_registry = AgentRegistry(
+        agent_sources=default_agent_sources(
+            workspace_root,
+            builtin_agents_dir=_AGENTS_DIR,
+        )
+    )
     resolved_plugin_dirs = plugin_dirs or [
         ("builtin", plugin_dir or _PLUGINS_DIR),
         ("workspace", workspace_root / ".tg_agent" / "plugins"),
@@ -498,7 +503,7 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
     )
 
 
-def build_agent_hooks(*, mode: str) -> list[AgentHook]:
+def build_agent_hooks() -> list[AgentHook]:
     """Build runtime hooks for agent instances.
 
     Keep the default set non-invasive for CLI usage. The built-in
@@ -506,9 +511,10 @@ def build_agent_hooks(*, mode: str) -> list[AgentHook]:
     only adds optional extra hooks.
     """
     hooks: list[AgentHook] = [
-        HumanApprovalHook(policy=build_default_approval_policy(mode)),
+        HumanApprovalHook(policy=build_default_approval_policy()),
         BashFileTaskGuardHook(),
         ExcelReadGuardHook(),
+        SubagentCompletionHook(),
         AuditHook(),
     ]
 
@@ -518,7 +524,6 @@ def build_agent_hooks(*, mode: str) -> list[AgentHook]:
 def create_agent(
     model: str | None,
     root_dir: Path | str | None = None,
-    mode: str = "primary",
     agent_config: AgentConfig | None = None,
     runtime_registries: RuntimeRegistries | None = None,
 ) -> tuple[Agent, SandboxContext, RuntimeRegistries]:
@@ -527,8 +532,6 @@ def create_agent(
     Returns:
         Tuple of (Agent, SandboxContext, RuntimeRegistries)
     """
-    from agent_core.agent.subagent_manager import SubagentManager
-
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
     runtime = runtime_registries or create_runtime_registries(
@@ -541,27 +544,28 @@ def create_agent(
         agent_registry=runtime.agent_registry,
     )
 
-    subagent_manager = SubagentManager(
-        agent_factory=_create_subagent_factory,
+    subagent_executor = SubagentTaskManager(
         registry=runtime.agent_registry,
         all_tools=ALL_TOOLS,
-        workspace=ctx.working_dir,
         context=ctx,
+        skill_registry=runtime.skill_registry,
     )
-    ctx.subagent_manager = subagent_manager
+    ctx.subagent_executor = subagent_executor
 
     agent = Agent(
         llm=llm,
         tools=ALL_TOOLS,
         system_prompt=system_prompt,
-        dependency_overrides={get_sandbox_context: lambda: ctx},
-        mode=mode,
+        dependency_overrides={
+            get_sandbox_context: lambda: ctx,
+            get_current_agent: lambda: agent,
+        },
         agent_config=agent_config,
-        hooks=build_agent_hooks(mode=mode),
+        hooks=build_agent_hooks(),
     )
 
-    if subagent_manager:
-        subagent_manager.set_main_agent(agent)
+    subagent_executor.set_main_agent(agent)
+    ctx.current_agent = agent
 
     return agent, ctx, runtime
 
@@ -587,11 +591,11 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
         llm=llm,
         tools=all_tools,
         system_prompt=system_prompt,
-        mode="subagent",
         agent_config=config,
         dependency_overrides={get_sandbox_context: lambda: parent_ctx},
-        hooks=build_agent_hooks(mode="subagent"),
+        hooks=build_agent_hooks(),
     )
+    agent.dependency_overrides[get_current_agent] = lambda: agent
     return agent
 
 

@@ -228,8 +228,7 @@ class Agent:
         tool_choice: How the LLM should choose tools ('auto', 'required', 'none').
         compaction: Optional configuration for automatic context compaction.
         dependency_overrides: Optional dict to override tool dependencies.
-        mode: Agent mode ('primary', 'subagent', 'all').
-        agent_config: Agent configuration (used for subagent and all modes).
+        agent_config: Optional agent definition used to constrain tools and metadata.
     """
 
     llm: BaseChatModel
@@ -251,10 +250,10 @@ class Agent:
     """Maximum delay in seconds between LLM retry attempts."""
     llm_retryable_status_codes: set[int] = field(default_factory=lambda: {429, 500, 502, 503, 504})
     """HTTP status codes that trigger retries (matches browser-use)."""
-    mode: str = "primary"
-    """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
     agent_config: AgentConfig | None = None
     """Agent configuration with tool permissions and other metadata."""
+    is_fork_child: bool = False
+    """Whether this runtime instance is a forked child agent."""
     human_in_loop_config: HumanInLoopConfig = field(default_factory=HumanInLoopConfig, repr=False)
     """Per-agent HITL switch state shared with runtime hooks and the CLI."""
     human_in_loop_handler: HumanInLoopHandler | None = field(default=None, repr=False)
@@ -285,8 +284,8 @@ class Agent:
         # Build tool lookup map
         self._tool_map = {t.name: t for t in self.tools}
 
-        # Filter tools based on mode and agent_config
-        if self.mode in ("subagent", "all") and self.agent_config and self.agent_config.tools:
+        # Filter tools based on the agent definition.
+        if self.agent_config:
             self._filter_tools_by_config()
 
         # Initialize token cost service
@@ -355,23 +354,24 @@ class Agent:
 
     def _filter_tools_by_config(self):
         """根据agent配置过滤工具"""
-        if not self.agent_config or not self.agent_config.tools:
+        if not self.agent_config:
             return
 
-        tools_config = self.agent_config.tools
+        allowed_tools = set(self.agent_config.tools or [])
+        disallowed_tools = set(self.agent_config.disallowed_tools or [])
         filtered_tools = []
 
-        # 如果mode是subagent，应该禁用todo工具以及禁用任务工具（防止递归）
-        forced_disabled = (
-            {"subagent", "todo_read", "todo_write"} if self.mode == "subagent" else set()
-        )
+        # Child agent definitions should not mutate the parent's todo state directly.
+        forced_disabled = {"todo_read", "todo_write"} if self.agent_config else set()
 
         for tool in self.tools:
             if tool.name in forced_disabled:
                 continue
-            tool_allowed = tools_config.get(tool.name, True)
-            if tool_allowed:
-                filtered_tools.append(tool)
+            if tool.name in disallowed_tools:
+                continue
+            if allowed_tools and tool.name not in allowed_tools:
+                continue
+            filtered_tools.append(tool)
 
         self.tools = filtered_tools
         self._tool_map = {t.name: t for t in self.tools}

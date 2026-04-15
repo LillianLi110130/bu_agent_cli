@@ -21,7 +21,7 @@ async def task_cancel(
     Completed or failed tasks cannot be cancelled.
 
     Args:
-        ctx: Sandbox context containing subagent_manager
+        ctx: Sandbox context containing subagent_executor
         task_id: The task ID to cancel
 
     Returns:
@@ -33,7 +33,8 @@ async def task_cancel(
     if ctx.shell_task_manager is not None and ctx.shell_task_manager.get_task(task_id) is not None:
         return await ctx.shell_task_manager.cancel(task_id)
 
-    if ctx.subagent_manager is None:
-        return "Error: Subagent manager not initialized"
+    executor = ctx.subagent_executor
+    if executor is None:
+        return "Error: Subagent executor not initialized"
 
-    return await ctx.subagent_manager.cancel_task(task_id)
+    return await executor.cancel_task(task_id)

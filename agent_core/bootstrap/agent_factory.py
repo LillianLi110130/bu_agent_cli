@@ -11,9 +11,11 @@ from typing import Any
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
+from agent_core.task import SubagentTaskManager
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
+from tools.sandbox import get_current_agent
 
 _APP_ROOT = application_root()
 _PACKAGE_ROOT = _APP_ROOT / "agent_core"
@@ -139,7 +141,7 @@ def build_system_prompt(
     )
     skills_text = _format_skills(skills)
 
-    registry = get_agent_registry()
+    registry = get_agent_registry(working_dir)
     callable_agents = registry.list_callable_agents()
 
     if callable_agents:
@@ -178,37 +180,36 @@ def create_llm(model: str | None = None) -> ChatOpenAI:
 def create_agent(
     model: str | None,
     root_dir: Path | str | None = None,
-    mode: str = "primary",
     agent_config: AgentConfig | None = None,
 ) -> tuple[Agent, SandboxContext]:
     """Create a configured Agent and SandboxContext."""
     from agent_core.agent.registry import get_agent_registry
-    from agent_core.agent.subagent_manager import SubagentManager
 
     ctx = SandboxContext.create(root_dir)
     llm = create_llm(model)
     system_prompt = build_system_prompt(ctx.working_dir)
-    registry = get_agent_registry()
+    registry = get_agent_registry(ctx.working_dir)
 
-    subagent_manager = SubagentManager(
-        agent_factory=_create_subagent_factory,
+    subagent_executor = SubagentTaskManager(
         registry=registry,
         all_tools=ALL_TOOLS,
-        workspace=ctx.working_dir,
         context=ctx,
     )
-    ctx.subagent_manager = subagent_manager
+    ctx.subagent_executor = subagent_executor
 
     agent = Agent(
         llm=llm,
         tools=ALL_TOOLS,
         system_prompt=system_prompt,
-        dependency_overrides={get_sandbox_context: lambda: ctx},
-        mode=mode,
+        dependency_overrides={
+            get_sandbox_context: lambda: ctx,
+            get_current_agent: lambda: agent,
+        },
         agent_config=agent_config,
     )
 
-    subagent_manager.set_main_agent(agent)
+    subagent_executor.set_main_agent(agent)
+    ctx.current_agent = agent
     return agent, ctx
 
 
@@ -230,11 +231,12 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
         temperature=config.temperature,
     )
 
-    return Agent(
+    agent = Agent(
         llm=llm,
         tools=all_tools,
         system_prompt=system_prompt,
-        mode="subagent",
         agent_config=config,
         dependency_overrides={get_sandbox_context: lambda: parent_ctx},
     )
+    agent.dependency_overrides[get_current_agent] = lambda: agent
+    return agent

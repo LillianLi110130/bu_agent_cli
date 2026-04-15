@@ -207,7 +207,8 @@ class PluginManager:
                     category=skill.category,
                 )
             )
-            plugin.skills.append(namespaced_name)
+            if namespaced_name not in plugin.skills:
+                plugin.skills.append(namespaced_name)
 
     def _register_agents(self, plugin: PluginRecord) -> None:
         agents_dir = plugin.path / "agents"
@@ -217,13 +218,18 @@ class PluginManager:
             return
 
         for md_file in sorted(agents_dir.glob("*.md")):
-            config = parse_agent_config(md_file)
+            config = parse_agent_config(
+                md_file,
+                source_scope=plugin.source,
+                source_priority=3,
+            )
             if config is None:
                 plugin.warnings.append(f"Skipped invalid agent file: {md_file.name}")
                 continue
             namespaced_name = f"{plugin.name}:{config.name}"
             self._agent_registry.register(replace(config, name=namespaced_name))
-            plugin.agents.append(namespaced_name)
+            if namespaced_name not in plugin.agents:
+                plugin.agents.append(namespaced_name)
 
     def _register_commands(self, plugin: PluginRecord) -> None:
         commands_dir = plugin.path / "commands"
@@ -246,7 +252,8 @@ class PluginManager:
                     is_builtin=False,
                 )
             )
-            plugin.commands.append(command.full_name)
+            if command.full_name not in plugin.commands:
+                plugin.commands.append(command.full_name)
 
     def _unregister_plugin(self, plugin: PluginRecord) -> None:
         for command_name in plugin.commands:
