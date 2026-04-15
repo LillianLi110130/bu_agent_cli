@@ -38,7 +38,10 @@ from agent_core.agent import (
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry
-from agent_core.bootstrap.agent_factory import build_project_context
+from agent_core.bootstrap.agent_factory import (
+    build_subagent_system_prompt,
+    build_system_prompt as build_shared_system_prompt,
+)
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
 from agent_core.runtime_paths import (
@@ -49,7 +52,7 @@ from agent_core.runtime_paths import (
 )
 from agent_core.skill.discovery import default_skill_dirs
 from cli.app import TGAgentCLI
-from cli.at_commands import AtCommand, AtCommandRegistry
+from cli.at_commands import AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
@@ -83,31 +86,10 @@ class RuntimeRegistries:
     plugin_manager: PluginManager
 
 
-def _format_skills(skills: list[AtCommand]) -> str:
-    """Format skills list into a readable string for the prompt."""
-    if not skills:
-        return "No skills available."
-
-    skills_formatted = "\n".join(
-        (f"- {skill.name}\n" f"  - Path: {skill.path}\n" f"  - Desc: {skill.description}")
-        for skill in sorted(skills, key=lambda item: item.name)
-    )
-    return skills_formatted
-
-
-def _load_prompt_template(template_name: str = "system.md") -> str:
-    """Load a prompt template from the prompts directory."""
-    template_path = _PROMPTS_DIR / template_name
-    if not template_path.exists():
-        raise FileNotFoundError(f"Prompt template not found: {template_path}")
-    return template_path.read_text(encoding="utf-8")
-
-
 def _get_windows_system_info(release: str) -> str:
     """Format Windows version information."""
     version = release.split(".")[0] if "." in release else release
     return f"Windows {version}"
-
 
 def _get_linux_distro_info() -> str | None:
     """Return Linux distribution info via the optional distro package."""
@@ -220,43 +202,12 @@ def _build_system_prompt(
     skill_registry: AtCommandRegistry,
     agent_registry: AgentRegistry,
 ) -> str:
-    """Build the system prompt by loading template and injecting skills."""
-    from string import Template
-
-    # Load skills and Format skills
-    skills = skill_registry.get_all()
-    skills_text = _format_skills(skills)
-
-    # Load subagents
-    callable_agents = agent_registry.list_callable_agents()
-
-    # Format subagents
-    agents_text = ""
-    if callable_agents:
-        agents_lines = []
-        for agent_name in callable_agents:
-            config = agent_registry.get_config(agent_name)
-            if config:
-                agents_lines.append(f"- {agent_name}: {config.description}")
-        agents_text = "\n".join(agents_lines)
-    else:
-        agents_text = "No subagents available."
-
-    # Get system information
-    system_info_text = _get_system_info()
-
-    template_str = _load_prompt_template("system.md")
-
-    template = Template(template_str)
-    prompt = template.substitute(
-        SKILLS=skills_text,
-        WORKING_DIR=str(working_dir),
-        SUBAGENTS=agents_text,
-        SYSTEM_INFO=system_info_text,
-        PROJECT_CONTEXT=build_project_context(),
+    """Delegate shared context assembly to the bootstrap factory."""
+    return build_shared_system_prompt(
+        working_dir,
+        skill_registry=skill_registry,
+        agent_registry=agent_registry,
     )
-
-    return prompt
 
 
 console = Console()
@@ -580,16 +531,10 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
     )
 
     # 为子代理添加系统信息到系统提示词
-    system_info_text = _get_system_info()
-    system_prompt = (
-        f"{config.system_prompt}\n\n## System Information\n\n"
-        f"The current environment: {system_info_text}"
-    )
-
     agent = Agent(
         llm=llm,
         tools=all_tools,
-        system_prompt=system_prompt,
+        system_prompt=build_subagent_system_prompt(config.system_prompt),
         mode="subagent",
         agent_config=config,
         dependency_overrides={
