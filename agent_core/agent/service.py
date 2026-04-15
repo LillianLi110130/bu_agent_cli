@@ -361,12 +361,7 @@ class Agent:
         disallowed_tools = set(self.agent_config.disallowed_tools or [])
         filtered_tools = []
 
-        # Child agent definitions should not mutate the parent's todo state directly.
-        forced_disabled = {"todo_read", "todo_write"} if self.agent_config else set()
-
         for tool in self.tools:
-            if tool.name in forced_disabled:
-                continue
             if tool.name in disallowed_tools:
                 continue
             if allowed_tools and tool.name not in allowed_tools:
