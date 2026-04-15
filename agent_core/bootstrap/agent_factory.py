@@ -29,7 +29,7 @@ def _format_skills(skills: list[Any]) -> str:
 
     return "\n".join(
         (f"- {skill.name}\n" f"  - Path: {skill.path}\n" f"  - Desc: {skill.description}")
-        for skill in skills
+        for skill in sorted(skills, key=lambda item: item.name)
     )
 
 
@@ -123,42 +123,59 @@ def _get_system_info() -> str:
     return f"{system} {release}"
 
 
+def _build_agents_text(agent_registry: Any) -> str:
+    """Format callable agent metadata into the prompt section."""
+    callable_agents = agent_registry.list_callable_agents()
+
+    if not callable_agents:
+        return "No subagents available."
+
+    agent_lines: list[str] = []
+    for agent_name in callable_agents:
+        config = agent_registry.get_config(agent_name)
+        if config:
+            agent_lines.append(f"- {agent_name}: {config.description}")
+
+    return "\n".join(agent_lines) or "No subagents available."
+
+
 def build_system_prompt(
     working_dir: Path,
     builtin_skills_dir: Path | None = None,
+    skill_registry: Any | None = None,
+    agent_registry: Any | None = None,
 ) -> str:
     """Build the system prompt using built-in and custom skills."""
     from agent_core.agent.registry import get_agent_registry
 
-    resolved_builtin_skills_dir = builtin_skills_dir or _SKILLS_DIR
-    skills = discover_skill_files(
-        default_skill_dirs(
-            workspace_root=working_dir,
-            builtin_skills_dir=resolved_builtin_skills_dir,
+    if skill_registry is None:
+        resolved_builtin_skills_dir = builtin_skills_dir or _SKILLS_DIR
+        skills = discover_skill_files(
+            default_skill_dirs(
+                workspace_root=working_dir,
+                builtin_skills_dir=resolved_builtin_skills_dir,
+            )
         )
-    )
-    skills_text = _format_skills(skills)
-
-    registry = get_agent_registry()
-    callable_agents = registry.list_callable_agents()
-
-    if callable_agents:
-        agent_lines = []
-        for agent_name in callable_agents:
-            config = registry.get_config(agent_name)
-            if config:
-                agent_lines.append(f"- {agent_name}: {config.description}")
-        agents_text = "\n".join(agent_lines)
     else:
-        agents_text = "No subagents available."
+        skills = skill_registry.get_all()
+
+    resolved_agent_registry = agent_registry or get_agent_registry()
 
     template = Template(_load_prompt_template("system.md"))
     return template.substitute(
-        SKILLS=skills_text,
+        SKILLS=_format_skills(skills),
         WORKING_DIR=str(working_dir),
-        SUBAGENTS=agents_text,
+        SUBAGENTS=_build_agents_text(resolved_agent_registry),
         SYSTEM_INFO=_get_system_info(),
         PROJECT_CONTEXT=build_project_context(),
+    )
+
+
+def build_subagent_system_prompt(system_prompt: str) -> str:
+    """Append shared runtime context for subagent system prompts."""
+    return (
+        f"{system_prompt}\n\n## System Information\n\n"
+        f"The current environment: {_get_system_info()}"
     )
 
 
@@ -217,11 +234,6 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
     from config.model_config import get_model_config
 
     model, base_url, api_key = get_model_config(config.model)
-    system_info_text = _get_system_info()
-    system_prompt = (
-        f"{config.system_prompt}\n\n## System Information\n\n"
-        f"The current environment: {system_info_text}"
-    )
 
     llm = ChatOpenAI(
         model=model,
@@ -233,7 +245,7 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
     return Agent(
         llm=llm,
         tools=all_tools,
-        system_prompt=system_prompt,
+        system_prompt=build_subagent_system_prompt(config.system_prompt),
         mode="subagent",
         agent_config=config,
         dependency_overrides={get_sandbox_context: lambda: parent_ctx},
