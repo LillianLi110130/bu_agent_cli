@@ -7,6 +7,7 @@ Pure UI logic - receives pre-configured Agent and context.
 import json
 import asyncio
 import io
+import logging
 import os
 import sys
 import threading
@@ -53,6 +54,7 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
+from agent_core.runtime_paths import application_root
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -101,6 +103,12 @@ from config.model_config import (
 from tools import SandboxContext, SecurityError
 
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
+
+logger = logging.getLogger("cli.app")
+
+_REMOTE_RESET_STARTUP_PROMPT_PATH = (
+    application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
+)
 
 
 @dataclass
@@ -516,6 +524,35 @@ class TGAgentCLI:
             state=self._workspace_instruction_state,
         )
 
+    def _build_remote_reset_startup_prompt(self) -> str:
+        """Build the hidden startup prompt used after a remote `/reset`."""
+        startup_prompt = _REMOTE_RESET_STARTUP_PROMPT_PATH.read_text(encoding="utf-8").strip()
+        return f"{startup_prompt}\n\n当前运行模型：{self._agent.llm.model}"
+
+    async def _handle_reset_command(self, *, source: str = "local") -> str:
+        """Reset conversation state, with remote bootstrap support."""
+        self._agent.clear_history()
+        await self._refresh_empty_context_budget_display()
+
+        if source != "remote":
+            self._console.print("[yellow]会话上下文已重置。[/yellow]")
+            return "会话上下文已重置。"
+
+        self._maybe_inject_agents_md()
+        fallback_message = "会话已重置，但启动问候生成失败，请直接发送你的需求。"
+
+        try:
+            startup_prompt = self._build_remote_reset_startup_prompt()
+            final_content = (await self._agent.query(startup_prompt)).strip()
+        except Exception:
+            logger.exception("Failed to bootstrap remote session after /reset")
+            self._agent.clear_history()
+            await self._refresh_empty_context_budget_display()
+            self._maybe_inject_agents_md()
+            return fallback_message
+
+        return final_content or fallback_message
+
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
         if key in self._context_budget_hook_agents:
@@ -857,7 +894,12 @@ class TGAgentCLI:
             result = await callback()
         return result, capture.get().strip()
 
-    async def _run_slash_command_with_live_capture(self, user_input: str) -> tuple[bool, str]:
+    async def _run_slash_command_with_live_capture(
+        self,
+        user_input: str,
+        *,
+        source: str = "local",
+    ) -> tuple[bool, str]:
         """Execute one slash command with live colored output and plain-text recording."""
         original_console = self._console
         original_model_console = self._model_switch_service._console
@@ -866,7 +908,7 @@ class TGAgentCLI:
         self._model_switch_service._console = mirror
         self._store_command_final_content("")
         try:
-            handled = await self._handle_slash_command(user_input)
+            handled = await self._handle_slash_command(user_input, source=source)
         finally:
             self._console = original_console
             self._model_switch_service._console = original_model_console
@@ -930,11 +972,12 @@ class TGAgentCLI:
         )
         self._console.print()
 
-    async def _handle_slash_command(self, text: str) -> bool:
+    async def _handle_slash_command(self, text: str, *, source: str = "local") -> bool:
         """Handle a slash command.
 
         Args:
             text: The slash command text
+            source: Input source, such as ``local`` or ``remote``
 
         Returns:
             True if the command was handled, False otherwise
@@ -1007,9 +1050,9 @@ class TGAgentCLI:
 
         # Handle reset command
         if command_name == "reset":
-            self._agent.clear_history()
-            await self._refresh_empty_context_budget_display()
-            self._console.print("[yellow]会话上下文已重置。[/yellow]")
+            reset_message = await self._handle_reset_command(source=source)
+            if source == "remote":
+                self._store_command_final_content(reset_message)
             return True
 
         if command_name == "init":
@@ -1515,7 +1558,12 @@ class TGAgentCLI:
         normalized = user_input.strip().lower()
         return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
 
-    async def _execute_input_text(self, user_input: str) -> _ExecutionOutcome:
+    async def _execute_input_text(
+        self,
+        user_input: str,
+        *,
+        source: str = "local",
+    ) -> _ExecutionOutcome:
         """Execute one normalized line of user input."""
         user_input = user_input.strip()
         if not user_input:
@@ -1553,7 +1601,10 @@ class TGAgentCLI:
         # Handle slash commands
         if is_slash_command(user_input):
             try:
-                handled, final_content = await self._run_slash_command_with_live_capture(user_input)
+                handled, final_content = await self._run_slash_command_with_live_capture(
+                    user_input,
+                    source=source,
+                )
                 if handled:
                     return _ExecutionOutcome(final_content=final_content)
             except EOFError:
@@ -1600,7 +1651,7 @@ class TGAgentCLI:
                     self._console.print(f"[dim]{preview}[/dim]")
 
             try:
-                outcome = await self._execute_input_text(request.content)
+                outcome = await self._execute_input_text(request.content, source=request.source)
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
