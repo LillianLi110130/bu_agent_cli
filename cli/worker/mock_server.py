@@ -32,7 +32,6 @@ class MockGatewayState:
     online_workers: dict[str, dict[str, Any]] = field(default_factory=dict)
     worker_ttl_seconds: float = 30.0
     stream_heartbeat_interval_seconds: float = 0.1
-    inflight_messages: dict[str, list[MockWorkerMessage]] = field(default_factory=dict)
     stream_versions: dict[str, int] = field(default_factory=dict)
     stream_notifications: dict[str, asyncio.Event] = field(default_factory=dict)
 
@@ -89,10 +88,7 @@ class MockGatewayState:
         for index, message in enumerate(list(self.queued_messages)):
             if message.worker_id != worker_id:
                 continue
-            queued = self.queued_messages.pop(index)
-            inflight_queue = self.inflight_messages.setdefault(worker_id, [])
-            inflight_queue.append(queued)
-            return queued
+            return self.queued_messages.pop(index)
         return None
 
     def notify_stream(self, worker_id: str) -> None:
@@ -195,15 +191,11 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/api/worker/complete")
     async def complete(request: CompleteRequest) -> dict[str, bool]:
-        inflight_queue = state.inflight_messages.get(request.worker_id, [])
-        inflight = inflight_queue.pop(0) if inflight_queue else None
-        if not inflight_queue:
-            state.inflight_messages.pop(request.worker_id, None)
         state.completions.append(
             {
                 "worker_id": request.worker_id,
-                "input_content": inflight.content if inflight is not None else "",
                 "final_content": request.final_content,
+                "completed_at": time.time(),
             }
         )
         return {"ok": True}

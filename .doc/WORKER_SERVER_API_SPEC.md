@@ -19,7 +19,7 @@
 1. 认证服务
    - 负责 OAuth2 / SSO 授权码登录
    - 负责把 `code` 换成业务登录结果
-   - 返回 `Authorization` 和 `body.userNo`
+   - 返回 `Authorization` 和 `body.ystId`
 
 2. Worker Gateway 服务
    - 负责维护 worker 在线状态
@@ -48,11 +48,11 @@
 
 当启用认证时，`worker_id` 来自登录响应：
 
-- `response.json()["body"]["userNo"]`
+- `response.json()["body"]["ystId"]`
 
 这意味着服务端需要保证：
 
-- 登录成功后，能返回稳定唯一的 `body.userNo`
+- 登录成功后，能返回稳定唯一的 `body.ystId`
 - 后续 worker 调用 gateway 接口时，用的就是这个值
 
 ### 3.2 Authorization
@@ -95,7 +95,7 @@ worker 启动后会调用：
 服务端需要支持 `code -> 登录态` 的兑换，并返回：
 
 - `Authorization`
-- `body.userNo`
+- `body.ystId`
 
 ### 4.2 worker 在线状态管理
 
@@ -180,7 +180,7 @@ GET {server_host}/user-privilege/login?code=<code>
 - JSON body 中必须有：
   - `returnCode`
   - `body`
-  - `body.userNo`
+  - `body.ystId`
 
 成功响应示例：
 
@@ -216,7 +216,7 @@ Content-Type: application/json
 1. HTTP 200
 2. Header 中存在 `Authorization`
 3. `returnCode == "SUC0000"`
-4. `body.userNo` 非空
+4. `body.ystId` 非空
 
 失败响应建议：
 
@@ -486,7 +486,7 @@ Content-Type: application/json
 
 例如：
 
-- token 对应 `userNo = 80383648`
+- token 对应 `ystId = 383648`
 - 请求体 `worker_id = 80383648`
 - 才允许通过
 
@@ -542,7 +542,7 @@ Content-Type: application/json
 3. 返回：
    - `Authorization`
    - `returnCode`
-   - `body.userNo`
+   - `body.ystId`
 
 ### 11.2 Gateway 服务
 
