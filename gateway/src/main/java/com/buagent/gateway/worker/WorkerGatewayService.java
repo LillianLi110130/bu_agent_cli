@@ -65,14 +65,6 @@ public class WorkerGatewayService {
     }
 
     public SimpleOkResponse acceptDebugInbound(DebugInboundRequest request) {
-        if ("/new".equals(request.getContent())) {
-            handleNewSession(request.getSessionKey());
-            return new SimpleOkResponse(true);
-        }
-
-        long epoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), epoch);
-
         InboundMessageEntity inboundMessageEntity = new InboundMessageEntity();
         inboundMessageEntity.setSessionKey(request.getSessionKey());
         inboundMessageEntity.setEpoch(epoch);
@@ -81,201 +73,39 @@ public class WorkerGatewayService {
         inboundMessageEntity.setCreatedAt(System.currentTimeMillis());
         inboundMessageMapper.insert(inboundMessageEntity);
 
-        PollWaiter waiterToWake = null;
-        PollResponse pollResponse = null;
-        synchronized (mailbox) {
-            mailbox.setCurrentEpoch(epoch);
-            mailbox.enqueue(new InboundMessageSnapshot(
-                inboundMessageEntity.getId(),
-                request.getSessionKey(),
-                epoch,
-                request.getContent()
-            ));
-            if (mailbox.getActivePollWaiter() != null) {
-                waiterToWake = mailbox.getActivePollWaiter();
-                mailbox.setActivePollWaiter(null);
-                pollResponse = dispatchNextMessageLocked(mailbox, waiterToWake.getWorkerId());
-            }
-        }
 
-        if (waiterToWake != null && pollResponse != null) {
-            waiterToWake.getDeferredResult().setResult(pollResponse);
-        }
         return new SimpleOkResponse(true);
     }
 
-    public DeferredResult<PollResponse> poll(PollRequest request) {
-        long currentEpoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), currentEpoch);
-        DeferredResult<PollResponse> deferredResult = new DeferredResult<>(pollWaitTimeoutMillis);
-
-        deferredResult.onTimeout(() -> {
-            synchronized (mailbox) {
-                PollWaiter currentWaiter = mailbox.getActivePollWaiter();
-                if (currentWaiter != null && currentWaiter.getDeferredResult() == deferredResult) {
-                    mailbox.setActivePollWaiter(null);
-                }
-            }
-            deferredResult.setResult(PollResponse.empty());
-        });
-
-        PollResponse immediateResponse = null;
-        synchronized (mailbox) {
-            mailbox.setCurrentEpoch(currentEpoch);
-            long now = System.currentTimeMillis();
-            if (!canUseOwner(mailbox, request.getWorkerId(), now)) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "session owner conflict");
-            }
-            if (mailbox.getActivePollWaiter() != null) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "active poll already exists");
-            }
-
-            touchOwner(mailbox, request.getWorkerId(), now);
-            if (mailbox.getPendingSize() > 0) {
-                immediateResponse = dispatchNextMessageLocked(mailbox, request.getWorkerId());
-            } else {
-                mailbox.setActivePollWaiter(new PollWaiter(request.getWorkerId(), deferredResult));
-            }
-        }
-
-        if (immediateResponse != null) {
-            deferredResult.setResult(immediateResponse);
-        }
-        return deferredResult;
+    public SimpleOkResponse online(PollRequest request) {
+        // 将online_worker表中worker_id=request.workerId的记录更新为online
     }
 
-    public SimpleOkResponse renew(RenewRequest request) {
-        long currentEpoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), currentEpoch);
-        synchronized (mailbox) {
-            InFlightDelivery inFlightDelivery = mailbox.getInFlightDelivery();
-            if (inFlightDelivery == null) {
-                return new SimpleOkResponse(false);
-            }
-            if (!request.getWorkerId().equals(mailbox.getOwnerWorkerId())) {
-                return new SimpleOkResponse(false);
-            }
-            if (!request.getDeliveryId().equals(inFlightDelivery.getDeliveryId())) {
-                return new SimpleOkResponse(false);
-            }
-
-            long leaseExpiresAt = System.currentTimeMillis() + deliveryLeaseTimeoutMillis;
-            int updatedRows = inboundMessageMapper.updateLease(inFlightDelivery.getMessageId(), leaseExpiresAt);
-            if (updatedRows != 1) {
-                return new SimpleOkResponse(false);
-            }
-            inFlightDelivery.setLeaseExpiresAt(leaseExpiresAt);
-            touchOwner(mailbox, request.getWorkerId(), System.currentTimeMillis());
-            return new SimpleOkResponse(true);
-        }
+    public SimpleOkResponse offline(PollRequest request) {
+        // 将online_worker表中worker_id=request.workerId的记录更新为offline
     }
+
+
+    public SimpleOkResponse poll(PollRequest request) {
+        // 从数据库查最老的一条RECEIVed状态且sessionkey由本次request构造的入站消息
+        // 更新状态为CONSUMED并返回
+    }
+
 
     public SimpleOkResponse complete(CompleteRequest request) {
-        long currentEpoch = ensureCurrentEpoch(request.getSessionKey());
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(request.getSessionKey(), currentEpoch);
-        synchronized (mailbox) {
-            InFlightDelivery inFlightDelivery = mailbox.getInFlightDelivery();
-            if (inFlightDelivery == null) {
-                return new SimpleOkResponse(false);
-            }
-            if (!request.getWorkerId().equals(mailbox.getOwnerWorkerId())) {
-                return new SimpleOkResponse(false);
-            }
-            if (!request.getDeliveryId().equals(inFlightDelivery.getDeliveryId())) {
-                return new SimpleOkResponse(false);
-            }
+        OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+        outboundMessageEntity.setSessionKey(request.getSessionKey());
+        outboundMessageEntity.setEpoch(inFlightDelivery.getEpoch());
+        outboundMessageEntity.setInboundMessageId(inFlightDelivery.getMessageId());
+        outboundMessageEntity.setContent(request.getFinalContent());
+        outboundMessageEntity.setStatus("PENDING");
+        outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
+        outboundMessageMapper.insert(outboundMessageEntity);
 
-            int consumedRows = inboundMessageMapper.markConsumed(
-                inFlightDelivery.getMessageId(),
-                inFlightDelivery.getDeliveryId()
-            );
-            if (consumedRows != 1) {
-                return new SimpleOkResponse(false);
-            }
-
-            OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-            outboundMessageEntity.setSessionKey(request.getSessionKey());
-            outboundMessageEntity.setEpoch(inFlightDelivery.getEpoch());
-            outboundMessageEntity.setInboundMessageId(inFlightDelivery.getMessageId());
-            outboundMessageEntity.setContent(request.getFinalContent());
-            outboundMessageEntity.setStatus("PENDING");
-            outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
-            outboundMessageMapper.insert(outboundMessageEntity);
-
-            boolean sent = channelRouter.send(request.getSessionKey(), request.getFinalContent());
-            outboundMessageMapper.updateStatus(outboundMessageEntity.getId(), sent ? "SENT" : "FAILED");
-            mailbox.setInFlightDelivery(null);
-            return new SimpleOkResponse(true);
+        boolean sent = channelRouter.send(request.getSessionKey(), request.getFinalContent());
+        outboundMessageMapper.updateStatus(outboundMessageEntity.getId(), sent ? "SENT" : "FAILED");
+        // 发送给远程Channel
+        return new SimpleOkResponse(true);
         }
-    }
-
-    private void handleNewSession(String sessionKey) {
-        long currentEpoch = ensureCurrentEpoch(sessionKey);
-        long newEpoch = currentEpoch + 1L;
-        sessionStateMapper.updateCurrentEpoch(sessionKey, newEpoch);
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, newEpoch);
-        synchronized (mailbox) {
-            mailbox.resetForNewEpoch(newEpoch);
-        }
-    }
-
-    private long ensureCurrentEpoch(String sessionKey) {
-        SessionStateEntity sessionStateEntity = sessionStateMapper.findBySessionKey(sessionKey);
-        if (sessionStateEntity != null) {
-            return sessionStateEntity.getCurrentEpoch();
-        }
-
-        SessionStateEntity initialState = new SessionStateEntity(sessionKey, 1L);
-        sessionStateMapper.insert(initialState);
-        return 1L;
-    }
-
-    private boolean canUseOwner(SessionMailbox mailbox, String workerId, long now) {
-        if (mailbox.getOwnerWorkerId() == null || mailbox.getOwnerActiveUntil() == null) {
-            return true;
-        }
-        if (workerId.equals(mailbox.getOwnerWorkerId())) {
-            return true;
-        }
-        return mailbox.getOwnerActiveUntil() < now;
-    }
-
-    private void touchOwner(SessionMailbox mailbox, String workerId, long now) {
-        mailbox.setOwnerWorkerId(workerId);
-        mailbox.setOwnerActiveUntil(now + ownerActiveTimeoutMillis);
-    }
-
-    private PollResponse dispatchNextMessageLocked(SessionMailbox mailbox, String workerId) {
-        InboundMessageSnapshot snapshot = mailbox.pollNextSnapshot();
-        if (snapshot == null) {
-            return PollResponse.empty();
-        }
-
-        String deliveryId = UUID.randomUUID().toString();
-        long leaseExpiresAt = System.currentTimeMillis() + deliveryLeaseTimeoutMillis;
-        int updatedRows = inboundMessageMapper.markDelivering(snapshot.getMessageId(), deliveryId, leaseExpiresAt);
-        if (updatedRows != 1) {
-            logger.warn("Failed to mark inbound message as DELIVERING, messageId={}", snapshot.getMessageId());
-            return PollResponse.empty();
-        }
-
-        mailbox.setInFlightDelivery(new InFlightDelivery(
-            snapshot.getMessageId(),
-            deliveryId,
-            workerId,
-            snapshot.getEpoch(),
-            snapshot.getContent(),
-            leaseExpiresAt
-        ));
-        touchOwner(mailbox, workerId, System.currentTimeMillis());
-
-        return new PollResponse(Collections.singletonList(
-            new PollMessageDto(
-                snapshot.getMessageId(),
-                deliveryId,
-                snapshot.getEpoch(),
-                snapshot.getContent()
-            )
-        ));
     }
 }
