@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,10 +10,12 @@ from agent_core.agent.config import parse_agent_config
 from agent_core.agent.registry import AgentRegistry
 from agent_core.runtime import AgentCallRunner
 from agent_core.task import SubagentTaskResult
-from agent_core.task.subagent import SubagentCallRequest
+from agent_core.task.local_agent_task import SubagentTaskManager
+from agent_core.task.local_agent_task import SubagentCallRequest
 from agent_core.tools import tool
 from agent_core.llm.messages import UserMessage
-from tools.agent_tool import delegate
+from tools import ALL_TOOLS
+from tools.agent_tool import DelegateParallelParams, delegate, delegate_parallel
 from agent_core.llm.views import ChatInvokeCompletion
 
 
@@ -203,3 +206,166 @@ def test_delegate_rejects_nested_fork_from_fork_child() -> None:
     )
 
     assert result == "Error: fork child agents cannot create nested forks."
+
+
+def test_named_subagent_model_inherit_uses_parent_llm(tmp_path: Path) -> None:
+    agents_dir = tmp_path / "agents"
+    agents_dir.mkdir()
+    (agents_dir / "reviewer.md").write_text(
+        """---
+name: reviewer
+description: review code
+model: inherit
+---
+Review carefully.
+""",
+        encoding="utf-8",
+    )
+
+    registry = AgentRegistry(agent_sources=[("workspace", agents_dir, 1)])
+    parent = Agent(llm=_FakeLLM(), tools=[], system_prompt="parent system")
+    runner = AgentCallRunner(registry=registry, all_tools=[])
+
+    child, initial_message = runner.build_execution(
+        parent_agent=parent,
+        request=SubagentCallRequest(
+            prompt="Review the auth patch",
+            description="Review auth patch",
+            subagent_type="reviewer",
+            model="claude-sonnet-4-20250514",
+        ),
+    )
+
+    assert child.llm is parent.llm
+    assert initial_message == "Review the auth patch"
+
+
+class _FakeParallelExecutor:
+    def __init__(self) -> None:
+        self.parent_agent = None
+        self.requests: list[SubagentCallRequest] | None = None
+
+    async def run_parallel_foreground(self, *, parent_agent, requests):
+        self.parent_agent = parent_agent
+        self.requests = list(requests)
+        return [
+            SubagentTaskResult(
+                task_id=f"task-{index}",
+                subagent_name=request.subagent_type or "fork",
+                prompt=request.prompt,
+                final_response=f"done-{index}",
+                execution_time_ms=10.0 + index,
+                status="completed",
+                description=request.description,
+                task_kind="named" if request.subagent_type else "fork",
+                subagent_type=request.subagent_type,
+                model="fake-model",
+                run_in_background=False,
+            )
+            for index, request in enumerate(self.requests, start=1)
+        ]
+
+
+def test_delegate_parallel_runs_multiple_foreground_agents() -> None:
+    executor = _FakeParallelExecutor()
+
+    result = asyncio.run(
+        delegate_parallel.func(
+            params=DelegateParallelParams(
+                agents=[
+                    {
+                        "prompt": "Review auth changes",
+                        "description": "Auth review",
+                        "subagent_type": "reviewer",
+                    },
+                    {
+                        "prompt": "Review test updates",
+                        "description": "Test review",
+                        "subagent_type": "reviewer",
+                        "model": "inherit",
+                    },
+                ]
+            ),
+            ctx=SimpleNamespace(subagent_executor=executor),
+            current_agent=SimpleNamespace(is_fork_child=False),
+        )
+    )
+
+    assert executor.requests is not None
+    assert len(executor.requests) == 2
+    assert all(request.run_in_background is False for request in executor.requests)
+    assert all(request.model is None for request in executor.requests)
+
+    payload = json.loads(result)
+    assert [item["final_response"] for item in payload["results"]] == ["done-1", "done-2"]
+
+
+def test_delegate_parallel_rejects_nested_fork_from_fork_child() -> None:
+    result = asyncio.run(
+        delegate_parallel.func(
+            params=DelegateParallelParams(
+                agents=[
+                    {
+                        "prompt": "Handle task A",
+                        "description": "Task A",
+                    },
+                    {
+                        "prompt": "Handle task B",
+                        "description": "Task B",
+                        "subagent_type": "reviewer",
+                    },
+                ]
+            ),
+            ctx=SimpleNamespace(subagent_executor=_FakeParallelExecutor()),
+            current_agent=SimpleNamespace(is_fork_child=True),
+        )
+    )
+
+    assert result == "Error: fork child agents cannot create nested forks."
+
+
+def test_delegate_parallel_is_registered_in_all_tools() -> None:
+    assert delegate in ALL_TOOLS
+    assert delegate_parallel in ALL_TOOLS
+
+
+class _CancellingTaskManager(SubagentTaskManager):
+    def __init__(self) -> None:
+        self.cancelled_task_ids: list[str] = []
+        super().__init__(
+            registry=AgentRegistry(agent_sources=[]),
+            all_tools=[],
+            context=SimpleNamespace(subagent_events=None),
+            skill_registry=None,
+        )
+
+    async def cancel_run(self, task_id: str) -> str:
+        self.cancelled_task_ids.append(task_id)
+        return await super().cancel_run(task_id)
+
+
+def test_run_foreground_cancels_child_when_parent_is_cancelled() -> None:
+    manager = _CancellingTaskManager()
+    parent = Agent(llm=_FakeLLM(), tools=[], system_prompt="parent system")
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            manager.run_foreground(
+                parent_agent=parent,
+                request=SubagentCallRequest(
+                    prompt="Review auth patch",
+                    description="Review auth patch",
+                ),
+                timeout=300.0,
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    import pytest
+
+    asyncio.run(scenario())
+
+    assert len(manager.cancelled_task_ids) == 1

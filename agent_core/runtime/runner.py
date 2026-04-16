@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from agent_core.agent import Agent
-from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
 from agent_core.llm.base import BaseChatModel
-from agent_core.llm.messages import BaseMessage, UserMessage
+from agent_core.llm.messages import BaseMessage
 
 from config.model_config import get_model_config
 
 if TYPE_CHECKING:
-    from agent_core.task.subagent import SubagentCallRequest
+    from agent_core.task.local_agent_task import SubagentCallRequest
 
 
 class AgentCallRunner:
@@ -51,13 +49,9 @@ class AgentCallRunner:
         if config is None:
             raise ValueError(f"Subagent '{request.subagent_type}' not found")
 
-        effective_config = config
-        if request.model:
-            effective_config = replace(config, model=request.model)
-
-        llm = self._resolve_llm(parent_agent.llm, effective_config.model)
-        system_prompt = effective_config.system_prompt
-        skills_text = self._load_skill_text(effective_config.skills)
+        llm = self._resolve_named_llm(parent_agent.llm, config.model)
+        system_prompt = config.system_prompt
+        skills_text = self._load_skill_text(config.skills)
         if skills_text:
             system_prompt = f"{system_prompt}\n\n## Loaded Skills\n\n{skills_text}"
 
@@ -65,9 +59,9 @@ class AgentCallRunner:
             llm=llm,
             tools=list(self._all_tools),
             system_prompt=system_prompt,
-            max_iterations=effective_config.max_turns or parent_agent.max_iterations,
+            max_iterations=config.max_turns or parent_agent.max_iterations,
             dependency_overrides=dict(parent_agent.dependency_overrides or {}),
-            agent_config=effective_config,
+            agent_config=config,
             hooks=list(parent_agent.hooks),
         )
         return child, request.prompt
@@ -78,10 +72,9 @@ class AgentCallRunner:
         parent_agent: Agent,
         request: "SubagentCallRequest",
     ) -> tuple[Agent, str]:
-        llm = self._resolve_llm(parent_agent.llm, request.model)
         fork_tools = [tool for tool in parent_agent.tools if tool.name != "delegate"]
         child = Agent(
-            llm=llm,
+            llm=parent_agent.llm,
             tools=fork_tools,
             system_prompt=parent_agent.system_prompt,
             max_iterations=parent_agent.max_iterations,
@@ -93,6 +86,17 @@ class AgentCallRunner:
         )
         child.load_history(self._build_fork_messages(parent_agent))
         return child, self._build_fork_child_message(request)
+
+    def _resolve_named_llm(
+        self,
+        parent_llm: BaseChatModel,
+        configured_model: str | None,
+    ) -> BaseChatModel:
+        """Resolve the effective model for a named subagent definition."""
+        normalized = (configured_model or "").strip()
+        if not normalized or normalized.lower() == "inherit":
+            return parent_llm
+        return self._resolve_llm(parent_llm, normalized)
 
     def _build_fork_messages(self, parent_agent: Agent) -> list[BaseMessage]:
         """Copy the parent conversation history for a forked child execution."""

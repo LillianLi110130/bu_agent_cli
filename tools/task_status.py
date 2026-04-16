@@ -42,7 +42,7 @@ async def task_status(
                 return json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
         if subagent_executor is None:
             return f"Error: Task '{task_id}' not found"
-        result = subagent_executor.get_task_status(task_id)
+        result = subagent_executor.get_run_status(task_id)
         if result is None:
             return f"Error: Task '{task_id}' not found"
         return result
@@ -52,7 +52,7 @@ async def task_status(
             shell_tasks = [task.to_dict() for task in shell_manager.list_tasks()]
         subagent_tasks = None
         if subagent_executor is not None:
-            subagent_tasks = subagent_executor.list_all_tasks()
+            subagent_tasks = subagent_executor.list_all_runs()
         return json.dumps(
             {
                 "shell_tasks": shell_tasks,

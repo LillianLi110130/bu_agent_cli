@@ -1,4 +1,4 @@
-"""Subagent task management primitives."""
+"""Local agent task primitives for foreground and background delegated execution."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from agent_core.agent.events import (
 )
 from agent_core.runtime import AgentCallRunner
 
-logger = logging.getLogger("agent_core.task.subagent")
+logger = logging.getLogger("agent_core.task.local_agent_task")
 
 if TYPE_CHECKING:
     from tools.sandbox import SandboxContext
@@ -90,6 +90,7 @@ class SubagentTaskStatus:
     steps_completed: int = 0
     run_in_background: bool = False
     last_activity: datetime | None = None
+    recent_logs: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -105,11 +106,25 @@ class SubagentTaskStatus:
             "steps_completed": self.steps_completed,
             "run_in_background": self.run_in_background,
             "last_activity": self.last_activity.isoformat() if self.last_activity else None,
+            "recent_logs": list(self.recent_logs),
         }
 
 
+@dataclass(slots=True)
+class SubagentProgressEvent:
+    task_id: str
+    subagent_name: str
+    description: str
+    status: str
+    current_step: str | None
+    steps_completed: int
+    run_in_background: bool
+    created_at: datetime
+    last_activity: datetime | None = None
+
+
 class SubagentTaskManager:
-    """Execute named subagents and forked child agents through one task interface."""
+    """Execute delegated subagent runs in foreground or background."""
 
     def __init__(
         self,
@@ -137,7 +152,7 @@ class SubagentTaskManager:
     def set_main_agent(self, agent: Agent) -> None:
         self._main_agent = agent
 
-    async def call(
+    async def run_local_agent_task(
         self,
         *,
         parent_agent: Agent,
@@ -146,13 +161,13 @@ class SubagentTaskManager:
     ) -> str:
         background = self._resolve_background(request)
         if background:
-            task_id = await self.spawn(parent_agent=parent_agent, request=request)
+            task_id = await self.start_background_run(parent_agent=parent_agent, request=request)
             return (
                 f"Background task [{request.description}] started (id: {task_id}). "
                 f"Use `task_status(task_id=\"{task_id}\")` to check status."
             )
 
-        result = await self.run_and_wait(
+        result = await self.run_foreground(
             parent_agent=parent_agent,
             request=request,
             timeout=timeout or 300.0,
@@ -163,7 +178,12 @@ class SubagentTaskManager:
             return f"Subagent was cancelled: {result.error or 'Task was cancelled'}"
         return f"Subagent failed: {result.error or 'Unknown error'}"
 
-    async def spawn(self, *, parent_agent: Agent, request: SubagentCallRequest) -> str:
+    async def start_background_run(
+        self,
+        *,
+        parent_agent: Agent,
+        request: SubagentCallRequest,
+    ) -> str:
         task_id = self._new_task_id()
         normalized_request = self._normalize_request(request)
         status = SubagentTaskStatus(
@@ -180,12 +200,15 @@ class SubagentTaskManager:
         )
         self._task_statuses[task_id] = status
         self._completion_events[task_id] = asyncio.Event()
-        bg_task = asyncio.create_task(self._run_task(task_id, parent_agent, normalized_request))
+        await self._emit_progress_event(status, force=True)
+        bg_task = asyncio.create_task(
+            self._execute_local_agent_run(task_id, parent_agent, normalized_request)
+        )
         self._running_tasks[task_id] = bg_task
-        bg_task.add_done_callback(lambda _: self._finalize_running_task(task_id))
+        bg_task.add_done_callback(lambda _: self._finalize_local_agent_run(task_id))
         return task_id
 
-    async def run_and_wait(
+    async def run_foreground(
         self,
         *,
         parent_agent: Agent,
@@ -194,6 +217,13 @@ class SubagentTaskManager:
     ) -> SubagentTaskResult:
         task_id = self._new_task_id()
         normalized_request = self._normalize_request(request)
+        logger.info(
+            "foreground subagent run start task_id=%s subagent=%s description=%s timeout=%s",
+            task_id,
+            normalized_request.subagent_type or "fork",
+            normalized_request.description,
+            timeout,
+        )
         self._completion_events[task_id] = asyncio.Event()
         self._task_statuses[task_id] = SubagentTaskStatus(
             task_id=task_id,
@@ -207,19 +237,50 @@ class SubagentTaskManager:
             current_step="Starting...",
             run_in_background=False,
         )
-        task = asyncio.create_task(self._run_task(task_id, parent_agent, normalized_request))
+        await self._emit_progress_event(self._task_statuses[task_id], force=True)
+        task = asyncio.create_task(
+            self._execute_local_agent_run(task_id, parent_agent, normalized_request)
+        )
         self._running_tasks[task_id] = task
-        task.add_done_callback(lambda _: self._finalize_running_task(task_id))
+        task.add_done_callback(lambda _: self._finalize_local_agent_run(task_id))
 
         try:
             await asyncio.wait_for(self._completion_events[task_id].wait(), timeout=timeout)
+        except asyncio.CancelledError:
+            status = self._task_statuses.get(task_id)
+            logger.warning(
+                "foreground subagent run cancelled by parent task_id=%s subagent=%s current_step=%s "
+                "steps_completed=%s last_activity=%s",
+                task_id,
+                normalized_request.subagent_type or "fork",
+                status.current_step if status is not None else None,
+                status.steps_completed if status is not None else None,
+                status.last_activity.isoformat() if status and status.last_activity else None,
+            )
+            await self.cancel_run(task_id)
+            raise
         except asyncio.TimeoutError:
-            await self.cancel_task(task_id)
+            status = self._task_statuses.get(task_id)
+            logger.error(
+                "foreground subagent run timed out task_id=%s subagent=%s current_step=%s "
+                "steps_completed=%s last_activity=%s",
+                task_id,
+                normalized_request.subagent_type or "fork",
+                status.current_step if status is not None else None,
+                status.steps_completed if status is not None else None,
+                status.last_activity.isoformat() if status and status.last_activity else None,
+            )
+            await self.cancel_run(task_id)
             raise
 
+        logger.info(
+            "foreground subagent run completed task_id=%s status=%s",
+            task_id,
+            self._task_results[task_id].status,
+        )
         return self._task_results[task_id]
 
-    async def run_many(
+    async def run_parallel_foreground(
         self,
         *,
         parent_agent: Agent,
@@ -228,12 +289,12 @@ class SubagentTaskManager:
     ) -> list[SubagentTaskResult]:
         return await asyncio.gather(
             *[
-                self.run_and_wait(parent_agent=parent_agent, request=request, timeout=timeout)
+                self.run_foreground(parent_agent=parent_agent, request=request, timeout=timeout)
                 for request in requests
             ]
         )
 
-    def get_task_status(self, task_id: str) -> str | None:
+    def get_run_status(self, task_id: str) -> str | None:
         status = self._task_statuses.get(task_id)
         if status is not None:
             return json.dumps(status.to_dict(), ensure_ascii=False, indent=2)
@@ -242,7 +303,7 @@ class SubagentTaskManager:
             return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
         return None
 
-    def list_all_tasks(self) -> str:
+    def list_all_runs(self) -> str:
         payload = {
             "running": [
                 status.to_dict()
@@ -253,7 +314,15 @@ class SubagentTaskManager:
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
-    async def cancel_task(self, task_id: str) -> str:
+    def list_live_runs(self) -> list[SubagentTaskStatus]:
+        """Return live status objects for interactive dashboard rendering."""
+        return sorted(
+            self._task_statuses.values(),
+            key=lambda status: status.last_activity or status.created_at,
+            reverse=True,
+        )
+
+    async def cancel_run(self, task_id: str) -> str:
         task = self._running_tasks.get(task_id)
         if task is None:
             return f"Error: Task '{task_id}' not found or already completed"
@@ -264,7 +333,7 @@ class SubagentTaskManager:
             pass
         return f"Task '{task_id}' cancellation requested"
 
-    async def _run_task(
+    async def _execute_local_agent_run(
         self,
         task_id: str,
         parent_agent: Agent,
@@ -275,27 +344,79 @@ class SubagentTaskManager:
         tool_calls: list[dict[str, Any]] = []
         tools_used: set[str] = set()
         final_response = ""
+        first_event_seen = False
 
         try:
+            status.current_step = "Building child agent..."
+            logger.info(
+                "subagent child build start task_id=%s subagent=%s task_kind=%s background=%s",
+                task_id,
+                request.subagent_type or "fork",
+                self._resolve_task_kind(request),
+                self._resolve_background(request),
+            )
             child_agent, initial_message = self._runner.build_execution(
                 parent_agent=parent_agent,
                 request=request,
             )
+            status.model = getattr(child_agent.llm, "model", request.model)
+            status.current_step = "Child agent built; waiting for first event..."
+            await self._emit_progress_event(status, force=True)
+            logger.info(
+                "subagent child build complete task_id=%s subagent=%s model=%s prompt_len=%s",
+                task_id,
+                request.subagent_type or "fork",
+                status.model,
+                len(initial_message),
+            )
             async for event in child_agent.query_stream(initial_message):
                 status.last_activity = datetime.now()
+                if not first_event_seen:
+                    first_event_seen = True
+                    logger.info(
+                        "subagent first event task_id=%s subagent=%s event_type=%s",
+                        task_id,
+                        request.subagent_type or "fork",
+                        type(event).__name__,
+                    )
                 if isinstance(event, ToolCallEvent):
                     tool_calls.append({"tool": event.tool, "args": event.args, "timestamp": time.time()})
                     status.current_step = f"Calling {event.tool}..."
                     status.steps_completed += 1
+                    self._append_status_log(status, f"Tool: {event.tool}")
+                    await self._emit_progress_event(status, force=True)
                 elif isinstance(event, ToolResultEvent):
                     tools_used.add(event.tool)
                     status.current_step = f"Result from {event.tool}"
+                    result_preview = str(event.result).strip().replace("\n", " ")
+                    if len(result_preview) > 120:
+                        result_preview = result_preview[:117] + "..."
+                    prefix = "Error" if event.is_error else "Result"
+                    self._append_status_log(
+                        status,
+                        f"{prefix}: {event.tool} -> {result_preview or '(empty)'}",
+                    )
                 elif isinstance(event, ThinkingEvent):
                     status.current_step = f"Thinking: {event.content[:50]}..."
+                    preview = event.content.strip().replace("\n", " ")
+                    if len(preview) > 120:
+                        preview = preview[:117] + "..."
+                    if preview:
+                        self._append_status_log(status, f"Thinking: {preview}")
                 elif isinstance(event, TextEvent):
                     status.current_step = "Generating response..."
+                    preview = event.content.strip().replace("\n", " ")
+                    if len(preview) > 120:
+                        preview = preview[:117] + "..."
+                    if preview:
+                        self._append_status_log(status, f"Text: {preview}")
                 elif isinstance(event, FinalResponseEvent):
                     final_response = event.content
+                    preview = event.content.strip().replace("\n", " ")
+                    if len(preview) > 120:
+                        preview = preview[:117] + "..."
+                    self._append_status_log(status, f"Final: {preview or '(empty)'}")
+                    await self._emit_progress_event(status, force=True)
 
             result = SubagentTaskResult(
                 task_id=task_id,
@@ -307,7 +428,7 @@ class SubagentTaskManager:
                 description=request.description,
                 task_kind=self._resolve_task_kind(request),
                 subagent_type=request.subagent_type,
-                model=request.model,
+                model=getattr(child_agent.llm, "model", request.model),
                 run_in_background=self._resolve_background(request),
                 tool_calls=tool_calls,
                 tools_used=sorted(tools_used),
@@ -316,6 +437,15 @@ class SubagentTaskManager:
             self._task_results[task_id] = result
             status.status = "completed"
             status.current_step = "Completed"
+            await self._emit_progress_event(status, force=True)
+            logger.info(
+                "subagent run completed task_id=%s subagent=%s tool_calls=%s tools_used=%s duration_ms=%.1f",
+                task_id,
+                request.subagent_type or "fork",
+                len(tool_calls),
+                sorted(tools_used),
+                result.execution_time_ms,
+            )
             await self._notify_completion(parent_agent=parent_agent, result=result)
         except asyncio.CancelledError:
             result = SubagentTaskResult(
@@ -336,6 +466,14 @@ class SubagentTaskManager:
             self._task_results[task_id] = result
             status.status = "cancelled"
             status.current_step = "Cancelled"
+            await self._emit_progress_event(status, force=True)
+            logger.warning(
+                "subagent run cancelled task_id=%s subagent=%s first_event_seen=%s duration_ms=%.1f",
+                task_id,
+                request.subagent_type or "fork",
+                first_event_seen,
+                result.execution_time_ms,
+            )
             await self._notify_completion(parent_agent=parent_agent, result=result)
             raise
         except Exception as exc:
@@ -358,18 +496,62 @@ class SubagentTaskManager:
             self._task_results[task_id] = result
             status.status = "failed"
             status.current_step = "Failed"
+            await self._emit_progress_event(status, force=True)
+            logger.error(
+                "subagent run failed task_id=%s subagent=%s first_event_seen=%s error=%s",
+                task_id,
+                request.subagent_type or "fork",
+                first_event_seen,
+                exc,
+            )
             await self._notify_completion(parent_agent=parent_agent, result=result)
         finally:
             event = self._completion_events.get(task_id)
             if event is not None:
+                logger.info("subagent completion event set task_id=%s", task_id)
                 event.set()
 
     async def _notify_completion(self, *, parent_agent: Agent, result: SubagentTaskResult) -> None:
         main_agent = self._main_agent or parent_agent
+        logger.info(
+            "dispatching subagent completion task_id=%s status=%s background=%s",
+            result.task_id,
+            result.status,
+            result.run_in_background,
+        )
         ui_events = await main_agent._hook_manager.dispatch_subagent_result(main_agent, result)
         if self._context.subagent_events is not None:
             for event in ui_events:
                 await self._context.subagent_events.put(event)
+
+    async def _emit_progress_event(
+        self,
+        status: SubagentTaskStatus,
+        *,
+        force: bool = False,
+    ) -> None:
+        if self._context.subagent_events is None:
+            return
+        if not force:
+            if status.current_step and status.current_step.startswith("Thinking:"):
+                return
+            if status.current_step and status.current_step.startswith("Result from "):
+                return
+            if status.current_step == "Generating response...":
+                return
+        await self._context.subagent_events.put(
+            SubagentProgressEvent(
+                task_id=status.task_id,
+                subagent_name=status.subagent_name,
+                description=status.description,
+                status=status.status,
+                current_step=status.current_step,
+                steps_completed=status.steps_completed,
+                run_in_background=status.run_in_background,
+                created_at=status.created_at,
+                last_activity=status.last_activity,
+            )
+        )
 
     def _normalize_request(self, request: SubagentCallRequest) -> SubagentCallRequest:
         prompt = str(request.prompt).strip()
@@ -407,5 +589,13 @@ class SubagentTaskManager:
     def _new_task_id() -> str:
         return uuid.uuid4().hex[:8]
 
-    def _finalize_running_task(self, task_id: str) -> None:
+    def _finalize_local_agent_run(self, task_id: str) -> None:
         self._running_tasks.pop(task_id, None)
+
+    @staticmethod
+    def _append_status_log(status: SubagentTaskStatus, line: str, *, limit: int = 8) -> None:
+        if not line:
+            return
+        status.recent_logs.append(line)
+        if len(status.recent_logs) > limit:
+            del status.recent_logs[:-limit]

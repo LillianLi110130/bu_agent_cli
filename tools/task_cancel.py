@@ -37,4 +37,4 @@ async def task_cancel(
     if executor is None:
         return "Error: Subagent executor not initialized"
 
-    return await executor.cancel_task(task_id)
+    return await executor.cancel_run(task_id)

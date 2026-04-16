@@ -1,7 +1,7 @@
 """Tools for Claude Code CLI."""
 
 from tools.bash import bash
-from tools.agent_tool import delegate
+from tools.agent_tool import delegate, delegate_parallel
 from tools.files import edit, read, write
 from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, get_sandbox_context, SecurityError
@@ -35,6 +35,7 @@ ALL_TOOLS = [
     done,
     web_fetch,
     delegate,
+    delegate_parallel,
     task_output,
     task_status,
     task_cancel,
@@ -58,6 +59,7 @@ __all__ = [
     "done",
     "web_fetch",
     "delegate",
+    "delegate_parallel",
     "task_output",
     "task_status",
     "task_cancel",

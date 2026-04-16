@@ -1,7 +1,8 @@
 """Task domain models and managers."""
 
-from agent_core.task.subagent import (
+from agent_core.task.local_agent_task import (
     SubagentCallRequest,
+    SubagentProgressEvent,
     SubagentTaskManager,
     SubagentTaskResult,
     SubagentTaskStatus,
@@ -9,6 +10,7 @@ from agent_core.task.subagent import (
 
 __all__ = [
     "SubagentCallRequest",
+    "SubagentProgressEvent",
     "SubagentTaskManager",
     "SubagentTaskResult",
     "SubagentTaskStatus",

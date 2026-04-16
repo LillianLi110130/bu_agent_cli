@@ -448,7 +448,7 @@ class TGAgentCLI:
         self._last_context_budget: _CLIContextBudgetSnapshot | None = None
         self._last_context_budget_status_line: str | None = None
         self._context_budget_hook_agents: set[int] = set()
-
+        self._subagent_progress_signatures: dict[str, tuple[str, int, str]] = {}
         if self._bridge_store is not None:
             self._bridge_store.initialize()
 
@@ -1075,7 +1075,7 @@ class TGAgentCLI:
 
             subagent_tasks = None
             if self._ctx.subagent_executor is not None:
-                subagent_tasks = self._ctx.subagent_executor.list_all_tasks()
+                subagent_tasks = self._ctx.subagent_executor.list_all_runs()
 
             tasks_info = json.dumps(
                 {
@@ -1102,7 +1102,7 @@ class TGAgentCLI:
                     task_info = json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
 
             if task_info is None and self._ctx.subagent_executor is not None:
-                task_info = self._ctx.subagent_executor.get_task_status(task_id)
+                task_info = self._ctx.subagent_executor.get_run_status(task_id)
 
             if task_info is None:
                 self._console.print(f"[red]未找到任务“{task_id}”。[/red]")
@@ -1127,7 +1127,7 @@ class TGAgentCLI:
                 if self._ctx.subagent_executor is None:
                     self._console.print("[yellow]没有可用的后台任务管理器。[/yellow]")
                     return True
-                result = await self._ctx.subagent_executor.cancel_task(task_id)
+                result = await self._ctx.subagent_executor.cancel_run(task_id)
 
             self._console.print(result)
             return True
@@ -1399,7 +1399,6 @@ class TGAgentCLI:
 
         # Start the listener task
         listener_task = asyncio.create_task(listen_for_cancel())
-
         try:
             # Pass cancel_event to agent for immediate cancellation
             async for event in active_agent.query_stream(user_input, cancel_event=cancel_event):
@@ -1431,8 +1430,9 @@ class TGAgentCLI:
                     self._console.print(f"  [dim]参数：{args_str}[/]")
                     self._console.print("  [dim]（按 q 可取消）[/dim]")
 
-                    # Start loading while the tool runs.
-                    self._loading = self._start_loading("执行中")
+                    if event.tool not in {"delegate", "delegate_parallel"}:
+                        # Start loading while the tool runs.
+                        self._loading = self._start_loading("执行中")
 
                 elif isinstance(event, ToolResultEvent):
                     self._stop_loading(self._loading)
@@ -1679,15 +1679,20 @@ class TGAgentCLI:
                 return False
 
     async def _consume_subagent_notifications(self) -> None:
-        """Render background subagent completion notifications from the shared queue."""
+        """Render delegated agent progress and completion notifications."""
         queue = self._ctx.subagent_events
         if queue is None:
             return
 
         while True:
-            result = await queue.get()
+            event = await queue.get()
             try:
-                await self._on_task_completed(result)
+                from agent_core.task import SubagentProgressEvent, SubagentTaskResult
+
+                if isinstance(event, SubagentProgressEvent):
+                    self._on_subagent_progress(event)
+                elif isinstance(event, SubagentTaskResult):
+                    await self._on_task_completed(event)
             finally:
                 queue.task_done()
 
@@ -2112,3 +2117,44 @@ class TGAgentCLI:
                     border_style="yellow",
                 )
             )
+            return
+
+    def _on_subagent_progress(self, event: Any) -> None:
+        """Render a compact delegated-agent progress line."""
+        from agent_core.task import SubagentProgressEvent
+
+        if not isinstance(event, SubagentProgressEvent):
+            return
+        if event.run_in_background:
+            return
+        elapsed = max(time.time() - event.created_at.timestamp(), 0.0)
+        step = event.current_step or "Running"
+        if len(step) > 72:
+            step = step[:69] + "..."
+        phase = self._classify_subagent_progress_phase(step)
+        signature = (event.status, event.steps_completed, phase)
+        if self._subagent_progress_signatures.get(event.task_id) == signature:
+            return
+        self._subagent_progress_signatures[event.task_id] = signature
+        if event.status in {"completed", "failed", "cancelled"}:
+            self._subagent_progress_signatures.pop(event.task_id, None)
+
+        self._console.print(
+            "[dim]"
+            "[subagent:fg] "
+            f"{event.task_id} | {event.subagent_name} | {event.description} | "
+            f"tools={event.steps_completed} | {elapsed:.1f}s | {step}"
+            "[/dim]"
+        )
+
+    @staticmethod
+    def _classify_subagent_progress_phase(step: str) -> str:
+        if step.startswith("Calling "):
+            return step
+        if step in {"Completed", "Cancelled", "Failed"}:
+            return step
+        if step.startswith("Child agent built"):
+            return "child_ready"
+        if step.startswith("Building child agent"):
+            return "child_building"
+        return "other"
