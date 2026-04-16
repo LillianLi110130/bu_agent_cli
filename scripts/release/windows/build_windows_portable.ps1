@@ -553,11 +553,13 @@ Workspace behavior:
 - Running launcher from a terminal uses the current working directory as the workspace.
 - Double-clicking launcher from the bundle directory falls back to the Desktop directory.
 - Global config stays in %USERPROFILE%\.tg_agent.
+- After deploy.bat, `tg-agent` works in cmd, PowerShell, and Git Bash.
 
 Notes:
 - deploy.bat creates %USERPROFILE%\.tg_agent\.venv using the bundled Python runtime.
 - tg-agent and dependencies are installed offline from wheelhouse\.
 - deploy.bat also installs a `tg-agent` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
+- deploy.bat removes stale tg-agent.exe / tg-agent-script.py files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
 - If `tg-agent` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
 "@
@@ -591,6 +593,9 @@ $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "tg-agent-entry.py"
 $CommandShim = Join-Path $BinDir "tg-agent.cmd"
+$BashCommandShim = Join-Path $BinDir "tg-agent"
+$LegacyCommandExe = Join-Path $BinDir "tg-agent.exe"
+$LegacyCommandScript = Join-Path $BinDir "tg-agent-script.py"
 $EnvFile = Join-Path $InstallRoot ".env"
 $WorkerConfig = Join-Path $InstallRoot "tg_crab_worker.json"
 $PackagedEnvFile = Join-Path $AppDir ".env"
@@ -821,6 +826,45 @@ $commandShimContent = @(
 ) -join "`r`n"
 Set-Content -LiteralPath $CommandShim -Value $commandShimContent -Encoding ASCII
 
+$bashCommandShimContent = @(
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    'install_root="${TG_AGENT_HOME:-${HOME}/.tg_agent}"',
+    'if [ -n "${USERPROFILE:-}" ] && [ ! -d "$install_root" ]; then',
+    '  install_root="${USERPROFILE}/.tg_agent"',
+    'fi',
+    '',
+    'venv_python="${install_root}/.venv/Scripts/python.exe"',
+    'entry_shim="${install_root}/bin/tg-agent-entry.py"',
+    '',
+    'if [ ! -x "$venv_python" ]; then',
+    '  echo "tg-agent is not installed." >&2',
+    '  echo "Run deploy.bat from the portable bundle first." >&2',
+    '  exit 1',
+    'fi',
+    'if [ ! -f "$entry_shim" ]; then',
+    '  echo "tg-agent entry shim is missing." >&2',
+    '  echo "Run deploy.bat from the portable bundle first." >&2',
+    '  exit 1',
+    'fi',
+    '',
+    'exec "$venv_python" -u "$entry_shim" "$@"'
+) -join "`n"
+Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
+
+foreach ($legacyPath in @($LegacyCommandExe, $LegacyCommandScript)) {
+    if (Test-Path -LiteralPath $legacyPath) {
+        try {
+            Remove-Item -LiteralPath $legacyPath -Force -ErrorAction Stop
+            Write-Host "[portable] removed stale command shim: $legacyPath"
+        }
+        catch {
+            Write-Warning "Could not remove stale command shim: $legacyPath. $($_.Exception.Message)"
+        }
+    }
+}
+
 if ((Test-Path -LiteralPath $PackagedEnvFile) -and -not (Test-Path -LiteralPath $EnvFile)) {
     Copy-Item -LiteralPath $PackagedEnvFile -Destination $EnvFile -Force
 }
@@ -834,7 +878,7 @@ if (-not (Test-Path -LiteralPath $LauncherPath)) {
 
 $existingTgAgentCommands = @(
     Get-CommandCandidates -CommandName "tg-agent" |
-        Where-Object { $_ -ine $CommandShim }
+        Where-Object { $_ -ine $CommandShim -and $_ -ine $BashCommandShim }
 )
 
 $pathUpdated = Add-UserPathEntry -Entry $BinDir
@@ -856,6 +900,7 @@ if (-not $SkipDesktopShortcut) {
 Write-Host "[portable] install root: $InstallRoot"
 Write-Host "[portable] venv ready: $VenvDir"
 Write-Host "[portable] command shim: $CommandShim"
+Write-Host "[portable] bash shim: $BashCommandShim"
 if ($pathUpdated) {
     Write-Host "[portable] added to user PATH: $BinDir"
 }
@@ -864,6 +909,7 @@ else {
 }
 Write-Host "[portable] launcher: $LauncherPath"
 Write-Host "[portable] open a new cmd window from Explorer and run: tg-agent"
+Write-Host "[portable] in Git Bash, you can also run: tg-agent"
 Write-Host "[portable] if tg-agent is still not found, sign out and sign back in once."
 if ($existingTgAgentCommands.Count -gt 0) {
     $conflictingCommand = $existingTgAgentCommands[0]

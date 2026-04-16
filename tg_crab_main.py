@@ -18,6 +18,7 @@ Environment Variables:
 
 import argparse
 import asyncio
+import inspect
 import os
 import socket
 import sys
@@ -471,6 +472,17 @@ async def _mark_worker_offline(
         await client.aclose()
 
 
+async def _close_llm_runtime(llm: Any) -> None:
+    """Best-effort close for LLM runtimes that own async clients/transports."""
+    close = getattr(llm, "close", None)
+    if close is None or not callable(close):
+        return
+
+    result = close()
+    if inspect.isawaitable(result):
+        await result
+
+
 async def _authenticate_worker_startup(args: argparse.Namespace) -> None:
     """Authenticate before starting the CLI and worker when auth is enabled."""
     base_dir = Path(getattr(args, "config_dir", Path.cwd())).resolve()
@@ -645,6 +657,7 @@ async def main():
     finally:
         if ctx.shell_task_manager is not None:
             await ctx.shell_task_manager.shutdown(cancel_running=True)
+        await _close_llm_runtime(agent.llm)
         await _mark_worker_offline(
             worker_id=args.im_worker_id,
             gateway_base_url=args.im_gateway_base_url,
