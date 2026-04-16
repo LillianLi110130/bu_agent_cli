@@ -165,6 +165,31 @@ class BaseChatModel(Protocol):
         """
         ...
 
+    async def ainvoke_streaming(
+        self,
+        messages: list[BaseMessage],
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> ChatInvokeCompletion:
+        """使用流式调用但同步返回结果（解决90s超时问题）
+
+        内部实现：
+        1. 调用 astream() 获取流式迭代器
+        2. 收集所有 chunk 的内容
+        3. 组装成完整的 ChatInvokeCompletion 返回
+
+        Args:
+            messages: 消息列表
+            tools: 可选的工具列表
+            tool_choice: 工具选择策略
+            **kwargs: 额外参数
+
+        Returns:
+            ChatInvokeCompletion: 与 ainvoke() 返回类型相同
+        """
+        ...
+
     @classmethod
     def __get_pydantic_core_schema__(
         cls,
