@@ -9,10 +9,8 @@ import java.time.LocalDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class OutboundMessageEntity {
-    private Long id;
-    private String sessionKey;
-    private String content;
+public class OnlineWorkerEntity {
+    private String workerId;
     private String status;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;

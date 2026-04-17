@@ -8,13 +8,14 @@ import org.apache.ibatis.annotations.Param;
 public interface InboundMessageMapper {
     int insert(InboundMessageEntity entity);
 
-    int markDelivering(
-        @Param("id") Long id,
-        @Param("deliveryId") String deliveryId,
-        @Param("leaseExpiresAt") Long leaseExpiresAt
+    InboundMessageEntity findFirstBySessionKeyAndStatus(
+        @Param("sessionKey") String sessionKey,
+        @Param("status") String status
     );
 
-    int updateLease(@Param("id") Long id, @Param("leaseExpiresAt") Long leaseExpiresAt);
-
-    int markConsumed(@Param("id") Long id, @Param("deliveryId") String deliveryId);
+    int updateStatus(
+        @Param("id") Long id,
+        @Param("currentStatus") String currentStatus,
+        @Param("nextStatus") String nextStatus
+    );
 }
