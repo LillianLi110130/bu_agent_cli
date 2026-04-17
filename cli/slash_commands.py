@@ -103,9 +103,9 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="skills",
-                description="列出所有可用的 @ 技能",
-                usage="/skills",
-                examples=["/skills"],
+                description="列出、查看和重新加载技能",
+                usage="/skills [list|reload|show <name>]",
+                examples=["/skills", "/skills reload", "/skills show calculator"],
                 category="技能",
             ),
             SlashCommand(
