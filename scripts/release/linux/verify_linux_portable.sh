@@ -84,7 +84,7 @@ find_runtime_python() {
 invoke_smoke_run() {
     local bundle_root="$1"
     local deploy_script="${bundle_root}/deploy.sh"
-    local launcher="${bundle_root}/tg-agent-launcher.sh"
+    local launcher="${bundle_root}/crab-launcher.sh"
     local smoke_root="${bundle_root}/.tmp_portable_smoke"
     local home_dir="${smoke_root}/home"
     local workspace_dir="${smoke_root}/workspace"
@@ -113,7 +113,7 @@ wheelhouse_dir="${resolved_bundle_dir}/wheelhouse"
 
 assert_path_exists "${resolved_bundle_dir}" "bundle directory"
 assert_path_exists "${resolved_bundle_dir}/deploy.sh" "deploy.sh"
-assert_path_exists "${resolved_bundle_dir}/tg-agent-launcher.sh" "tg-agent-launcher.sh"
+assert_path_exists "${resolved_bundle_dir}/crab-launcher.sh" "crab-launcher.sh"
 assert_path_exists "${resolved_bundle_dir}/README.txt" "README.txt"
 assert_path_exists "${app_dir}" "app directory"
 assert_path_exists "${runtime_dir}" "python-runtime directory"

@@ -43,7 +43,7 @@ function Invoke-SmokeRun {
     )
 
     $deployScript = Join-Path $BundleRoot "win_deploy.ps1"
-    $launcher = Join-Path $BundleRoot "tg-agent-launcher.bat"
+    $launcher = Join-Path $BundleRoot "crab-launcher.bat"
     $smokeRoot = Join-Path $BundleRoot ".tmp_portable_smoke"
     $homeDir = Join-Path $smokeRoot "home"
     $desktopDir = Join-Path $homeDir "Desktop"
@@ -101,7 +101,7 @@ $wheelhouseDir = Join-Path $resolvedBundleDir "wheelhouse"
 Assert-PathExists -Path $resolvedBundleDir -Label "bundle directory"
 Assert-PathExists -Path (Join-Path $resolvedBundleDir "deploy.bat") -Label "deploy.bat"
 Assert-PathExists -Path (Join-Path $resolvedBundleDir "win_deploy.ps1") -Label "win_deploy.ps1"
-Assert-PathExists -Path (Join-Path $resolvedBundleDir "tg-agent-launcher.bat") -Label "tg-agent-launcher.bat"
+Assert-PathExists -Path (Join-Path $resolvedBundleDir "crab-launcher.bat") -Label "crab-launcher.bat"
 Assert-PathExists -Path (Join-Path $resolvedBundleDir "README.txt") -Label "README.txt"
 Assert-PathExists -Path $appDir -Label "app directory"
 Assert-PathExists -Path $runtimeDir -Label "python-runtime directory"
