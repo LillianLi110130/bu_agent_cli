@@ -71,7 +71,6 @@ category: Quality
     (plugin_dir / "agents" / "reviewer.md").write_text(
         """---
 description: Review code changes carefully
-mode: subagent
 model: reviewer-model
 temperature: 0.2
 tools:
@@ -786,7 +785,7 @@ def test_cli_runs_python_plugin_command_and_prints_output_without_agent(monkeypa
             clear_history=lambda: None,
             register_hook=lambda hook: None,
         )
-        context = SimpleNamespace(working_dir=workspace, subagent_manager=None)
+        context = SimpleNamespace(working_dir=workspace, subagent_executor=None)
         monkeypatch.setattr("cli.interactive_input.PromptSession", lambda: SimpleNamespace())
 
         cli = TGAgentCLI(

@@ -236,7 +236,6 @@ def test_create_runtime_registries_loads_workspace_and_user_skills(
         workspace_root=workspace,
         plugin_dirs=[("builtin", empty_plugins)],
         skills_dir=builtin_skills,
-        agents_dir=empty_agents,
     )
 
     assert runtime.skill_registry.get("builtin-only") is not None

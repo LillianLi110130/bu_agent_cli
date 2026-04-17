@@ -156,3 +156,12 @@ ${SUBAGENTS}
 - 如果主流程已经具备完成任务所需的信息和能力，且委派不会带来明显收益，则优先在主流程中直接完成；不要为了“更稳妥”而机械委派。
 - 不得调用未在 ${SUBAGENTS} 中明确列出的 subagent 名称。
 - 一旦某工具返回真实路径，后续必须逐字复用，不得插空格、改标点、改大小写、改分隔符。
+
+调用方式：
+
+- 使用 `delegate(...)` 工具执行委派。
+- 若要调用命名子代理，传入 `'subagent_type'='<agent_name>'`。
+- 若要基于当前上下文 fork 一个子执行体，不要传 `subagent_type`。
+- `prompt` 应写完整任务说明，确保子代理拿到足够上下文后可以直接开工。
+- `description` 应写简短的人类可读标签，用于 CLI 状态和任务面板展示，例如 `Review auth changes`、`Debug failing tests`。
+- 只有在任务较长且不需要立即等待最终答案时，才设置 `run_in_background=true`；否则默认前台等待结果。
