@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
@@ -15,6 +16,14 @@ class SkillSlashResult:
     reloaded: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class SkillReviewHistoryItem:
+    created_at: datetime
+    status: str
+    summary: str
+    skill_name: str | None = None
+
+
 class SkillSlashHandler:
     """Handle /skills slash command operations."""
 
@@ -22,9 +31,11 @@ class SkillSlashHandler:
         self,
         service: SkillRuntimeService,
         console: Console | None = None,
+        review_history: list[SkillReviewHistoryItem] | None = None,
     ) -> None:
         self._service = service
         self._console = console or Console()
+        self._review_history = review_history if review_history is not None else []
 
     async def handle(self, args: list[str]) -> SkillSlashResult:
         if not args:
@@ -39,9 +50,11 @@ class SkillSlashHandler:
             return await self._reload()
         if subcommand == "show":
             return await self._show(sub_args)
+        if subcommand == "review":
+            return await self._review()
 
         self._console.print(f"[red]未知子命令：{subcommand}[/red]")
-        self._console.print("[dim]可用子命令：list、reload、show[/dim]")
+        self._console.print("[dim]可用子命令：list、reload、show、review[/dim]")
         return SkillSlashResult()
 
     async def _list(self) -> SkillSlashResult:
@@ -65,6 +78,30 @@ class SkillSlashHandler:
                 writable,
                 str(skill.path),
                 skill.description,
+            )
+
+        self._console.print()
+        self._console.print(table)
+        self._console.print()
+        return SkillSlashResult()
+
+    async def _review(self) -> SkillSlashResult:
+        if not self._review_history:
+            self._console.print("[yellow]暂无 skill review 记录。[/yellow]")
+            return SkillSlashResult()
+
+        table = Table(title="最近 skill review")
+        table.add_column("时间", style="dim")
+        table.add_column("状态", style="cyan")
+        table.add_column("Skill", style="magenta")
+        table.add_column("结果", style="white")
+
+        for item in self._review_history[-20:]:
+            table.add_row(
+                item.created_at.strftime("%H:%M:%S"),
+                item.status,
+                item.skill_name or "-",
+                item.summary,
             )
 
         self._console.print()

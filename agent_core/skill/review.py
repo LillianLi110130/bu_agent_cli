@@ -142,6 +142,7 @@ class SkillReviewHook(BaseAgentHook):
     enabled: bool = True
     on_changes: Callable[[list[SkillReviewChange]], None] | None = None
     on_nothing_to_save: Callable[[], None] | None = None
+    on_error: Callable[[Exception], None] | None = None
     priority: int = 980
 
     _iters_since_skill: int = 0
@@ -200,8 +201,10 @@ class SkillReviewHook(BaseAgentHook):
             result = task.result()
         except asyncio.CancelledError:
             return
-        except Exception:
+        except Exception as exc:
             logger.exception("Background skill review failed")
+            if self.on_error is not None:
+                self.on_error(exc)
             return
         logger.debug("Background skill review completed: %s", result.final_response)
         if result.changes and self.on_changes is not None:

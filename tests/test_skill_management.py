@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import io
+from datetime import datetime
 from pathlib import Path
 
 from rich.console import Console
 
 from agent_core.llm.messages import ToolMessage
 from agent_core.skill.manager import SkillManagementError, SkillManager
-from agent_core.skill.review import _extract_skill_manage_changes, _is_nothing_to_save
+from agent_core.skill.review import (
+    SkillReviewHook,
+    _extract_skill_manage_changes,
+    _is_nothing_to_save,
+)
 from agent_core.skill.runtime_service import SkillRuntimeService
 from cli.at_commands import AtCommandRegistry
-from cli.skills_handler import SkillSlashHandler
+from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
 from tools.skills import skill_manage
 
 
@@ -128,6 +133,38 @@ def test_skills_slash_handler_lists_reload_and_show(tmp_path: Path, monkeypatch)
     assert "可修改" in output.getvalue()
 
 
+def test_skills_slash_handler_shows_review_history(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    registry = AtCommandRegistry(skill_dirs=[home / ".tg_agent" / "skills"])
+    service = SkillRuntimeService(skill_registry=registry)
+    history = [
+        SkillReviewHistoryItem(
+            created_at=datetime(2026, 4, 17, 14, 20, 11),
+            status="updated",
+            skill_name="demo",
+            summary="已更新 skill",
+        ),
+        SkillReviewHistoryItem(
+            created_at=datetime(2026, 4, 17, 14, 31, 45),
+            status="failed",
+            summary="RateLimitError: request timeout",
+        ),
+    ]
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False, width=140)
+    handler = SkillSlashHandler(service=service, console=console, review_history=history)
+
+    result = asyncio.run(handler.handle(["review"]))
+
+    assert result.handled is True
+    text = output.getvalue()
+    assert "updated" in text
+    assert "demo" in text
+    assert "failed" in text
+    assert "RateLimitError" in text
+
+
 def test_skill_review_extracts_only_successful_skill_manage_changes() -> None:
     changes = _extract_skill_manage_changes(
         [
@@ -167,3 +204,23 @@ def test_skill_review_detects_exact_nothing_to_save_response() -> None:
     assert _is_nothing_to_save("  Nothing to save.\n")
     assert not _is_nothing_to_save("Nothing to save")
     assert not _is_nothing_to_save("No skill was saved.")
+
+
+def test_skill_review_hook_reports_background_errors() -> None:
+    class FailingTask:
+        def __init__(self, error: Exception) -> None:
+            self.error = error
+
+        def result(self):
+            raise self.error
+
+    captured: list[Exception] = []
+    hook = SkillReviewHook(
+        runner=object(),  # type: ignore[arg-type]
+        on_error=captured.append,
+    )
+    error = RuntimeError("boom")
+
+    hook._handle_background_result(FailingTask(error))  # type: ignore[arg-type]  # noqa: SLF001
+
+    assert captured == [error]

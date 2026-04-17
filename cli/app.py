@@ -14,6 +14,7 @@ import threading
 import time
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Callable
@@ -95,7 +96,7 @@ from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from cli.session_runtime import CLISessionRuntime
-from cli.skills_handler import SkillSlashHandler
+from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
 from config.model_config import (
     ModelPreset,
     get_auto_vision_preset,
@@ -452,6 +453,7 @@ class TGAgentCLI:
         self._last_command_final_content = ""
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
+        self._skill_review_history: list[SkillReviewHistoryItem] = []
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
@@ -479,6 +481,7 @@ class TGAgentCLI:
             if isinstance(hook, SkillReviewHook):
                 hook.on_changes = self._on_skill_review_changes
                 hook.on_nothing_to_save = self._on_skill_review_nothing_to_save
+                hook.on_error = self._on_skill_review_error
 
     def _on_skill_review_changes(self, changes: list[SkillReviewChange]) -> None:
         action_labels = {
@@ -490,10 +493,52 @@ class TGAgentCLI:
         }
         for change in changes:
             label = action_labels.get(change.action, "已更新 skill")
+            status = self._skill_review_status_for_action(change.action)
+            self._append_skill_review_history(
+                status=status,
+                summary=label,
+                skill_name=change.name,
+            )
             self._console.print(f"[dim]{label}：[/dim][cyan]{change.name}[/cyan]")
 
     def _on_skill_review_nothing_to_save(self) -> None:
+        self._append_skill_review_history(
+            status="nothing_to_save",
+            summary="没有发现值得保存的 skill",
+        )
         self._console.print("[dim]Skill review：没有发现值得保存的 skill。[/dim]")
+
+    def _on_skill_review_error(self, error: Exception) -> None:
+        error_summary = f"{type(error).__name__}: {error}"
+        self._append_skill_review_history(
+            status="failed",
+            summary=error_summary[:240],
+        )
+
+    def _append_skill_review_history(
+        self,
+        *,
+        status: str,
+        summary: str,
+        skill_name: str | None = None,
+    ) -> None:
+        self._skill_review_history.append(
+            SkillReviewHistoryItem(
+                created_at=datetime.now(),
+                status=status,
+                summary=summary,
+                skill_name=skill_name,
+            )
+        )
+        self._skill_review_history = self._skill_review_history[-50:]
+
+    @staticmethod
+    def _skill_review_status_for_action(action: str) -> str:
+        if action == "created":
+            return "created"
+        if action in {"written", "removed"}:
+            return "file_updated"
+        return "updated"
 
     def _load_model_presets(self) -> dict[str, ModelPreset]:
         """Load model presets from config/model_presets.json."""
@@ -1325,6 +1370,7 @@ class TGAgentCLI:
             handler = SkillSlashHandler(
                 service=self._skill_runtime_service,
                 console=self._console,
+                review_history=self._skill_review_history,
             )
             result = await handler.handle(args)
             return result.handled
