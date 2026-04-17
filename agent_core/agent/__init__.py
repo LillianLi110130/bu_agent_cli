@@ -27,6 +27,7 @@ from agent_core.agent.hooks import (
     HookDecision,
     HookManager,
     HumanApprovalHook,
+    SubagentCompletionHook,
     ToolPolicyHook,
 )
 from agent_core.agent.model_routing_hook import ModelRoutingHook
@@ -66,6 +67,7 @@ __all__ = [
     "AuditHook",
     "BashFileTaskGuardHook",
     "ExcelReadGuardHook",
+    "SubagentCompletionHook",
     "ModelRoutingHook",
     "HumanApprovalRequest",
     "HumanApprovalDecision",

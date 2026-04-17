@@ -239,8 +239,8 @@ docs/spec/<spec_name>/
 
 子代理定义在：`agent_core/prompts/agents/*.md`
 
-- 通过 frontmatter 指定 `mode/model/tools` 等配置
-- `mode` 为 `subagent` 或 `all` 的代理可被 `task` 工具调用
+- 通过 frontmatter 指定 `model/tools/disallowedTools` 等配置
+- 可调用代理由代理配置与工具过滤规则共同决定，不再依赖 `mode` 字段
 
 ## 项目结构（实际）
 

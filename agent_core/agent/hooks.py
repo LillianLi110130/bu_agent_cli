@@ -25,6 +25,7 @@ from agent_core.llm.messages import BaseMessage, ToolMessage, UserMessage
 if TYPE_CHECKING:
     from agent_core.agent.runtime_state import AgentRunState
     from agent_core.agent.service import Agent
+    from agent_core.task import SubagentTaskResult
 
 logger = logging.getLogger("agent_core.agent.hooks")
 _EXCEL_COMMAND_RE = re.compile(r"(?i)(openpyxl|\.xlsx\b|\.xlsm\b|\.xltx\b|\.xltm\b)")
@@ -164,6 +165,25 @@ class BaseAgentHook:
         emitted_events: list[RuntimeEvent],
     ) -> HookDecision | None:
         return None
+
+    async def on_subagent_result(
+        self,
+        result: "SubagentTaskResult",
+        ctx: "SubagentHookContext",
+    ) -> None:
+        return None
+
+
+@dataclass
+class SubagentHookContext:
+    agent: "Agent"
+    ui_events: list[Any] = field(default_factory=list)
+
+    def inject_message(self, message: BaseMessage, pinned: bool = True) -> None:
+        self.agent._context.inject_message(message, pinned=pinned)
+
+    def emit_ui_event(self, event: Any) -> None:
+        self.ui_events.append(event)
 
 
 @dataclass
@@ -518,6 +538,52 @@ class AuditHook(BaseAgentHook):
         logger.debug("[hook:audit] after %s -> %s", type(event).__name__, len(emitted_events))
         return None
 
+    async def on_subagent_result(
+        self,
+        result: "SubagentTaskResult",
+        ctx: "SubagentHookContext",
+    ) -> None:
+        self.records.append(
+            {
+                "phase": "subagent",
+                "event": "SubagentTaskResult",
+                "task_id": result.task_id,
+                "status": result.status,
+                "subagent_name": result.subagent_name,
+            }
+        )
+
+
+@dataclass
+class SubagentCompletionHook(BaseAgentHook):
+    """Inject completed background subagent results back into the parent agent."""
+
+    priority: int = 110
+
+    async def on_subagent_result(
+        self,
+        result: "SubagentTaskResult",
+        ctx: "SubagentHookContext",
+    ) -> None:
+        if not result.run_in_background:
+            return
+
+        title = (
+            f"Background subagent '{result.description or result.subagent_name}' completed."
+            if result.status == "completed"
+            else f"Background subagent '{result.description or result.subagent_name}' finished with status '{result.status}'."
+        )
+        body = result.final_response.strip() or (result.error or "").strip() or "(no output)"
+        message = (
+            f"{title}\n"
+            f"task_id={result.task_id}\n"
+            f"type={result.subagent_type or 'fork'}\n"
+            f"mode={result.task_kind}\n"
+            f"result:\n{body}"
+        )
+        ctx.inject_message(UserMessage(content=message), pinned=True)
+        ctx.emit_ui_event(result)
+
 
 @dataclass
 class HookManager:
@@ -591,3 +657,16 @@ class HookManager:
             override_result=override_result,
             aborted=False,
         )
+
+    async def dispatch_subagent_result(
+        self,
+        agent: "Agent",
+        result: "SubagentTaskResult",
+    ) -> list[Any]:
+        ctx = SubagentHookContext(agent=agent)
+        for hook in self.hooks:
+            handler = getattr(hook, "on_subagent_result", None)
+            if handler is None:
+                continue
+            await handler(result, ctx)
+        return list(ctx.ui_events)

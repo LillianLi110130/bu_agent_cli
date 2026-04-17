@@ -448,12 +448,10 @@ class TGAgentCLI:
         self._last_context_budget: _CLIContextBudgetSnapshot | None = None
         self._last_context_budget_status_line: str | None = None
         self._context_budget_hook_agents: set[int] = set()
-
+        self._subagent_progress_signatures: dict[str, tuple[str, int, str]] = {}
+        self._foreground_delegate_depth = 0
         if self._bridge_store is not None:
             self._bridge_store.initialize()
-
-        if context.subagent_manager:
-            context.subagent_manager.set_result_callback(self._on_task_completed)
 
     def _load_model_presets(self) -> dict[str, ModelPreset]:
         """Load model presets from config/model_presets.json."""
@@ -906,6 +904,143 @@ class TGAgentCLI:
         if final_content:
             self._console.print(final_content)
 
+    @staticmethod
+    def _format_timestamp(value: object) -> str:
+        if value in (None, ""):
+            return "-"
+        try:
+            if isinstance(value, (int, float)):
+                return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(value, str):
+                parsed = datetime.fromisoformat(value)
+                return parsed.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(value)
+        return str(value)
+
+    @staticmethod
+    def _task_status_label(status: str) -> str:
+        mapping = {
+            "running": "[cyan]running[/cyan]",
+            "completed": "[green]completed[/green]",
+            "failed": "[red]failed[/red]",
+            "cancelled": "[yellow]cancelled[/yellow]",
+        }
+        return mapping.get(status, f"[white]{status}[/white]")
+
+    def _print_tasks_summary(
+        self,
+        *,
+        shell_tasks: list[dict[str, object]],
+        subagent_tasks: dict[str, object] | None,
+    ) -> None:
+        self._console.print("[bold cyan]任务列表：[/bold cyan]")
+
+        self._console.print("[bold]Shell Tasks[/bold]")
+        if not shell_tasks:
+            self._console.print("[dim]  (none)[/dim]")
+        else:
+            for task in sorted(shell_tasks, key=lambda item: float(item.get("created_at", 0) or 0)):
+                task_id = str(task.get("task_id", "-"))
+                status = str(task.get("status", "-"))
+                command = str(task.get("command", "")).strip().replace("\n", " ")
+                if len(command) > 72:
+                    command = command[:69] + "..."
+                self._console.print(
+                    f"  {task_id} | {self._task_status_label(status)} | {command or '(empty command)'}"
+                )
+
+        self._console.print("[bold]Subagent Tasks[/bold]")
+        if not subagent_tasks:
+            self._console.print("[dim]  (none)[/dim]")
+            return
+
+        ordered_groups = ("running", "completed", "failed", "cancelled")
+        has_any = False
+        for group in ordered_groups:
+            items = subagent_tasks.get(group) if isinstance(subagent_tasks, dict) else None
+            if not items:
+                continue
+            has_any = True
+            self._console.print(f"[dim]{group}[/dim]")
+            for task in items:
+                task_id = str(task.get("task_id", "-"))
+                status = str(task.get("status", group))
+                name = str(task.get("subagent_name", "-"))
+                description = str(task.get("description", "")).strip().replace("\n", " ")
+                if len(description) > 56:
+                    description = description[:53] + "..."
+                tools_used = task.get("tools_used")
+                if isinstance(tools_used, list):
+                    tools_text = f"tools={len(tools_used)}"
+                else:
+                    tools_text = f"tools={int(task.get('steps_completed', 0) or 0)}"
+                self._console.print(
+                    f"  {task_id} | {self._task_status_label(status)} | {name} | "
+                    f"{description or '(no description)'} | {tools_text}"
+                )
+        if not has_any:
+            self._console.print("[dim]  (none)[/dim]")
+
+    def _print_task_detail(self, task_info: dict[str, object], *, task_kind: str) -> None:
+        self._console.print("[bold cyan]任务详情：[/bold cyan]")
+        if task_kind == "shell":
+            lines = [
+                f"[bold]类型：[/] shell",
+                f"[bold]任务 ID：[/] {task_info.get('task_id', '-')}",
+                f"[bold]状态：[/] {self._task_status_label(str(task_info.get('status', '-')))}",
+                f"[bold]命令：[/] {task_info.get('command', '-')}",
+                f"[bold]目录：[/] {task_info.get('cwd', '-')}",
+                f"[bold]PID：[/] {task_info.get('pid', '-')}",
+                f"[bold]返回码：[/] {task_info.get('returncode', '-')}",
+                f"[bold]日志：[/] {task_info.get('log_path', '-')}",
+                f"[bold]创建时间：[/] {self._format_timestamp(task_info.get('created_at'))}",
+                f"[bold]结束时间：[/] {self._format_timestamp(task_info.get('completed_at'))}",
+            ]
+            self._console.print("\n".join(lines))
+            return
+
+        tool_calls = task_info.get("tool_calls")
+        recent_logs = task_info.get("recent_logs")
+        tools_used = task_info.get("tools_used")
+        prompt = str(task_info.get("prompt", "") or "").strip()
+        final_response = str(task_info.get("final_response", "") or "").strip()
+        error = str(task_info.get("error", "") or "").strip()
+
+        lines = [
+            f"[bold]类型：[/] subagent",
+            f"[bold]任务 ID：[/] {task_info.get('task_id', '-')}",
+            f"[bold]状态：[/] {self._task_status_label(str(task_info.get('status', '-')))}",
+            f"[bold]子代理：[/] {task_info.get('subagent_name', '-')}",
+            f"[bold]描述：[/] {task_info.get('description', '-')}",
+            f"[bold]模式：[/] {'background' if task_info.get('run_in_background') else 'foreground'}",
+            f"[bold]任务种类：[/] {task_info.get('task_kind', '-')}",
+            f"[bold]subagent_type：[/] {task_info.get('subagent_type', '-')}",
+            f"[bold]模型：[/] {task_info.get('model', '-')}",
+            f"[bold]耗时：[/] {task_info.get('execution_time_ms', '-')}",
+            f"[bold]创建时间：[/] {self._format_timestamp(task_info.get('created_at'))}",
+            f"[bold]结束时间：[/] {self._format_timestamp(task_info.get('completed_at'))}",
+        ]
+        self._console.print("\n".join(lines))
+
+        if isinstance(tools_used, list):
+            self._console.print(f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}")
+        if isinstance(tool_calls, list):
+            self._console.print(f"[bold]工具调用次数：[/] {len(tool_calls)}")
+        if isinstance(recent_logs, list) and recent_logs:
+            self._console.print("[bold]最近日志：[/]")
+            for line in recent_logs:
+                self._console.print(f"  - {line}")
+        if prompt:
+            self._console.print("[bold]Prompt：[/]")
+            self._console.print(prompt)
+        if final_response:
+            self._console.print("[bold]结果：[/]")
+            self._console.print(final_response)
+        if error:
+            self._console.print("[bold red]错误：[/bold red]")
+            self._console.print(error)
+
     async def _run_slash_command_with_live_capture(
         self,
         user_input: str,
@@ -938,6 +1073,10 @@ class TGAgentCLI:
         """Stop the loading animation."""
         if loading:
             loading.stop()
+
+    @staticmethod
+    def _is_delegate_tool(tool_name: str) -> bool:
+        return tool_name in {"delegate", "delegate_parallel"}
 
     def _print_slash_help(self):
         """Print slash command help information."""
@@ -1077,19 +1216,14 @@ class TGAgentCLI:
                 shell_tasks = [task.to_dict() for task in self._ctx.shell_task_manager.list_tasks()]
 
             subagent_tasks = None
-            if self._ctx.subagent_manager is not None:
-                subagent_tasks = self._ctx.subagent_manager.list_all_tasks()
+            if self._ctx.subagent_executor is not None:
+                raw = self._ctx.subagent_executor.list_all_runs()
+                subagent_tasks = json.loads(raw) if raw else None
 
-            tasks_info = json.dumps(
-                {
-                    "shell_tasks": shell_tasks,
-                    "subagent_tasks": json.loads(subagent_tasks) if subagent_tasks else None,
-                },
-                ensure_ascii=False,
-                indent=2,
+            self._print_tasks_summary(
+                shell_tasks=shell_tasks,
+                subagent_tasks=subagent_tasks,
             )
-            self._console.print("[bold cyan]后台任务：[/bold cyan]")
-            self._console.print(tasks_info)
             return True
 
         if command_name == "task":
@@ -1099,19 +1233,23 @@ class TGAgentCLI:
             task_id = args[0]
 
             task_info = None
+            task_kind = None
             if self._ctx.shell_task_manager is not None:
                 shell_task = self._ctx.shell_task_manager.get_task(task_id)
                 if shell_task is not None:
-                    task_info = json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
+                    task_info = shell_task.to_dict()
+                    task_kind = "shell"
 
-            if task_info is None and self._ctx.subagent_manager is not None:
-                task_info = self._ctx.subagent_manager.get_task_status(task_id)
+            if task_info is None and self._ctx.subagent_executor is not None:
+                raw = self._ctx.subagent_executor.get_run_status(task_id)
+                if raw is not None:
+                    task_info = json.loads(raw)
+                    task_kind = "subagent"
 
             if task_info is None:
                 self._console.print(f"[red]未找到任务“{task_id}”。[/red]")
                 return True
-            self._console.print("[bold cyan]任务详情：[/bold cyan]")
-            self._console.print(task_info)
+            self._print_task_detail(task_info, task_kind=task_kind or "unknown")
             return True
 
         if command_name == "task_cancel":
@@ -1127,10 +1265,10 @@ class TGAgentCLI:
                     result = await self._ctx.shell_task_manager.cancel(task_id)
 
             if result is None:
-                if self._ctx.subagent_manager is None:
+                if self._ctx.subagent_executor is None:
                     self._console.print("[yellow]没有可用的后台任务管理器。[/yellow]")
                     return True
-                result = await self._ctx.subagent_manager.cancel_task(task_id)
+                result = await self._ctx.subagent_executor.cancel_run(task_id)
 
             self._console.print(result)
             return True
@@ -1181,6 +1319,7 @@ class TGAgentCLI:
             handler = AgentSlashHandler(
                 registry=self._agent_registry,
                 console=self._console,
+                workspace_root=self._ctx.working_dir,
             )
             return await handler.handle(args)
 
@@ -1401,7 +1540,6 @@ class TGAgentCLI:
 
         # Start the listener task
         listener_task = asyncio.create_task(listen_for_cancel())
-
         try:
             # Pass cancel_event to agent for immediate cancellation
             async for event in active_agent.query_stream(user_input, cancel_event=cancel_event):
@@ -1421,6 +1559,9 @@ class TGAgentCLI:
                     self._stop_loading(self._loading)
                     self._loading = None
 
+                    if self._is_delegate_tool(event.tool):
+                        self._foreground_delegate_depth += 1
+
                     self._step_number += 1
                     args_str = str(event.args)[:100]
                     if len(str(event.args)) > 100:
@@ -1433,8 +1574,9 @@ class TGAgentCLI:
                     self._console.print(f"  [dim]参数：{args_str}[/]")
                     self._console.print("  [dim]（按 q 可取消）[/dim]")
 
-                    # Start loading while the tool runs.
-                    self._loading = self._start_loading("执行中")
+                    if not self._is_delegate_tool(event.tool):
+                        # Start loading while the tool runs.
+                        self._loading = self._start_loading("执行中")
 
                 elif isinstance(event, ToolResultEvent):
                     self._stop_loading(self._loading)
@@ -1451,8 +1593,15 @@ class TGAgentCLI:
                         else:
                             self._console.print(f"  [{self.COLOR_TOOL_RESULT}]结果：{result}[/]")
 
-                    # Restart loading for the next LLM call.
-                    self._loading = self._start_loading("思考中")
+                    if self._is_delegate_tool(event.tool):
+                        self._foreground_delegate_depth = max(
+                            0, self._foreground_delegate_depth - 1
+                        )
+
+                    # Restart loading for the next LLM call unless a foreground
+                    # delegate run is still actively streaming its own progress.
+                    if self._foreground_delegate_depth == 0:
+                        self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
                     self._stop_loading(self._loading)
@@ -1499,9 +1648,9 @@ class TGAgentCLI:
         """Handle background task completion notification.
 
         Args:
-            result: TaskResult from SubagentManager
+            result: TaskResult from background subagent task manager
         """
-        from agent_core.agent.subagent_manager import TaskResult
+        from agent_core.task import SubagentTaskResult as TaskResult
         from rich.panel import Panel
 
         if not isinstance(result, TaskResult):
@@ -1512,22 +1661,10 @@ class TGAgentCLI:
         status_color = "green" if result.status == "completed" else "red"
 
         if result.status == "completed":
-            self._console.print()
             self._console.print(
-                Panel(
-                    (
-                        f"[{status_color}]{status_emoji} 任务已完成：[/{status_color}]\n"
-                        f"[bold]子智能体：[/] {result.subagent_name}\n"
-                        f"[bold]任务 ID：[/] {result.task_id}\n"
-                        f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
-                        f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
-                        f"[bold]结果：[/] {result.final_response[:500]}..."
-                        if len(result.final_response) > 500
-                        else "..."
-                    ),
-                    title="[bold blue]后台任务通知[/bold blue]",
-                    border_style=status_color,
-                )
+                f"[dim]\\[bg done\\] {result.subagent_name} {result.task_id} "
+                f"finished in {result.execution_time_ms / 1000:.1f}s. "
+                f"Use /task {result.task_id} to inspect the result.[/dim]"
             )
         elif result.status == "failed":
             self._console.print()
@@ -1680,6 +1817,24 @@ class TGAgentCLI:
             if not outcome.continue_running:
                 return False
 
+    async def _consume_subagent_notifications(self) -> None:
+        """Render delegated agent progress and completion notifications."""
+        queue = self._ctx.subagent_events
+        if queue is None:
+            return
+
+        while True:
+            event = await queue.get()
+            try:
+                from agent_core.task import SubagentProgressEvent, SubagentTaskResult
+
+                if isinstance(event, SubagentProgressEvent):
+                    self._on_subagent_progress(event)
+                elif isinstance(event, SubagentTaskResult):
+                    await self._on_task_completed(event)
+            finally:
+                queue.task_done()
+
     async def _run_with_bridge_session(self, session: Any) -> None:
         """Run the interactive loop while continuously draining bridge requests."""
         prompt_task: asyncio.Task | None = None
@@ -1747,100 +1902,109 @@ class TGAgentCLI:
         self._print_welcome()
         await self._refresh_empty_context_budget_display()
 
-        if self._bridge_store is not None:
-            should_continue = await self._drain_bridge_queue()
-            if not should_continue:
-                return
+        notification_task = asyncio.create_task(self._consume_subagent_notifications())
 
-        # Create key bindings
-        kb = KeyBindings()
-
-        @kb.add("c-d")
-        def _exit(event):  # noqa: D401
-            event.app.exit(exception=EOFError)
-
-        @kb.add("enter")
-        def _enter(event):  # noqa: D401
-            """Accept @ completion with Enter instead of submitting immediately."""
-            buffer = event.current_buffer
-            complete_state = buffer.complete_state
-
-            # When selecting @skill completion, Enter should apply completion
-            # and keep input in the prompt for the user to continue typing.
-            if complete_state and buffer.text.lstrip().startswith("@"):
-                completion = complete_state.current_completion
-                if completion is None and complete_state.completions:
-                    completion = complete_state.completions[0]
-
-                if completion is not None:
-                    buffer.apply_completion(completion)
-                    skill_name, message = parse_at_command(buffer.text)
-                    if skill_name and not message and not buffer.text.endswith(" "):
-                        buffer.insert_text(" ")
+        try:
+            if self._bridge_store is not None:
+                should_continue = await self._drain_bridge_queue()
+                if not should_continue:
                     return
 
-            buffer.validate_and_handle()
+            # Create key bindings
+            kb = KeyBindings()
 
-        # Mark as intentionally used
-        _ = _exit
-        _ = _enter
+            @kb.add("c-d")
+            def _exit(event):  # noqa: D401
+                event.app.exit(exception=EOFError)
 
-        # Create slash command completer
-        slash_completer = SlashCommandCompleter(self._slash_registry)
-        # Create at command completer
-        at_completer = AtCommandCompleter(self._at_registry)
-        # Use merged completer to handle both / and @
-        from prompt_toolkit.completion import merge_completers
+            @kb.add("enter")
+            def _enter(event):  # noqa: D401
+                """Accept @ completion with Enter instead of submitting immediately."""
+                buffer = event.current_buffer
+                complete_state = buffer.complete_state
 
-        merged_completer = merge_completers([slash_completer, at_completer])
-        threaded_completer = ThreadedCompleter(merged_completer)
+                # When selecting @skill completion, Enter should apply completion
+                # and keep input in the prompt for the user to continue typing.
+                if complete_state and buffer.text.lstrip().startswith("@"):
+                    completion = complete_state.current_completion
+                    if completion is None and complete_state.completions:
+                        completion = complete_state.completions[0]
 
-        # Define style for better visual feedback
-        style = Style.from_dict(
-            {
-                "completion-menu.completion": "bg:#008888 #ffffff",
-                "completion-menu.completion.current": "bg:#ffffff #000000",
-                "completion-menu.meta.completion": "bg:#00aaaa #000000",
-                "completion-menu.meta.current": "bg:#00ffff #000000",
-                "completion-menu": "bg:#008888 #ffffff",
-                "bottom-toolbar": "noreverse bg:default #777777",
-                "bottom-toolbar.text": "noreverse bg:default #777777",
-            }
-        )
+                    if completion is not None:
+                        buffer.apply_completion(completion)
+                        skill_name, message = parse_at_command(buffer.text)
+                        if skill_name and not message and not buffer.text.endswith(" "):
+                            buffer.insert_text(" ")
+                        return
 
-        # Create prompt session with completer
-        session = PromptSession(
-            message=lambda: HTML("<ansiblue>>> </ansiblue>"),
-            key_bindings=kb,
-            completer=threaded_completer,
-            complete_while_typing=True,
-            auto_suggest=AutoSuggestFromHistory(),
-            style=style,
-            enable_history_search=True,
-            bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
-        )
+                buffer.validate_and_handle()
 
-        if self._bridge_store is not None:
-            with patch_stdout(raw=True):
-                await self._run_with_bridge_session(session)
-            return
+            # Mark as intentionally used
+            _ = _exit
+            _ = _enter
 
-        while True:
+            # Create slash command completer
+            slash_completer = SlashCommandCompleter(self._slash_registry)
+            # Create at command completer
+            at_completer = AtCommandCompleter(self._at_registry)
+            # Use merged completer to handle both / and @
+            from prompt_toolkit.completion import merge_completers
+
+            merged_completer = merge_completers([slash_completer, at_completer])
+            threaded_completer = ThreadedCompleter(merged_completer)
+
+            # Define style for better visual feedback
+            style = Style.from_dict(
+                {
+                    "completion-menu.completion": "bg:#008888 #ffffff",
+                    "completion-menu.completion.current": "bg:#ffffff #000000",
+                    "completion-menu.meta.completion": "bg:#00aaaa #000000",
+                    "completion-menu.meta.current": "bg:#00ffff #000000",
+                    "completion-menu": "bg:#008888 #ffffff",
+                    "bottom-toolbar": "noreverse bg:default #777777",
+                    "bottom-toolbar.text": "noreverse bg:default #777777",
+                }
+            )
+
+            # Create prompt session with completer
+            session = PromptSession(
+                message=lambda: HTML("<ansiblue>>> </ansiblue>"),
+                key_bindings=kb,
+                completer=threaded_completer,
+                complete_while_typing=True,
+                auto_suggest=AutoSuggestFromHistory(),
+                style=style,
+                enable_history_search=True,
+                bottom_toolbar=lambda: HTML(self._render_context_budget_toolbar()),
+            )
+
+            if self._bridge_store is not None:
+                with patch_stdout(raw=True):
+                    await self._run_with_bridge_session(session)
+                return
+
+            while True:
+                try:
+                    user_input = await session.prompt_async()
+                except EOFError:
+                    self._console.print("\n[yellow]再见！[/yellow]")
+                    break
+                except KeyboardInterrupt:
+                    continue
+
+                user_input = user_input.strip()
+                if not user_input:
+                    continue
+
+                outcome = await self._execute_input_text(user_input)
+                if not outcome.continue_running:
+                    break
+        finally:
+            notification_task.cancel()
             try:
-                user_input = await session.prompt_async()
-            except EOFError:
-                self._console.print("\n[yellow]再见！[/yellow]")
-                break
-            except KeyboardInterrupt:
-                continue
-
-            user_input = user_input.strip()
-            if not user_input:
-                continue
-
-            outcome = await self._execute_input_text(user_input)
-            if not outcome.continue_running:
-                break
+                await notification_task
+            except asyncio.CancelledError:
+                pass
 
     def _print_welcome(self):
         """Print welcome message."""
@@ -2038,32 +2202,17 @@ class TGAgentCLI:
 
     async def _on_task_completed(self, result: Any):
         """Handle background task completion notification."""
-        from agent_core.agent.subagent_manager import TaskResult
+        from agent_core.task import SubagentTaskResult as TaskResult
         from rich.panel import Panel
 
         if not isinstance(result, TaskResult):
             return
 
         if result.status == "completed":
-            status_symbol = "✓"
-            status_color = "green"
-            result_preview = (
-                f"{result.final_response[:500]}..."
-                if len(result.final_response) > 500
-                else result.final_response
-            )
-            self._console.print()
             self._console.print(
-                Panel(
-                    f"[{status_color}]{status_symbol} 任务已完成：[/{status_color}]\n"
-                    f"[bold]子智能体：[/] {result.subagent_name}\n"
-                    f"[bold]任务 ID：[/] {result.task_id}\n"
-                    f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
-                    f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
-                    f"[bold]结果：[/] {result_preview}",
-                    title="[bold blue]后台任务通知[/bold blue]",
-                    border_style=status_color,
-                )
+                f"[dim]\\[bg done\\] {result.subagent_name} {result.task_id} "
+                f"finished in {result.execution_time_ms / 1000:.1f}s. "
+                f"Use /task {result.task_id} to inspect the result.[/dim]"
             )
             return
 
@@ -2092,3 +2241,50 @@ class TGAgentCLI:
                     border_style="yellow",
                 )
             )
+            return
+
+    def _on_subagent_progress(self, event: Any) -> None:
+        """Render a compact delegated-agent progress line."""
+        from agent_core.task import SubagentProgressEvent
+
+        if not isinstance(event, SubagentProgressEvent):
+            return
+        if event.run_in_background:
+            return
+        elapsed = max(time.time() - event.created_at.timestamp(), 0.0)
+        step = event.current_step or "Running"
+        if len(step) > 72:
+            step = step[:69] + "..."
+        phase = self._classify_subagent_progress_phase(step)
+        signature = (event.status, event.steps_completed, phase)
+        if self._subagent_progress_signatures.get(event.task_id) == signature:
+            return
+        self._subagent_progress_signatures[event.task_id] = signature
+        if event.status in {"completed", "failed", "cancelled"}:
+            self._subagent_progress_signatures.pop(event.task_id, None)
+
+        # Foreground delegated progress should own the terminal while it is
+        # streaming updates, otherwise the parent spinner races with it and
+        # causes repeated "思考中" lines and visual reordering.
+        self._stop_loading(self._loading)
+        self._loading = None
+
+        self._console.print(
+            "[dim]"
+            "[subagent:fg] "
+            f"{event.task_id} | {event.subagent_name} | {event.description} | "
+            f"tools={event.steps_completed} | {elapsed:.1f}s | {step}"
+            "[/dim]"
+        )
+
+    @staticmethod
+    def _classify_subagent_progress_phase(step: str) -> str:
+        if step.startswith("Calling "):
+            return step
+        if step in {"Completed", "Cancelled", "Failed"}:
+            return step
+        if step.startswith("Child agent built"):
+            return "child_ready"
+        if step.startswith("Building child agent"):
+            return "child_building"
+        return "other"
