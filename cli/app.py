@@ -449,6 +449,7 @@ class TGAgentCLI:
         self._last_context_budget_status_line: str | None = None
         self._context_budget_hook_agents: set[int] = set()
         self._subagent_progress_signatures: dict[str, tuple[str, int, str]] = {}
+        self._foreground_delegate_depth = 0
         if self._bridge_store is not None:
             self._bridge_store.initialize()
 
@@ -903,6 +904,143 @@ class TGAgentCLI:
         if final_content:
             self._console.print(final_content)
 
+    @staticmethod
+    def _format_timestamp(value: object) -> str:
+        if value in (None, ""):
+            return "-"
+        try:
+            if isinstance(value, (int, float)):
+                return datetime.fromtimestamp(float(value)).strftime("%Y-%m-%d %H:%M:%S")
+            if isinstance(value, str):
+                parsed = datetime.fromisoformat(value)
+                return parsed.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return str(value)
+        return str(value)
+
+    @staticmethod
+    def _task_status_label(status: str) -> str:
+        mapping = {
+            "running": "[cyan]running[/cyan]",
+            "completed": "[green]completed[/green]",
+            "failed": "[red]failed[/red]",
+            "cancelled": "[yellow]cancelled[/yellow]",
+        }
+        return mapping.get(status, f"[white]{status}[/white]")
+
+    def _print_tasks_summary(
+        self,
+        *,
+        shell_tasks: list[dict[str, object]],
+        subagent_tasks: dict[str, object] | None,
+    ) -> None:
+        self._console.print("[bold cyan]任务列表：[/bold cyan]")
+
+        self._console.print("[bold]Shell Tasks[/bold]")
+        if not shell_tasks:
+            self._console.print("[dim]  (none)[/dim]")
+        else:
+            for task in sorted(shell_tasks, key=lambda item: float(item.get("created_at", 0) or 0)):
+                task_id = str(task.get("task_id", "-"))
+                status = str(task.get("status", "-"))
+                command = str(task.get("command", "")).strip().replace("\n", " ")
+                if len(command) > 72:
+                    command = command[:69] + "..."
+                self._console.print(
+                    f"  {task_id} | {self._task_status_label(status)} | {command or '(empty command)'}"
+                )
+
+        self._console.print("[bold]Subagent Tasks[/bold]")
+        if not subagent_tasks:
+            self._console.print("[dim]  (none)[/dim]")
+            return
+
+        ordered_groups = ("running", "completed", "failed", "cancelled")
+        has_any = False
+        for group in ordered_groups:
+            items = subagent_tasks.get(group) if isinstance(subagent_tasks, dict) else None
+            if not items:
+                continue
+            has_any = True
+            self._console.print(f"[dim]{group}[/dim]")
+            for task in items:
+                task_id = str(task.get("task_id", "-"))
+                status = str(task.get("status", group))
+                name = str(task.get("subagent_name", "-"))
+                description = str(task.get("description", "")).strip().replace("\n", " ")
+                if len(description) > 56:
+                    description = description[:53] + "..."
+                tools_used = task.get("tools_used")
+                if isinstance(tools_used, list):
+                    tools_text = f"tools={len(tools_used)}"
+                else:
+                    tools_text = f"tools={int(task.get('steps_completed', 0) or 0)}"
+                self._console.print(
+                    f"  {task_id} | {self._task_status_label(status)} | {name} | "
+                    f"{description or '(no description)'} | {tools_text}"
+                )
+        if not has_any:
+            self._console.print("[dim]  (none)[/dim]")
+
+    def _print_task_detail(self, task_info: dict[str, object], *, task_kind: str) -> None:
+        self._console.print("[bold cyan]任务详情：[/bold cyan]")
+        if task_kind == "shell":
+            lines = [
+                f"[bold]类型：[/] shell",
+                f"[bold]任务 ID：[/] {task_info.get('task_id', '-')}",
+                f"[bold]状态：[/] {self._task_status_label(str(task_info.get('status', '-')))}",
+                f"[bold]命令：[/] {task_info.get('command', '-')}",
+                f"[bold]目录：[/] {task_info.get('cwd', '-')}",
+                f"[bold]PID：[/] {task_info.get('pid', '-')}",
+                f"[bold]返回码：[/] {task_info.get('returncode', '-')}",
+                f"[bold]日志：[/] {task_info.get('log_path', '-')}",
+                f"[bold]创建时间：[/] {self._format_timestamp(task_info.get('created_at'))}",
+                f"[bold]结束时间：[/] {self._format_timestamp(task_info.get('completed_at'))}",
+            ]
+            self._console.print("\n".join(lines))
+            return
+
+        tool_calls = task_info.get("tool_calls")
+        recent_logs = task_info.get("recent_logs")
+        tools_used = task_info.get("tools_used")
+        prompt = str(task_info.get("prompt", "") or "").strip()
+        final_response = str(task_info.get("final_response", "") or "").strip()
+        error = str(task_info.get("error", "") or "").strip()
+
+        lines = [
+            f"[bold]类型：[/] subagent",
+            f"[bold]任务 ID：[/] {task_info.get('task_id', '-')}",
+            f"[bold]状态：[/] {self._task_status_label(str(task_info.get('status', '-')))}",
+            f"[bold]子代理：[/] {task_info.get('subagent_name', '-')}",
+            f"[bold]描述：[/] {task_info.get('description', '-')}",
+            f"[bold]模式：[/] {'background' if task_info.get('run_in_background') else 'foreground'}",
+            f"[bold]任务种类：[/] {task_info.get('task_kind', '-')}",
+            f"[bold]subagent_type：[/] {task_info.get('subagent_type', '-')}",
+            f"[bold]模型：[/] {task_info.get('model', '-')}",
+            f"[bold]耗时：[/] {task_info.get('execution_time_ms', '-')}",
+            f"[bold]创建时间：[/] {self._format_timestamp(task_info.get('created_at'))}",
+            f"[bold]结束时间：[/] {self._format_timestamp(task_info.get('completed_at'))}",
+        ]
+        self._console.print("\n".join(lines))
+
+        if isinstance(tools_used, list):
+            self._console.print(f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}")
+        if isinstance(tool_calls, list):
+            self._console.print(f"[bold]工具调用次数：[/] {len(tool_calls)}")
+        if isinstance(recent_logs, list) and recent_logs:
+            self._console.print("[bold]最近日志：[/]")
+            for line in recent_logs:
+                self._console.print(f"  - {line}")
+        if prompt:
+            self._console.print("[bold]Prompt：[/]")
+            self._console.print(prompt)
+        if final_response:
+            self._console.print("[bold]结果：[/]")
+            self._console.print(final_response)
+        if error:
+            self._console.print("[bold red]错误：[/bold red]")
+            self._console.print(error)
+
     async def _run_slash_command_with_live_capture(
         self,
         user_input: str,
@@ -935,6 +1073,10 @@ class TGAgentCLI:
         """Stop the loading animation."""
         if loading:
             loading.stop()
+
+    @staticmethod
+    def _is_delegate_tool(tool_name: str) -> bool:
+        return tool_name in {"delegate", "delegate_parallel"}
 
     def _print_slash_help(self):
         """Print slash command help information."""
@@ -1075,18 +1217,13 @@ class TGAgentCLI:
 
             subagent_tasks = None
             if self._ctx.subagent_executor is not None:
-                subagent_tasks = self._ctx.subagent_executor.list_all_runs()
+                raw = self._ctx.subagent_executor.list_all_runs()
+                subagent_tasks = json.loads(raw) if raw else None
 
-            tasks_info = json.dumps(
-                {
-                    "shell_tasks": shell_tasks,
-                    "subagent_tasks": json.loads(subagent_tasks) if subagent_tasks else None,
-                },
-                ensure_ascii=False,
-                indent=2,
+            self._print_tasks_summary(
+                shell_tasks=shell_tasks,
+                subagent_tasks=subagent_tasks,
             )
-            self._console.print("[bold cyan]后台任务：[/bold cyan]")
-            self._console.print(tasks_info)
             return True
 
         if command_name == "task":
@@ -1096,19 +1233,23 @@ class TGAgentCLI:
             task_id = args[0]
 
             task_info = None
+            task_kind = None
             if self._ctx.shell_task_manager is not None:
                 shell_task = self._ctx.shell_task_manager.get_task(task_id)
                 if shell_task is not None:
-                    task_info = json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
+                    task_info = shell_task.to_dict()
+                    task_kind = "shell"
 
             if task_info is None and self._ctx.subagent_executor is not None:
-                task_info = self._ctx.subagent_executor.get_run_status(task_id)
+                raw = self._ctx.subagent_executor.get_run_status(task_id)
+                if raw is not None:
+                    task_info = json.loads(raw)
+                    task_kind = "subagent"
 
             if task_info is None:
                 self._console.print(f"[red]未找到任务“{task_id}”。[/red]")
                 return True
-            self._console.print("[bold cyan]任务详情：[/bold cyan]")
-            self._console.print(task_info)
+            self._print_task_detail(task_info, task_kind=task_kind or "unknown")
             return True
 
         if command_name == "task_cancel":
@@ -1418,6 +1559,9 @@ class TGAgentCLI:
                     self._stop_loading(self._loading)
                     self._loading = None
 
+                    if self._is_delegate_tool(event.tool):
+                        self._foreground_delegate_depth += 1
+
                     self._step_number += 1
                     args_str = str(event.args)[:100]
                     if len(str(event.args)) > 100:
@@ -1430,7 +1574,7 @@ class TGAgentCLI:
                     self._console.print(f"  [dim]参数：{args_str}[/]")
                     self._console.print("  [dim]（按 q 可取消）[/dim]")
 
-                    if event.tool not in {"delegate", "delegate_parallel"}:
+                    if not self._is_delegate_tool(event.tool):
                         # Start loading while the tool runs.
                         self._loading = self._start_loading("执行中")
 
@@ -1449,8 +1593,15 @@ class TGAgentCLI:
                         else:
                             self._console.print(f"  [{self.COLOR_TOOL_RESULT}]结果：{result}[/]")
 
-                    # Restart loading for the next LLM call.
-                    self._loading = self._start_loading("思考中")
+                    if self._is_delegate_tool(event.tool):
+                        self._foreground_delegate_depth = max(
+                            0, self._foreground_delegate_depth - 1
+                        )
+
+                    # Restart loading for the next LLM call unless a foreground
+                    # delegate run is still actively streaming its own progress.
+                    if self._foreground_delegate_depth == 0:
+                        self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
                     self._stop_loading(self._loading)
@@ -2111,6 +2262,12 @@ class TGAgentCLI:
         self._subagent_progress_signatures[event.task_id] = signature
         if event.status in {"completed", "failed", "cancelled"}:
             self._subagent_progress_signatures.pop(event.task_id, None)
+
+        # Foreground delegated progress should own the terminal while it is
+        # streaming updates, otherwise the parent spinner races with it and
+        # causes repeated "思考中" lines and visual reordering.
+        self._stop_loading(self._loading)
+        self._loading = None
 
         self._console.print(
             "[dim]"

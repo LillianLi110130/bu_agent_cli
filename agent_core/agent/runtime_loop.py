@@ -88,6 +88,14 @@ class AgentRuntimeLoop:
                     yield ui_event
                 continue
 
+            if isinstance(event, ToolCallRequested):
+                for ui_event in self._merge_ui_events(
+                    hook_ctx,
+                    self._build_tool_call_ui_events(event),
+                    emit_ui_events,
+                ):
+                    yield ui_event
+
             emitted_events, ui_events = await self._handle_event(event, before.override_result)
             after = await self.agent._hook_manager.after_event(event, hook_ctx, emitted_events)
 
@@ -238,17 +246,16 @@ class AgentRuntimeLoop:
             return [self._cancelled_run_finished()], []
 
         tool_name = event.tool_call.function.name
-        ui_events = self._build_tool_call_ui_events(event)
 
         if override_result is not None:
             tool_result = self._coerce_override_result(event.tool_call, override_result)
-            return [self._build_tool_result_received(event, tool_result)], ui_events
+            return [self._build_tool_result_received(event, tool_result)], []
 
         try:
             tool_result = await self.agent._execute_tool_call(event.tool_call)
         except asyncio.CancelledError:
             self._append_cancelled_tool_results()
-            return [self._cancelled_run_finished()], ui_events
+            return [self._cancelled_run_finished()], []
         except self.agent.task_complete_exc_type as task_complete:
             terminal_tool_message = ToolMessage(
                 tool_call_id=event.tool_call.id,
@@ -262,9 +269,9 @@ class AgentRuntimeLoop:
                     final_response=task_complete.message,
                     iterations=self.state.iterations,
                 ),
-            ], ui_events
+            ], []
 
-        return [self._build_tool_result_received(event, tool_result)], ui_events
+        return [self._build_tool_result_received(event, tool_result)], []
 
     def _handle_tool_result_received(
         self,
