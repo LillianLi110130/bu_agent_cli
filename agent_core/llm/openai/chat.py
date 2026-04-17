@@ -396,6 +396,70 @@ class ChatOpenAI(BaseChatModel):
 
         return sanitized
 
+    @staticmethod
+    def _get_stream_tool_call_aliases(
+        tool_call_delta: Any,
+        *,
+        position: int,
+    ) -> list[tuple[str, str | int]]:
+        """Return best-effort aliases for one streaming tool call delta."""
+        del position
+        aliases: list[tuple[str, str | int]] = []
+
+        tool_call_id = getattr(tool_call_delta, "id", None)
+        if isinstance(tool_call_id, str) and tool_call_id:
+            aliases.append(("id", tool_call_id))
+
+        tool_call_index = getattr(tool_call_delta, "index", None)
+        if isinstance(tool_call_index, int):
+            aliases.append(("index", tool_call_index))
+
+        return aliases
+
+    @staticmethod
+    def _tool_arguments_form_complete_json_object(arguments: str) -> bool:
+        """Return True when the buffered tool arguments already parse as one JSON object."""
+        try:
+            parsed = json.loads(arguments)
+        except Exception:
+            return False
+        return isinstance(parsed, dict)
+
+    @classmethod
+    def _infer_stream_tool_call_key(
+        cls,
+        *,
+        tool_calls_buffer: dict[str, dict[str, str]],
+        tool_call_update_order: list[str],
+        incoming_name: str | None,
+        incoming_arguments: str | None,
+    ) -> str | None:
+        """Best-effort fallback when a delta chunk omits both id and index.
+
+        OpenAI-compatible backends sometimes continue one tool call without repeating
+        its id/index. We avoid position-based matching because sparse chunk arrays can
+        shift positions and concatenate two different JSON payloads. Instead, prefer
+        buffered calls that are still incomplete, most recently updated first.
+        """
+        del incoming_arguments
+
+        candidate_keys: list[str] = []
+        for key in reversed(tool_call_update_order):
+            entry = tool_calls_buffer.get(key)
+            if entry is None:
+                continue
+            if incoming_name and not entry.get("name"):
+                candidate_keys.append(key)
+                continue
+            if not cls._tool_arguments_form_complete_json_object(entry.get("arguments", "")):
+                candidate_keys.append(key)
+
+        if candidate_keys:
+            return candidate_keys[0]
+        if len(tool_calls_buffer) == 1:
+            return next(iter(tool_calls_buffer))
+        return None
+
     async def ainvoke(
         self,
         messages: list[BaseMessage],
@@ -593,7 +657,10 @@ class ChatOpenAI(BaseChatModel):
 
             # 工具调用累积缓冲区：index -> {id, name, arguments}
             # OpenAI 流式 API 使用 index 来标识同一个工具调用的不同 chunk
-            tool_calls_buffer: dict[int, dict[str, str]] = {}
+            tool_calls_buffer: dict[str, dict[str, str]] = {}
+            tool_call_aliases: dict[tuple[str, str | int], str] = {}
+            anonymous_tool_call_counter = 0
+            tool_call_update_order: list[str] = []
 
             # 遍历流式响应
             async for chunk in stream:
@@ -608,21 +675,71 @@ class ChatOpenAI(BaseChatModel):
 
                 # 累积工具调用参数
                 if delta.tool_calls:
-                    for tc in delta.tool_calls:
+                    for position, tc in enumerate(delta.tool_calls):
                         # OpenAI 使用 index 识别同一个工具调用
-                        idx = tc.index
+                        aliases = self._get_stream_tool_call_aliases(tc, position=position)
+                        canonical_key = next(
+                            (tool_call_aliases[alias] for alias in aliases if alias in tool_call_aliases),
+                            None,
+                        )
+                        tool_call_id = getattr(tc, "id", None)
+                        tool_call_index = getattr(tc, "index", None)
+                        incoming_name = tc.function.name if tc.function else None
+                        incoming_arguments = tc.function.arguments if tc.function else None
 
-                        if idx not in tool_calls_buffer:
+                        if canonical_key is None:
+                            if isinstance(tool_call_id, str) and tool_call_id:
+                                canonical_key = f"id:{tool_call_id}"
+                            elif isinstance(tool_call_index, int):
+                                canonical_key = f"index:{tool_call_index}"
+                            else:
+                                canonical_key = self._infer_stream_tool_call_key(
+                                    tool_calls_buffer=tool_calls_buffer,
+                                    tool_call_update_order=tool_call_update_order,
+                                    incoming_name=incoming_name,
+                                    incoming_arguments=incoming_arguments,
+                                )
+                                if canonical_key is None:
+                                    canonical_key = f"anonymous:{anonymous_tool_call_counter}"
+                                    anonymous_tool_call_counter += 1
+
+                        if canonical_key not in tool_calls_buffer:
                             # 第一次遇到这个工具调用，初始化
-                            tool_calls_buffer[idx] = {
-                                "id": tc.id or f"call_{idx}",
-                                "name": tc.function.name if tc.function else "",
+                            fallback_id = (
+                                tool_call_id
+                                if isinstance(tool_call_id, str) and tool_call_id
+                                else (
+                                    f"call_{tool_call_index}"
+                                    if isinstance(tool_call_index, int)
+                                    else canonical_key.replace(":", "_")
+                                )
+                            )
+                            tool_calls_buffer[canonical_key] = {
+                                "id": fallback_id,
+                                "name": "",
                                 "arguments": "",
                             }
 
                         # 累积参数增量（arguments 是分段返回的）
-                        if tc.function and tc.function.arguments:
-                            tool_calls_buffer[idx]["arguments"] += tc.function.arguments
+                        entry = tool_calls_buffer[canonical_key]
+                        for alias in aliases:
+                            tool_call_aliases[alias] = canonical_key
+
+                        if isinstance(tool_call_id, str) and tool_call_id:
+                            entry["id"] = tool_call_id
+                            tool_call_aliases[("id", tool_call_id)] = canonical_key
+                        if isinstance(tool_call_index, int):
+                            tool_call_aliases[("index", tool_call_index)] = canonical_key
+
+                        if tc.function:
+                            if tc.function.name:
+                                entry["name"] = tc.function.name
+                            if tc.function.arguments:
+                                entry["arguments"] += tc.function.arguments
+
+                        if canonical_key in tool_call_update_order:
+                            tool_call_update_order.remove(canonical_key)
+                        tool_call_update_order.append(canonical_key)
 
                 # 处理 usage（只在最后）
                 usage = None
