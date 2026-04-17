@@ -661,6 +661,8 @@ async def main():
     finally:
         if ctx.shell_task_manager is not None:
             await ctx.shell_task_manager.shutdown(cancel_running=True)
+        if ctx.subagent_executor is not None:
+            await ctx.subagent_executor.shutdown(cancel_running=True)
         await _close_llm_runtime(agent.llm)
         await _mark_worker_offline(
             worker_id=args.im_worker_id,

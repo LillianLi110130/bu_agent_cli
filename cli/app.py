@@ -1510,22 +1510,10 @@ class TGAgentCLI:
         status_color = "green" if result.status == "completed" else "red"
 
         if result.status == "completed":
-            self._console.print()
             self._console.print(
-                Panel(
-                    (
-                        f"[{status_color}]{status_emoji} 任务已完成：[/{status_color}]\n"
-                        f"[bold]子智能体：[/] {result.subagent_name}\n"
-                        f"[bold]任务 ID：[/] {result.task_id}\n"
-                        f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
-                        f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
-                        f"[bold]结果：[/] {result.final_response[:500]}..."
-                        if len(result.final_response) > 500
-                        else "..."
-                    ),
-                    title="[bold blue]后台任务通知[/bold blue]",
-                    border_style=status_color,
-                )
+                f"[dim]\\[bg done\\] {result.subagent_name} {result.task_id} "
+                f"finished in {result.execution_time_ms / 1000:.1f}s. "
+                f"Use /task {result.task_id} to inspect the result.[/dim]"
             )
         elif result.status == "failed":
             self._console.print()
@@ -2070,25 +2058,10 @@ class TGAgentCLI:
             return
 
         if result.status == "completed":
-            status_symbol = "✓"
-            status_color = "green"
-            result_preview = (
-                f"{result.final_response[:500]}..."
-                if len(result.final_response) > 500
-                else result.final_response
-            )
-            self._console.print()
             self._console.print(
-                Panel(
-                    f"[{status_color}]{status_symbol} 任务已完成：[/{status_color}]\n"
-                    f"[bold]子智能体：[/] {result.subagent_name}\n"
-                    f"[bold]任务 ID：[/] {result.task_id}\n"
-                    f"[bold]执行耗时：[/] {result.execution_time_ms:.0f}ms\n"
-                    f"[bold]使用工具：[/] {', '.join(result.tools_used) if result.tools_used else '无'}\n"
-                    f"[bold]结果：[/] {result_preview}",
-                    title="[bold blue]后台任务通知[/bold blue]",
-                    border_style=status_color,
-                )
+                f"[dim]\\[bg done\\] {result.subagent_name} {result.task_id} "
+                f"finished in {result.execution_time_ms / 1000:.1f}s. "
+                f"Use /task {result.task_id} to inspect the result.[/dim]"
             )
             return
 

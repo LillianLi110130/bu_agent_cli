@@ -369,3 +369,29 @@ def test_run_foreground_cancels_child_when_parent_is_cancelled() -> None:
     asyncio.run(scenario())
 
     assert len(manager.cancelled_task_ids) == 1
+
+
+def test_subagent_shutdown_cancels_all_running_tasks() -> None:
+    manager = _CancellingTaskManager()
+    parent = Agent(llm=_FakeLLM(), tools=[], system_prompt="parent system")
+
+    async def scenario() -> None:
+        first = await manager.start_background_run(
+            parent_agent=parent,
+            request=SubagentCallRequest(
+                prompt="Review file A",
+                description="Review file A",
+            ),
+        )
+        second = await manager.start_background_run(
+            parent_agent=parent,
+            request=SubagentCallRequest(
+                prompt="Review file B",
+                description="Review file B",
+            ),
+        )
+        await asyncio.sleep(0)
+        await manager.shutdown(cancel_running=True)
+        assert {first, second}.issubset(set(manager.cancelled_task_ids))
+
+    asyncio.run(scenario())

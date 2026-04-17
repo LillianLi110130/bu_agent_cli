@@ -333,6 +333,18 @@ class SubagentTaskManager:
             pass
         return f"Task '{task_id}' cancellation requested"
 
+    async def shutdown(self, *, cancel_running: bool = True) -> None:
+        """Best-effort shutdown for delegated subagent tasks."""
+        if not cancel_running:
+            return
+
+        running_task_ids = list(self._running_tasks.keys())
+        for task_id in running_task_ids:
+            try:
+                await self.cancel_run(task_id)
+            except Exception:
+                logger.exception("Failed to cancel subagent task during shutdown: %s", task_id)
+
     async def _execute_local_agent_run(
         self,
         task_id: str,
