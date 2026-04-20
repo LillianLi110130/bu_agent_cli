@@ -54,7 +54,6 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
-from agent_core.runtime_paths import application_root
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -106,9 +105,7 @@ UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
 
 logger = logging.getLogger("cli.app")
 
-_REMOTE_RESET_STARTUP_PROMPT_PATH = (
-    application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
-)
+_REMOTE_RESET_RESPONSE = "当前上下文已重置"
 
 
 @dataclass
@@ -524,34 +521,12 @@ class TGAgentCLI:
             state=self._workspace_instruction_state,
         )
 
-    def _build_remote_reset_startup_prompt(self) -> str:
-        """Build the hidden startup prompt used after a remote `/reset`."""
-        startup_prompt = _REMOTE_RESET_STARTUP_PROMPT_PATH.read_text(encoding="utf-8").strip()
-        return f"{startup_prompt}\n\n当前运行模型：{self._agent.llm.model}"
-
     async def _handle_reset_command(self, *, source: str = "local") -> str:
-        """Reset conversation state, with remote bootstrap support."""
+        """Reset conversation state."""
         self._agent.clear_history()
         await self._refresh_empty_context_budget_display()
-
-        if source != "remote":
-            self._console.print("[yellow]会话上下文已重置。[/yellow]")
-            return "会话上下文已重置。"
-
-        self._maybe_inject_agents_md()
-        fallback_message = "会话已重置，但启动问候生成失败，请直接发送你的需求。"
-
-        try:
-            startup_prompt = self._build_remote_reset_startup_prompt()
-            final_content = (await self._agent.query(startup_prompt)).strip()
-        except Exception:
-            logger.exception("Failed to bootstrap remote session after /reset")
-            self._agent.clear_history()
-            await self._refresh_empty_context_budget_display()
-            self._maybe_inject_agents_md()
-            return fallback_message
-
-        return final_content or fallback_message
+        self._console.print("[yellow]会话上下文已重置。[/yellow]")
+        return _REMOTE_RESET_RESPONSE
 
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
