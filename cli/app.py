@@ -480,7 +480,9 @@ class TGAgentCLI:
         for hook in getattr(self._agent, "hooks", []):
             if isinstance(hook, SkillReviewHook):
                 hook.on_changes = self._on_skill_review_changes
+                hook.on_manage_errors = self._on_skill_review_manage_errors
                 hook.on_nothing_to_save = self._on_skill_review_nothing_to_save
+                hook.on_unclassified_no_change = self._on_skill_review_unclassified_no_change
                 hook.on_error = self._on_skill_review_error
 
     def _on_skill_review_changes(self, changes: list[SkillReviewChange]) -> None:
@@ -507,6 +509,31 @@ class TGAgentCLI:
             summary="没有发现值得保存的 skill",
         )
         self._console.print("[dim]Skill review：没有发现值得保存的 skill。[/dim]")
+
+    def _on_skill_review_manage_errors(self, errors: list[str]) -> None:
+        summary = "; ".join(error.strip() for error in errors if error.strip())
+        if not summary:
+            summary = "skill_manage 失败，但没有返回错误详情"
+        summary = summary[:240]
+        self._append_skill_review_history(
+            status="attempt_failed",
+            summary=summary,
+        )
+        self._console.print(
+            f"[dim]Skill review：skill_manage 失败：[/dim][yellow]{summary}[/yellow]"
+        )
+
+    def _on_skill_review_unclassified_no_change(self, final_response: str) -> None:
+        summary = final_response.strip()[:240]
+        if not summary:
+            summary = "review agent 没有产生变更，也没有返回标准 Nothing to save."
+        self._append_skill_review_history(
+            status="no_change_unclassified",
+            summary=summary,
+        )
+        self._console.print(
+            "[dim]Skill review：没有产生 skill 变更，且结果未分类。[/dim]"
+        )
 
     def _on_skill_review_error(self, error: Exception) -> None:
         error_summary = f"{type(error).__name__}: {error}"

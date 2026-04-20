@@ -98,6 +98,14 @@ When using a user-level skill and finding it outdated, incomplete, or wrong, pat
 immediately with `skill_manage(action="patch")`. Do not modify builtin, plugin, workspace,
 or project-private skills. `skill_manage` may only write under `~/.tg_agent/skills`;
 never delete skills and do not create draft skills.
+
+When the user asks to create, update, optimize, refine, or fix a skill, inspect
+visible skills with `skill_list`/`skill_view` and write changes with `skill_manage`. Do not
+use generic `read`, `write`, or `edit` tools to modify skills under `~/.tg_agent/skills`, 
+because that bypasses skill validation and skill index refresh.
+
+Only use generic file editing tools for skills when the user explicitly asks to modify a
+repository/workspace skill file, or when `skill_manage` cannot write that skill source.
 """
 
 

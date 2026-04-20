@@ -60,6 +60,7 @@ class SkillReviewChange:
 class SkillReviewResult:
     final_response: str
     changes: list[SkillReviewChange] = field(default_factory=list)
+    manage_errors: list[str] = field(default_factory=list)
 
 
 class SkillReviewRunner:
@@ -93,6 +94,7 @@ class SkillReviewRunner:
         return SkillReviewResult(
             final_response=final_response,
             changes=_extract_skill_manage_changes(review_agent.messages),
+            manage_errors=_extract_skill_manage_errors(review_agent.messages),
         )
 
 
@@ -110,6 +112,20 @@ def _extract_skill_manage_changes(messages: list[BaseMessage]) -> list[SkillRevi
         if change is not None:
             changes.append(change)
     return changes
+
+
+def _extract_skill_manage_errors(messages: list[BaseMessage]) -> list[str]:
+    errors: list[str] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        if message.tool_name != "skill_manage":
+            continue
+
+        content = message.text.strip()
+        if message.is_error or content.startswith("Error:"):
+            errors.append((content or "skill_manage failed")[:240])
+    return errors
 
 
 def _parse_skill_manage_success(content: str) -> SkillReviewChange | None:
@@ -139,9 +155,12 @@ class SkillReviewHook(BaseAgentHook):
 
     runner: SkillReviewRunner
     interval: int = 10
+    timeout_seconds: float = 300.0
     enabled: bool = True
     on_changes: Callable[[list[SkillReviewChange]], None] | None = None
+    on_manage_errors: Callable[[list[str]], None] | None = None
     on_nothing_to_save: Callable[[], None] | None = None
+    on_unclassified_no_change: Callable[[str], None] | None = None
     on_error: Callable[[Exception], None] | None = None
     priority: int = 980
 
@@ -177,9 +196,19 @@ class SkillReviewHook(BaseAgentHook):
 
         self._iters_since_skill = 0
         snapshot = agent.messages
-        task = asyncio.create_task(self.runner.run(agent, snapshot))
+        task = asyncio.create_task(self._run_review_with_timeout(agent, snapshot))
         task.add_done_callback(self._handle_background_result)
         self._task = task
+
+    async def _run_review_with_timeout(
+        self,
+        agent: Agent,
+        snapshot: list[BaseMessage],
+    ) -> SkillReviewResult:
+        return await asyncio.wait_for(
+            self.runner.run(agent, snapshot),
+            timeout=self.timeout_seconds,
+        )
 
     def _should_trigger(self, event: RunFinished, agent: Agent) -> bool:
         if getattr(agent, "mode", "primary") != "primary":
@@ -207,11 +236,20 @@ class SkillReviewHook(BaseAgentHook):
                 self.on_error(exc)
             return
         logger.debug("Background skill review completed: %s", result.final_response)
-        if result.changes and self.on_changes is not None:
-            self.on_changes(result.changes)
+        if result.changes:
+            if self.on_changes is not None:
+                self.on_changes(result.changes)
             return
-        if _is_nothing_to_save(result.final_response) and self.on_nothing_to_save is not None:
-            self.on_nothing_to_save()
+        if result.manage_errors:
+            if self.on_manage_errors is not None:
+                self.on_manage_errors(result.manage_errors)
+            return
+        if _is_nothing_to_save(result.final_response):
+            if self.on_nothing_to_save is not None:
+                self.on_nothing_to_save()
+            return
+        if self.on_unclassified_no_change is not None:
+            self.on_unclassified_no_change(result.final_response)
 
 
 def _is_nothing_to_save(final_response: str) -> bool:
