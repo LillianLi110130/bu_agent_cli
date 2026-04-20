@@ -267,7 +267,7 @@ function Reset-Directory {
                 if ($attempt -eq $attempts) {
                     $message = @(
                         "Failed to reset output directory because it is still in use: $TargetPath",
-                        "Close any Explorer window, terminal, or running tg-agent process that is using this bundle directory, then rerun the build.",
+                        "Close any Explorer window, terminal, or running crab process that is using this bundle directory, then rerun the build.",
                         "You can also pass -OutputRoot to build into a different release directory."
                     ) -join " "
                     throw "$message Original error: $($_.Exception.Message)"
@@ -507,13 +507,13 @@ powershell -ExecutionPolicy Bypass -File "%~dp0win_deploy.ps1" %*
 set "EXITCODE=%ERRORLEVEL%"
 if not "%EXITCODE%"=="0" (
     echo.
-    echo tg-agent deployment failed with exit code %EXITCODE%.
+    echo crab deployment failed with exit code %EXITCODE%.
     echo Press any key to close this window.
     pause >nul
     exit /b %EXITCODE%
 )
 echo.
-echo tg-agent deployment completed successfully.
+echo crab deployment completed successfully.
 echo Press any key to close this window.
 pause >nul
 exit /b %EXITCODE%
@@ -530,7 +530,7 @@ function Write-BundleReadme {
     )
 
     $content = @"
-tg-agent portable bundle
+crab portable bundle
 
 Version: $VersionText
 Platform: windows
@@ -539,7 +539,7 @@ Architecture: x64
 Contents:
 - deploy.bat
 - win_deploy.ps1
-- tg-agent-launcher.bat
+- crab-launcher.bat
 - python-runtime\
 - wheelhouse\
 - app\
@@ -547,20 +547,20 @@ Contents:
 First run:
 1. Extract this zip.
 2. Run deploy.bat once.
-3. Start tg-agent-launcher.bat from the workspace you want to use.
+3. Start crab-launcher.bat from the workspace you want to use.
 
 Workspace behavior:
 - Running launcher from a terminal uses the current working directory as the workspace.
 - Double-clicking launcher from the bundle directory falls back to the Desktop directory.
 - Global config stays in %USERPROFILE%\.tg_agent.
-- After deploy.bat, `tg-agent` works in cmd, PowerShell, and Git Bash.
+- After deploy.bat, `crab` works in cmd, PowerShell, and Git Bash.
 
 Notes:
 - deploy.bat creates %USERPROFILE%\.tg_agent\.venv using the bundled Python runtime.
-- tg-agent and dependencies are installed offline from wheelhouse\.
-- deploy.bat also installs a `tg-agent` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
-- deploy.bat removes stale tg-agent.exe / tg-agent-script.py files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
-- If `tg-agent` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
+- crab and dependencies are installed offline from wheelhouse\.
+- deploy.bat also installs a `crab` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
+- deploy.bat removes stale crab/tg-agent command shim files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
+- If `crab` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
 "@
     Set-Content -LiteralPath $OutputPath -Value $content -Encoding ASCII
@@ -585,17 +585,22 @@ $RuntimeDir = Join-Path $BundleRoot "python-runtime"
 $RuntimePython = Join-Path $RuntimeDir "python.exe"
 $WheelhouseDir = Join-Path $BundleRoot "wheelhouse"
 $AppDir = Join-Path $BundleRoot "app"
-$LauncherPath = Join-Path $BundleRoot "tg-agent-launcher.bat"
+$LauncherPath = Join-Path $BundleRoot "crab-launcher.bat"
 $UserProfileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath("UserProfile") }
 $InstallRoot = Join-Path $UserProfileDir ".tg_agent"
 $VenvDir = Join-Path $InstallRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 $BinDir = Join-Path $InstallRoot "bin"
-$EntryShim = Join-Path $BinDir "tg-agent-entry.py"
-$CommandShim = Join-Path $BinDir "tg-agent.cmd"
-$BashCommandShim = Join-Path $BinDir "tg-agent"
-$LegacyCommandExe = Join-Path $BinDir "tg-agent.exe"
-$LegacyCommandScript = Join-Path $BinDir "tg-agent-script.py"
+$EntryShim = Join-Path $BinDir "crab-entry.py"
+$CommandShim = Join-Path $BinDir "crab.cmd"
+$BashCommandShim = Join-Path $BinDir "crab"
+$LegacyCommandExe = Join-Path $BinDir "crab.exe"
+$LegacyCommandScript = Join-Path $BinDir "crab-script.py"
+$LegacyTgAgentEntryShim = Join-Path $BinDir "tg-agent-entry.py"
+$LegacyTgAgentCommandShim = Join-Path $BinDir "tg-agent.cmd"
+$LegacyTgAgentBashShim = Join-Path $BinDir "tg-agent"
+$LegacyTgAgentCommandExe = Join-Path $BinDir "tg-agent.exe"
+$LegacyTgAgentCommandScript = Join-Path $BinDir "tg-agent-script.py"
 $EnvFile = Join-Path $InstallRoot ".env"
 $WorkerConfig = Join-Path $InstallRoot "tg_crab_worker.json"
 $PackagedEnvFile = Join-Path $AppDir ".env"
@@ -790,9 +795,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to bootstrap pip into virtual environment: $VenvDir"
 }
 
-& $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade $projectWheel.FullName
+& $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $projectWheel.FullName
 if ($LASTEXITCODE -ne 0) {
-    throw "Failed to install tg-agent from bundled wheelhouse"
+    throw "Failed to install crab from bundled wheelhouse"
 }
 
 $entryShimContent = @(
@@ -808,15 +813,15 @@ $commandShimContent = @(
     'setlocal',
     'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
     'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
-    'set "ENTRY_SHIM=%INSTALL_ROOT%\bin\tg-agent-entry.py"',
+    'set "ENTRY_SHIM=%INSTALL_ROOT%\bin\crab-entry.py"',
     '',
     'if not exist "%VENV_PYTHON%" (',
-    '    echo tg-agent is not installed.',
+    '    echo crab is not installed.',
     '    echo Run deploy.bat from the portable bundle first.',
     '    exit /b 1',
     ')',
     'if not exist "%ENTRY_SHIM%" (',
-    '    echo tg-agent entry shim is missing.',
+    '    echo crab entry shim is missing.',
     '    echo Run deploy.bat from the portable bundle first.',
     '    exit /b 1',
     ')',
@@ -836,15 +841,15 @@ $bashCommandShimContent = @(
     'fi',
     '',
     'venv_python="${install_root}/.venv/Scripts/python.exe"',
-    'entry_shim="${install_root}/bin/tg-agent-entry.py"',
+    'entry_shim="${install_root}/bin/crab-entry.py"',
     '',
     'if [ ! -x "$venv_python" ]; then',
-    '  echo "tg-agent is not installed." >&2',
+    '  echo "crab is not installed." >&2',
     '  echo "Run deploy.bat from the portable bundle first." >&2',
     '  exit 1',
     'fi',
     'if [ ! -f "$entry_shim" ]; then',
-    '  echo "tg-agent entry shim is missing." >&2',
+    '  echo "crab entry shim is missing." >&2',
     '  echo "Run deploy.bat from the portable bundle first." >&2',
     '  exit 1',
     'fi',
@@ -853,7 +858,15 @@ $bashCommandShimContent = @(
 ) -join "`n"
 Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
 
-foreach ($legacyPath in @($LegacyCommandExe, $LegacyCommandScript)) {
+foreach ($legacyPath in @(
+    $LegacyCommandExe,
+    $LegacyCommandScript,
+    $LegacyTgAgentEntryShim,
+    $LegacyTgAgentCommandShim,
+    $LegacyTgAgentBashShim,
+    $LegacyTgAgentCommandExe,
+    $LegacyTgAgentCommandScript
+)) {
     if (Test-Path -LiteralPath $legacyPath) {
         try {
             Remove-Item -LiteralPath $legacyPath -Force -ErrorAction Stop
@@ -876,8 +889,8 @@ if (-not (Test-Path -LiteralPath $LauncherPath)) {
     throw "Launcher missing: $LauncherPath"
 }
 
-$existingTgAgentCommands = @(
-    Get-CommandCandidates -CommandName "tg-agent" |
+$existingCrabCommands = @(
+    Get-CommandCandidates -CommandName "crab" |
         Where-Object { $_ -ine $CommandShim -and $_ -ine $BashCommandShim }
 )
 
@@ -887,7 +900,7 @@ Notify-EnvironmentChange
 if (-not $SkipDesktopShortcut) {
     $desktopDir = Join-Path $UserProfileDir "Desktop"
     if (Test-Path -LiteralPath $desktopDir) {
-        $shortcutPath = Join-Path $desktopDir "TG-Agent Portable.lnk"
+        $shortcutPath = Join-Path $desktopDir "Crab Portable.lnk"
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $LauncherPath
@@ -908,20 +921,20 @@ else {
     Write-Host "[portable] user PATH already contains: $BinDir"
 }
 Write-Host "[portable] launcher: $LauncherPath"
-Write-Host "[portable] open a new cmd window from Explorer and run: tg-agent"
-Write-Host "[portable] in Git Bash, you can also run: tg-agent"
-Write-Host "[portable] if tg-agent is still not found, sign out and sign back in once."
-if ($existingTgAgentCommands.Count -gt 0) {
-    $conflictingCommand = $existingTgAgentCommands[0]
-    Write-Warning "Detected another tg-agent command on this machine: $conflictingCommand"
-    Write-Warning "The portable install does not overwrite older pip-based tg-agent commands."
+Write-Host "[portable] open a new cmd window from Explorer and run: crab"
+Write-Host "[portable] in Git Bash, you can also run: crab"
+Write-Host "[portable] if crab is still not found, sign out and sign back in once."
+if ($existingCrabCommands.Count -gt 0) {
+    $conflictingCommand = $existingCrabCommands[0]
+    Write-Warning "Detected another crab command on this machine: $conflictingCommand"
+    Write-Warning "The portable install does not overwrite older pip-based crab commands."
 
     $pipUninstallHint = Get-PipUninstallHint -CommandPath $conflictingCommand
     if ($pipUninstallHint) {
         Write-Warning "To avoid command conflicts, uninstall the older copy with: $pipUninstallHint"
     }
     else {
-        Write-Warning "To avoid command conflicts, uninstall the older tg-agent copy before using the PATH-based command."
+        Write-Warning "To avoid command conflicts, uninstall the older crab copy before using the PATH-based command."
     }
 
     Write-Warning "You can always launch the portable install directly with: $CommandShim"
@@ -966,7 +979,7 @@ $appDir = Join-Path $bundleDir "app"
 $runtimeDir = Join-Path $bundleDir "python-runtime"
 $wheelhouseDir = Join-Path $bundleDir "wheelhouse"
 $tempDir = Join-Path $bundleDir "tmp"
-$launcherPath = Join-Path $bundleDir "tg-agent-launcher.bat"
+$launcherPath = Join-Path $bundleDir "crab-launcher.bat"
 $deployBat = Join-Path $bundleDir "deploy.bat"
 $deployPs1 = Join-Path $bundleDir "win_deploy.ps1"
 $readmePath = Join-Path $bundleDir "README.txt"

@@ -208,7 +208,8 @@ def test_default_skill_dirs_syncs_packaged_skills_to_user_builtin_root(tmp_path:
     builtin_root = home_dir / ".tg_agent" / "skills" / ".builtin"
     assert resolved_dirs[0] == builtin_root
     assert resolved_dirs[1] == home_dir / ".tg_agent" / "skills"
-    assert resolved_dirs[2] == workspace / "skills"
+    assert resolved_dirs[2] == workspace / ".tg_agent" / "skills"
+    assert resolved_dirs[3] == workspace / "skills"
     assert (builtin_root / "builtin-only" / "SKILL.md").exists()
 
 

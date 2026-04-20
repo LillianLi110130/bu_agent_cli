@@ -320,7 +320,7 @@ write_bundle_readme() {
     local version_text="$2"
 
     cat > "${output_path}" <<EOF
-tg-agent portable bundle
+crab portable bundle
 
 Version: ${version_text}
 Platform: linux
@@ -328,7 +328,7 @@ Architecture: x64
 
 Contents:
 - deploy.sh
-- tg-agent-launcher.sh
+- crab-launcher.sh
 - python-runtime/
 - wheelhouse/
 - app/
@@ -336,7 +336,7 @@ Contents:
 First run:
 1. Extract this tar.gz.
 2. Run ./deploy.sh once.
-3. Start ./tg-agent-launcher.sh from the workspace you want to use.
+3. Start ./crab-launcher.sh from the workspace you want to use.
 
 Workspace behavior:
 - Running the launcher from a terminal uses the current working directory as the workspace.
@@ -344,9 +344,9 @@ Workspace behavior:
 
 Notes:
 - deploy.sh creates \$HOME/.tg_agent/.venv using the bundled Python runtime.
-- tg-agent and dependencies are installed offline from wheelhouse/.
-- deploy.sh also installs a tg-agent command shim into \$HOME/.tg_agent/bin and updates shell profile files.
-- If tg-agent already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
+- crab and dependencies are installed offline from wheelhouse/.
+- deploy.sh also installs a crab command shim into \$HOME/.tg_agent/bin and updates shell profile files.
+- If crab already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing \$HOME/.tg_agent/.env and tg_crab_worker.json are preserved.
 - For the most portable Linux bundles, provide a python-build-standalone runtime with --python-runtime-dir.
 EOF
@@ -389,13 +389,13 @@ bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 runtime_dir="${bundle_root}/python-runtime"
 wheelhouse_dir="${bundle_root}/wheelhouse"
 app_dir="${bundle_root}/app"
-launcher_path="${bundle_root}/tg-agent-launcher.sh"
+launcher_path="${bundle_root}/crab-launcher.sh"
 user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 venv_dir="${install_root}/.venv"
 bin_dir="${install_root}/bin"
-entry_shim="${bin_dir}/tg-agent-entry.py"
-command_shim="${bin_dir}/tg-agent"
+entry_shim="${bin_dir}/crab-entry.py"
+command_shim="${bin_dir}/crab"
 env_file="${install_root}/.env"
 worker_config="${install_root}/tg_crab_worker.json"
 packaged_env_file="${app_dir}/.env"
@@ -432,7 +432,7 @@ add_path_line_once() {
 }
 
 get_command_candidates() {
-    type -aP tg-agent 2>/dev/null | awk '!seen[$0]++'
+    type -aP crab 2>/dev/null | awk '!seen[$0]++'
 }
 
 get_pip_uninstall_hint() {
@@ -504,16 +504,16 @@ set -Eeuo pipefail
 user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 venv_python="${install_root}/.venv/bin/python"
-entry_shim="${install_root}/bin/tg-agent-entry.py"
+entry_shim="${install_root}/bin/crab-entry.py"
 
 if [[ ! -x "${venv_python}" ]]; then
-    echo "tg-agent is not installed." >&2
+    echo "crab is not installed." >&2
     echo "Run ./deploy.sh from the portable bundle first." >&2
     exit 1
 fi
 
 if [[ ! -f "${entry_shim}" ]]; then
-    echo "tg-agent entry shim is missing." >&2
+    echo "crab entry shim is missing." >&2
     echo "Run ./deploy.sh from the portable bundle first." >&2
     exit 1
 fi
@@ -562,18 +562,18 @@ else
     echo "[portable] shell profile PATH already contains: ${user_home}/.tg_agent/bin"
 fi
 echo "[portable] launcher: ${launcher_path}"
-echo "[portable] open a new shell and run: tg-agent"
+echo "[portable] open a new shell and run: crab"
 
 if ((${#existing_commands[@]} > 0)); then
     conflicting_command="${existing_commands[0]}"
-    echo "[portable] warning: detected another tg-agent command on this machine: ${conflicting_command}" >&2
-    echo "[portable] warning: the portable install does not overwrite older pip-based tg-agent commands." >&2
+    echo "[portable] warning: detected another crab command on this machine: ${conflicting_command}" >&2
+    echo "[portable] warning: the portable install does not overwrite older pip-based crab commands." >&2
 
     pip_uninstall_hint="$(get_pip_uninstall_hint "${conflicting_command}" || true)"
     if [[ -n "${pip_uninstall_hint}" ]]; then
         echo "[portable] warning: to avoid command conflicts, uninstall the older copy with: ${pip_uninstall_hint}" >&2
     else
-        echo "[portable] warning: to avoid command conflicts, uninstall the older tg-agent copy before using the PATH-based command." >&2
+        echo "[portable] warning: to avoid command conflicts, uninstall the older crab copy before using the PATH-based command." >&2
     fi
 
     echo "[portable] warning: you can always launch the portable install directly with: ${command_shim}" >&2
@@ -595,16 +595,16 @@ set -Eeuo pipefail
 user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 venv_python="${install_root}/.venv/bin/python"
-entry_shim="${install_root}/bin/tg-agent-entry.py"
+entry_shim="${install_root}/bin/crab-entry.py"
 
 if [[ ! -x "${venv_python}" ]]; then
-    echo "tg-agent is not installed yet." >&2
+    echo "crab is not installed yet." >&2
     echo "Run ./deploy.sh from this bundle first." >&2
     exit 1
 fi
 
 if [[ ! -f "${entry_shim}" ]]; then
-    echo "tg-agent entry shim is missing." >&2
+    echo "crab entry shim is missing." >&2
     echo "Run ./deploy.sh from this bundle first." >&2
     exit 1
 fi
@@ -669,7 +669,7 @@ app_dir="${bundle_dir}/app"
 runtime_dir="${bundle_dir}/python-runtime"
 wheelhouse_dir="${bundle_dir}/wheelhouse"
 temp_dir="${bundle_dir}/tmp"
-launcher_path="${bundle_dir}/tg-agent-launcher.sh"
+launcher_path="${bundle_dir}/crab-launcher.sh"
 deploy_sh="${bundle_dir}/deploy.sh"
 readme_path="${bundle_dir}/README.txt"
 tar_path="${resolved_output_root}/${bundle_name}.tar.gz"

@@ -39,7 +39,7 @@ server = [
 ]
 
 [project.scripts]
-tg-agent = "tg_crab_main:cli_main"
+crab = "tg_crab_main:cli_main"
 
 [build-system]
 requires = ["hatchling"]
