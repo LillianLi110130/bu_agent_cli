@@ -17,20 +17,20 @@ if "%BUNDLE_DIR:~-1%"=="\" set "BUNDLE_DIR=%BUNDLE_DIR:~0,-1%"
 set "APP_DIR=%BUNDLE_DIR%\__APP_DIR__"
 set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"
 set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"
-set "ENTRY_SHIM=%INSTALL_ROOT%\bin\tg-agent-entry.py"
+set "ENTRY_SHIM=%INSTALL_ROOT%\bin\crab-entry.py"
 set "ORIGINAL_CWD=%CD%"
 set "WORKSPACE=%CD%"
 set "USER_WORKSPACE_INPUT="
 
 if not exist "%VENV_PYTHON%" (
-    echo tg-agent portable environment is not installed.
+    echo crab portable environment is not installed.
     echo Run deploy.bat in the bundle root first.
     set "EXITCODE=1"
     goto :finish
 )
 
 if not exist "%ENTRY_SHIM%" (
-    echo tg-agent entry shim is missing.
+    echo crab entry shim is missing.
     echo Run deploy.bat in the bundle root first.
     set "EXITCODE=1"
     goto :finish
@@ -51,7 +51,7 @@ if not exist "%WORKSPACE%" (
 set "PYTHONIOENCODING=utf-8"
 set "PYTHONDONTWRITEBYTECODE=1"
 
-echo Starting tg-agent...
+echo Starting crab...
 echo Workspace: %WORKSPACE%
 echo.
 
@@ -65,7 +65,7 @@ if not defined EXITCODE set "EXITCODE=0"
 
 if not "%EXITCODE%"=="0" (
     echo.
-    echo tg-agent exited with code %EXITCODE%.
+    echo crab exited with code %EXITCODE%.
     echo Press any key to close this window.
     pause >nul
     exit /b %EXITCODE%

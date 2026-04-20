@@ -205,6 +205,8 @@ class PluginManager:
                     description=skill.description,
                     path=skill.path,
                     category=skill.category,
+                    source=f"plugin:{plugin.name}",
+                    writable=False,
                 )
             )
             if namespaced_name not in plugin.skills:

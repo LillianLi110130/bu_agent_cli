@@ -14,6 +14,7 @@ import threading
 import time
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime
 from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Callable
@@ -54,6 +55,10 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
+from agent_core.runtime_paths import application_root
+from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
+from agent_core.skill.review import SkillReviewChange, SkillReviewHook
+from agent_core.skill.runtime_service import SkillRuntimeService
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -71,7 +76,6 @@ from cli.slash_commands import (
     is_slash_command,
     parse_slash_command,
 )
-from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from cli.at_commands import (
     AtCommandCompleter,
     AtCommandRegistry,
@@ -92,6 +96,7 @@ from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from cli.session_runtime import CLISessionRuntime
+from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
 from config.model_config import (
     ModelPreset,
     get_auto_vision_preset,
@@ -377,6 +382,7 @@ class TGAgentCLI:
         agent_registry: AgentRegistry | None = None,
         plugin_manager: PluginManager | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
+        skill_runtime_service: SkillRuntimeService | None = None,
         bridge_store: FileBridgeStore | None = None,
         session_runtime: CLISessionRuntime | None = None,
     ):
@@ -404,6 +410,22 @@ class TGAgentCLI:
         self._plugin_manager = plugin_manager
         self._plugin_executor = PluginCommandExecutor()
         self._system_prompt_builder = system_prompt_builder
+        self._skill_runtime_service = skill_runtime_service or getattr(
+            self._agent,
+            "_skill_runtime_service",
+            None,
+        )
+        if self._skill_runtime_service is None:
+            self._skill_runtime_service = SkillRuntimeService(
+                skill_registry=self._at_registry,
+                plugin_manager=self._plugin_manager,
+                agent=self._agent,
+                system_prompt_builder=self._system_prompt_builder,
+            )
+        else:
+            self._skill_runtime_service.bind_agent(self._agent)
+            if self._skill_runtime_service.system_prompt_builder is None:
+                self._skill_runtime_service.system_prompt_builder = self._system_prompt_builder
         self._bridge_store = bridge_store
         self._session_runtime = session_runtime
         if self._session_runtime is not None:
@@ -429,6 +451,7 @@ class TGAgentCLI:
         self._last_command_final_content = ""
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
+        self._skill_review_history: list[SkillReviewHistoryItem] = []
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
@@ -441,6 +464,7 @@ class TGAgentCLI:
                 auto_state=self._model_auto_state,
             )
         )
+        self._bind_skill_review_notifications()
         self._workspace_instruction_state = WorkspaceInstructionState()
         self._last_context_budget: _CLIContextBudgetSnapshot | None = None
         self._last_context_budget_status_line: str | None = None
@@ -449,6 +473,97 @@ class TGAgentCLI:
         self._foreground_delegate_depth = 0
         if self._bridge_store is not None:
             self._bridge_store.initialize()
+
+    def _bind_skill_review_notifications(self) -> None:
+        for hook in getattr(self._agent, "hooks", []):
+            if isinstance(hook, SkillReviewHook):
+                hook.on_changes = self._on_skill_review_changes
+                hook.on_manage_errors = self._on_skill_review_manage_errors
+                hook.on_nothing_to_save = self._on_skill_review_nothing_to_save
+                hook.on_unclassified_no_change = self._on_skill_review_unclassified_no_change
+                hook.on_error = self._on_skill_review_error
+
+    def _on_skill_review_changes(self, changes: list[SkillReviewChange]) -> None:
+        action_labels = {
+            "created": "已创建 skill",
+            "patched": "已更新 skill",
+            "edited": "已更新 skill",
+            "written": "已更新 skill 文件",
+            "removed": "已移除 skill 文件",
+        }
+        for change in changes:
+            label = action_labels.get(change.action, "已更新 skill")
+            status = self._skill_review_status_for_action(change.action)
+            self._append_skill_review_history(
+                status=status,
+                summary=label,
+                skill_name=change.name,
+            )
+            self._console.print(f"[dim]{label}：[/dim][cyan]{change.name}[/cyan]")
+
+    def _on_skill_review_nothing_to_save(self) -> None:
+        self._append_skill_review_history(
+            status="nothing_to_save",
+            summary="没有发现值得保存的 skill",
+        )
+        self._console.print("[dim]Skill review：没有发现值得保存的 skill。[/dim]")
+
+    def _on_skill_review_manage_errors(self, errors: list[str]) -> None:
+        summary = "; ".join(error.strip() for error in errors if error.strip())
+        if not summary:
+            summary = "skill_manage 失败，但没有返回错误详情"
+        summary = summary[:240]
+        self._append_skill_review_history(
+            status="attempt_failed",
+            summary=summary,
+        )
+        self._console.print(
+            f"[dim]Skill review：skill_manage 失败：[/dim][yellow]{summary}[/yellow]"
+        )
+
+    def _on_skill_review_unclassified_no_change(self, final_response: str) -> None:
+        summary = final_response.strip()[:240]
+        if not summary:
+            summary = "review agent 没有产生变更，也没有返回标准 Nothing to save."
+        self._append_skill_review_history(
+            status="no_change_unclassified",
+            summary=summary,
+        )
+        self._console.print(
+            "[dim]Skill review：没有产生 skill 变更，且结果未分类。[/dim]"
+        )
+
+    def _on_skill_review_error(self, error: Exception) -> None:
+        error_summary = f"{type(error).__name__}: {error}"
+        self._append_skill_review_history(
+            status="failed",
+            summary=error_summary[:240],
+        )
+
+    def _append_skill_review_history(
+        self,
+        *,
+        status: str,
+        summary: str,
+        skill_name: str | None = None,
+    ) -> None:
+        self._skill_review_history.append(
+            SkillReviewHistoryItem(
+                created_at=datetime.now(),
+                status=status,
+                summary=summary,
+                skill_name=skill_name,
+            )
+        )
+        self._skill_review_history = self._skill_review_history[-50:]
+
+    @staticmethod
+    def _skill_review_status_for_action(action: str) -> str:
+        if action == "created":
+            return "created"
+        if action in {"written", "removed"}:
+            return "file_updated"
+        return "updated"
 
     def _load_model_presets(self) -> dict[str, ModelPreset]:
         """Load model presets from config/model_presets.json."""
@@ -1255,8 +1370,13 @@ class TGAgentCLI:
 
         # Handle skills command - list available @ skills
         if command_name == "skills":
-            self._print_available_skills()
-            return True
+            handler = SkillSlashHandler(
+                service=self._skill_runtime_service,
+                console=self._console,
+                review_history=self._skill_review_history,
+            )
+            result = await handler.handle(args)
+            return result.handled
 
         # Handle allow command - add directory to sandbox
         if command_name == "allow":
