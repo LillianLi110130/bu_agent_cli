@@ -137,7 +137,7 @@ class SandboxContext:
     runtime_managed_dirs: list[Path] = field(default_factory=list)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     subagent_executor: Any | None = None
-    subagent_manager: Any | None = None
+    current_agent: Any | None = None
     shell_task_manager: ShellTaskManager | None = None
     subagent_events: asyncio.Queue | None = field(default=None)
 
@@ -370,3 +370,8 @@ class SandboxContext:
 def get_sandbox_context() -> SandboxContext:
     """Dependency injection marker. Override this in the agent."""
     raise RuntimeError("get_sandbox_context() must be overridden via dependency_overrides")
+
+
+def get_current_agent() -> Any:
+    """Dependency injection marker for the currently executing agent."""
+    raise RuntimeError("get_current_agent() must be overridden via dependency_overrides")

@@ -8,6 +8,7 @@
 - `llm-wiki/wiki/`：正式 Wiki 页面
 - `llm-wiki/WIKI_AGENT.md`：维护协议
 - `llm-wiki/wiki/log.md`：知识库演化记录
+- `llm-wiki/state/ingest-status.md`：已编译来源记录
 
 Wiki 页面分为四类：
 
@@ -19,8 +20,7 @@ Wiki 页面分为四类：
 包含资源：
 
 - `/wiki:init`
-- `/wiki:ingest <source-path>`
-- `/wiki:ingest-all`
+- `/wiki:ingest <source-path>`：编译指定来源；不带参数时，会逐个处理 `llm-wiki/raw/` 下尚未记录为已编译的来源
 - `/wiki:query <question>`
 - `/wiki:lint [focus]`
 
@@ -30,6 +30,5 @@ Wiki 页面分为四类：
 /wiki:init
 /wiki:ingest llm-wiki/raw/example.md
 /wiki:query 目前这个 Wiki 里有哪些核心知识？
-/wiki:ingest-all
 /wiki:lint
 ```

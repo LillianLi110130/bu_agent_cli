@@ -56,14 +56,11 @@ def _parse_tool_arguments(arguments: str) -> dict[str, Any]:
     return parse_tool_arguments_for_display(arguments)
 
 
-def build_default_approval_policy(mode: str) -> ApprovalPolicy:
-    """Build the default approval policy for an agent mode."""
+def build_default_approval_policy() -> ApprovalPolicy:
+    """Build the default approval policy."""
 
     def policy(event: ToolCallRequested, ctx: HookContext) -> HumanApprovalRequest | None:
         del ctx
-
-        if mode == "subagent":
-            return None
 
         tool_name = event.tool_call.function.name
         if tool_name != "bash":

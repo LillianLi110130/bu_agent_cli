@@ -106,6 +106,8 @@ class ChatOpenAI(BaseChatModel):
             "gpt-5-nano",
         ]
     )
+    _client: AsyncOpenAI | None = field(default=None, init=False, repr=False)
+    _owns_client: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self) -> None:
         resolved_max_input, resolved_max_output = get_model_limits(str(self.model))
@@ -153,8 +155,27 @@ class ChatOpenAI(BaseChatModel):
         Returns:
                 AsyncOpenAI: An instance of the AsyncOpenAI client.
         """
+        if self._client is not None and not self._client.is_closed():
+            return self._client
+
         client_params = self._get_client_params()
-        return AsyncOpenAI(**client_params)
+        self._client = AsyncOpenAI(**client_params)
+        self._owns_client = self.http_client is None
+        return self._client
+
+    async def close(self) -> None:
+        """Close the owned AsyncOpenAI client to avoid leaking transports on shutdown."""
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        if not self._owns_client:
+            self._owns_client = False
+            return
+
+        self._owns_client = False
+        if not client.is_closed():
+            await client.close()
 
     @property
     def name(self) -> str:
@@ -346,7 +367,9 @@ class ChatOpenAI(BaseChatModel):
                     )
                 next_index += 1
 
-            received_tool_ids = {tool_message.tool_call_id for tool_message in collected_tool_messages}
+            received_tool_ids = {
+                tool_message.tool_call_id for tool_message in collected_tool_messages
+            }
             if received_tool_ids == expected_tool_ids:
                 sanitized.append(message)
                 sanitized.extend(collected_tool_messages)
@@ -674,3 +697,57 @@ class ChatOpenAI(BaseChatModel):
             ) from e
         except Exception as e:
             raise ModelProviderError(message=str(e), model=self.name) from e
+
+    async def ainvoke_streaming(
+        self,
+        messages: list[BaseMessage],
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice | None = None,
+        **kwargs: Any,
+    ) -> ChatInvokeCompletion:
+        """
+        使用流式调用但同步返回结果（解决OAM90s超时问题）
+
+        内部实现：
+        1. 调用 astream() 获取流式迭代器
+        2. 收集所有 chunk 的内容
+        3. 组装成完整的 ChatInvokeCompletion 返回
+
+        Args:
+            messages: 消息列表
+            tools: 可选的工具列表
+            tool_choice: 工具选择策略
+            **kwargs: 额外参数
+
+        Returns:
+            ChatInvokeCompletion: 与 ainvoke() 返回类型相同
+        """
+        from agent_core.llm.messages import ToolCall
+
+        # 收集所有内容
+        content_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        usage: ChatInvokeUsage | None = None
+        stop_reason: str | None = None
+
+        async for chunk in self.astream(messages, tools, tool_choice, **kwargs):
+            # 累积文本内容
+            if chunk.delta:
+                content_parts.append(chunk.delta)
+
+            # 累积工具调用（只在最后的chunk中）
+            if chunk.tool_calls:
+                tool_calls.extend(chunk.tool_calls)
+
+            # 收集 usage 和 stop_reason（只在最后的chunk中）
+            if chunk.usage:
+                usage = chunk.usage
+            if chunk.stop_reason:
+                stop_reason = chunk.stop_reason
+
+        return ChatInvokeCompletion(
+            content="".join(content_parts) if content_parts else None,
+            tool_calls=tool_calls,
+            usage=usage,
+            stop_reason=stop_reason,
+        )

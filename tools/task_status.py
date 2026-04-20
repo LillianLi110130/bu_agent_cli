@@ -18,10 +18,10 @@ async def task_status(
     """
     Get status of background tasks.
 
-    Use this to check the progress of tasks created with async_task.
+    Use this to check the progress of background tasks created via `call`.
 
     Args:
-        ctx: Sandbox context containing subagent_manager
+        ctx: Sandbox context containing subagent_executor
         task_id: Specific task ID to query, or None to list all tasks
 
     Returns:
@@ -33,16 +33,16 @@ async def task_status(
         task_status(task_id="abc123")  # Get details for specific task
     """
     shell_manager = ctx.shell_task_manager
-    subagent_manager = ctx.subagent_manager
+    subagent_executor = ctx.subagent_executor
 
     if task_id:
         if shell_manager is not None:
             shell_task = shell_manager.get_task(task_id)
             if shell_task is not None:
                 return json.dumps(shell_task.to_dict(), ensure_ascii=False, indent=2)
-        if subagent_manager is None:
+        if subagent_executor is None:
             return f"Error: Task '{task_id}' not found"
-        result = subagent_manager.get_task_status(task_id)
+        result = subagent_executor.get_run_status(task_id)
         if result is None:
             return f"Error: Task '{task_id}' not found"
         return result
@@ -51,8 +51,8 @@ async def task_status(
         if shell_manager is not None:
             shell_tasks = [task.to_dict() for task in shell_manager.list_tasks()]
         subagent_tasks = None
-        if subagent_manager is not None:
-            subagent_tasks = subagent_manager.list_all_tasks()
+        if subagent_executor is not None:
+            subagent_tasks = subagent_executor.list_all_runs()
         return json.dumps(
             {
                 "shell_tasks": shell_tasks,

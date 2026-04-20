@@ -122,7 +122,7 @@ class ThinkTagParser:
     """解析流式文本中的 think 标签，支持流式输出思考内容."""
 
     def __init__(self) -> None:
-        self.in_think = False   # 当前是否在think中
+        self.in_think = False  # 当前是否在think中
         self.think_end = False  # think是否已经结束
         self.tag_buffer = ""
         self.filtered_content = ""
@@ -141,15 +141,14 @@ class ThinkTagParser:
         if not self.think_end:
             self.tag_buffer += delta
 
-
-        if not self.in_think:   # 当前不在think中
+        if not self.in_think:  # 当前不在think中
             # 查找开始标签
             idx = self.tag_buffer.find(_THINK_OPEN_TAG)
             if idx != -1:
                 # 找到了开始标签
                 normal_text = self.tag_buffer[:idx]
                 # 裁掉<think>, 从think标签之后的内容开始
-                self.tag_buffer = self.tag_buffer[idx + self._open_len:]
+                self.tag_buffer = self.tag_buffer[idx + self._open_len :]
                 self.in_think = True
                 if normal_text:
                     self.filtered_content += normal_text
@@ -161,12 +160,12 @@ class ThinkTagParser:
                 return delta or None, None, None, False
             # 输出安全部分（保留末尾可能构成标签的部分）
             if len(self.tag_buffer) > self._open_len:
-                safe = self.tag_buffer[:-self._open_len]
-                self.tag_buffer = self.tag_buffer[-self._open_len:]
+                safe = self.tag_buffer[: -self._open_len]
+                self.tag_buffer = self.tag_buffer[-self._open_len :]
                 if safe:
                     self.filtered_content += safe
                 return safe or None, None, None, False
-        else:   # 当前在think中
+        else:  # 当前在think中
             # 查找闭标签
             idx = self.tag_buffer.find(_THINK_CLOSE_TAG)
             if idx != -1:
@@ -180,8 +179,8 @@ class ThinkTagParser:
                 return None, think_content or None, "end", True
             # 没找到闭标签，输出安全部分
             if len(self.tag_buffer) > self._close_len:
-                safe = self.tag_buffer[:-self._close_len]   # 取前面减去闭标签的部分
-                self.tag_buffer = self.tag_buffer[-self._close_len:]    # 取后面闭标签长度之后的部分
+                safe = self.tag_buffer[: -self._close_len]  # 取前面减去闭标签的部分
+                self.tag_buffer = self.tag_buffer[-self._close_len :]  # 取后面闭标签长度之后的部分
                 if safe:
                     return None, safe, None, False
 
@@ -243,8 +242,7 @@ class Agent:
         tool_choice: How the LLM should choose tools ('auto', 'required', 'none').
         compaction: Optional configuration for automatic context compaction.
         dependency_overrides: Optional dict to override tool dependencies.
-        mode: Agent mode ('primary', 'subagent', 'all').
-        agent_config: Agent configuration (used for subagent and all modes).
+        agent_config: Optional agent definition used to constrain tools and metadata.
     """
 
     llm: BaseChatModel
@@ -266,16 +264,18 @@ class Agent:
     """Maximum delay in seconds between LLM retry attempts."""
     llm_retryable_status_codes: set[int] = field(default_factory=lambda: {429, 500, 502, 503, 504})
     """HTTP status codes that trigger retries (matches browser-use)."""
-    mode: str = "primary"
-    """Agent mode: 'primary' (can call subagents), 'subagent' (can be called), 'all' (both)."""
     agent_config: AgentConfig | None = None
     """Agent configuration with tool permissions and other metadata."""
+    is_fork_child: bool = False
+    """Whether this runtime instance is a forked child agent."""
     human_in_loop_config: HumanInLoopConfig = field(default_factory=HumanInLoopConfig, repr=False)
     """Per-agent HITL switch state shared with runtime hooks and the CLI."""
     human_in_loop_handler: HumanInLoopHandler | None = field(default=None, repr=False)
     """Optional runtime handler used by hooks to request approval from a human."""
     hooks: list[AgentHook] = field(default_factory=list, repr=False)
     """Runtime hooks executed around internal loop events."""
+    use_streaming: bool = True
+    """是否使用流式调用解决90s超时问题（默认开启）"""
 
     # Internal state
     _context: ContextManager = field(default_factory=ContextManager, repr=False)
@@ -296,8 +296,8 @@ class Agent:
         # Build tool lookup map
         self._tool_map = {t.name: t for t in self.tools}
 
-        # Filter tools based on mode and agent_config
-        if self.mode in ("subagent", "all") and self.agent_config and self.agent_config.tools:
+        # Filter tools based on the agent definition.
+        if self.agent_config:
             self._filter_tools_by_config()
 
         # Initialize token cost service
@@ -366,23 +366,19 @@ class Agent:
 
     def _filter_tools_by_config(self):
         """根据agent配置过滤工具"""
-        if not self.agent_config or not self.agent_config.tools:
+        if not self.agent_config:
             return
 
-        tools_config = self.agent_config.tools
+        allowed_tools = set(self.agent_config.tools or [])
+        disallowed_tools = set(self.agent_config.disallowed_tools or [])
         filtered_tools = []
 
-        # 如果mode是subagent，应该禁用todo工具以及禁用任务工具（防止递归）
-        forced_disabled = (
-            {"subagent", "todo_read", "todo_write"} if self.mode == "subagent" else set()
-        )
-
         for tool in self.tools:
-            if tool.name in forced_disabled:
+            if tool.name in disallowed_tools:
                 continue
-            tool_allowed = tools_config.get(tool.name, True)
-            if tool_allowed:
-                filtered_tools.append(tool)
+            if allowed_tools and tool.name not in allowed_tools:
+                continue
+            filtered_tools.append(tool)
 
         self.tools = filtered_tools
         self._tool_map = {t.name: t for t in self.tools}
@@ -760,7 +756,7 @@ class Agent:
         lines.append("If you need more detail, use read with explicit offset_line and n_lines.")
         lines.append(
             f'Example: read(file_path="{artifact_path}", offset_line={example_offset}, '
-            'n_lines=80)'
+            "n_lines=80)"
         )
         return lines
 
@@ -977,8 +973,7 @@ class Agent:
             except TypeError:
                 return None
             has_expected_api = all(
-                hasattr(resolved, attr)
-                for attr in ("resolve_path", "is_runtime_artifact_path")
+                hasattr(resolved, attr) for attr in ("resolve_path", "is_runtime_artifact_path")
             )
             return resolved if has_expected_api else None
         return None
@@ -1121,7 +1116,9 @@ class Agent:
     def _build_store_only_note(self, tool_name: str, artifact_path: str | None) -> str:
         stored_note = f"{tool_name} output omitted from context."
         if artifact_path:
-            stored_note = " ".join([stored_note, *self._build_artifact_reference_lines(artifact_path)])
+            stored_note = " ".join(
+                [stored_note, *self._build_artifact_reference_lines(artifact_path)]
+            )
         return stored_note
 
     def _apply_trim_tool_context_policy(
@@ -1249,9 +1246,7 @@ class Agent:
 
                 # Set span output
                 if Laminar is not None:
-                    Laminar.set_span_output(
-                        {"result": tool_message.text[:500]}
-                    )
+                    Laminar.set_span_output({"result": tool_message.text[:500]})
 
                 return tool_message
 
@@ -1348,13 +1343,25 @@ class Agent:
 
             try:
                 prompt_messages = self._context.get_messages()
-                response = await self._run_cancellable(
-                    self.llm.ainvoke(
-                        messages=prompt_messages,
-                        tools=self.tool_definitions if self.tools else None,
-                        tool_choice=self.tool_choice if self.tools else None,
+
+                # 根据配置选择使用流式调用或同步调用
+                if self.use_streaming:
+                    # 使用流式调用（解决90s超时问题）
+                    response = await self._run_cancellable(
+                        self.llm.ainvoke_streaming(
+                            messages=prompt_messages,
+                            tools=self.tool_definitions if self.tools else None,
+                            tool_choice=self.tool_choice if self.tools else None,
+                        )
                     )
-                )
+                else:
+                    response = await self._run_cancellable(
+                        self.llm.ainvoke(
+                            messages=prompt_messages,
+                            tools=self.tool_definitions if self.tools else None,
+                            tool_choice=self.tool_choice if self.tools else None,
+                        )
+                    )
 
                 # Track token usage
                 if response.usage:
@@ -1455,11 +1462,19 @@ Keep the summary brief but informative."""
 
         try:
             # Invoke LLM without tools to get a summary response
-            response = await self.llm.ainvoke(
-                messages=self._context.get_messages(),
-                tools=None,
-                tool_choice=None,
-            )
+            # 使用流式调用解决90s超时问题
+            if self.use_streaming:
+                response = await self.llm.ainvoke_streaming(
+                    messages=self._context.get_messages(),
+                    tools=None,
+                    tool_choice=None,
+                )
+            else:
+                response = await self.llm.ainvoke(
+                    messages=self._context.get_messages(),
+                    tools=None,
+                    tool_choice=None,
+                )
             summary = response.content or "Unable to generate summary."
         except Exception as e:
             logger.warning(f"Failed to generate max iterations summary: {e}")
@@ -1809,7 +1824,9 @@ Keep the summary brief but informative."""
                         if event_type == "start":
                             yield ThinkingStartEvent(think_id=think_parser.think_id)
                         elif think_content is not None:
-                            yield ThinkingDeltaEvent(delta=think_content, think_id=think_parser.think_id)
+                            yield ThinkingDeltaEvent(
+                                delta=think_content, think_id=think_parser.think_id
+                            )
                         if event_type == "end":
                             # 思考结束时，将上一个是思考消息的标识符设置为True
                             last_is_thinking = True

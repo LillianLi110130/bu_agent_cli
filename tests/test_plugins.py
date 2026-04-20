@@ -71,7 +71,6 @@ category: Quality
     (plugin_dir / "agents" / "reviewer.md").write_text(
         """---
 description: Review code changes carefully
-mode: subagent
 model: reviewer-model
 temperature: 0.2
 tools:
@@ -586,7 +585,6 @@ def test_repo_builtin_wiki_workflow_plugin_loads():
         assert plugin.status == "loaded"
         assert plugin.skills == []
         assert plugin.commands == [
-            "wiki:ingest-all",
             "wiki:ingest",
             "wiki:init",
             "wiki:lint",
@@ -604,15 +602,10 @@ def test_repo_builtin_wiki_workflow_plugin_loads():
         assert "概念综合页" in rendered
         assert "二次编译" in rendered
         assert "source_path" in rendered
-
-        ingest_all_command = manager.get_command("wiki:ingest-all")
-        assert ingest_all_command is not None
-        assert ingest_all_command.mode == "prompt"
-        ingest_all_rendered = ingest_all_command.render_prompt("")
-        assert "当前工作区的 `llm-wiki/raw/` 目录" in ingest_all_rendered
-        assert "对 `llm-wiki/raw/` 下的每个可读来源逐个执行" in ingest_all_rendered
-        assert "概念综合页" in ingest_all_rendered
-        assert "先遵循 `/wiki:ingest <source-path>`" in ingest_all_rendered
+        assert "llm-wiki/state/ingest-status.md" in rendered
+        assert "逐个执行下面的编译流程" in rendered
+        assert "ingest-status.md" in rendered
+        assert "每完成一个来源就立即更新 `index.md`、更新 `ingest-status.md` 并追加一条 `log.md` 记录" in rendered
 
         query_command = manager.get_command("wiki:query")
         assert query_command is not None
@@ -651,9 +644,12 @@ def test_repo_builtin_wiki_workflow_plugin_loads():
         assert "Markdown 相对链接" in wiki_agent_content
         assert "synthesis/" in wiki_agent_content
         assert "`查询` 记录" in wiki_agent_content
-        assert "不在这一层额外保存“已编译状态”" in wiki_agent_content
+        assert "state/ingest-status.md" in wiki_agent_content
+        assert "记录已经编译过的来源" in wiki_agent_content
+        assert "每完成一个来源，都先完成一次最小闭环，再处理下一个来源" in wiki_agent_content
         assert not (workspace / "llm-wiki" / "schema").exists()
         assert (workspace / "llm-wiki" / "wiki" / "index.md").exists()
+        assert (workspace / "llm-wiki" / "state" / "ingest-status.md").exists()
         assert (workspace / "llm-wiki" / "wiki" / "Overview.md").exists()
         assert (workspace / "llm-wiki" / "wiki" / "log.md").exists()
         assert (workspace / "llm-wiki" / "wiki" / "synthesis").exists()
@@ -908,7 +904,7 @@ def test_cli_runs_python_plugin_command_and_prints_output_without_agent(monkeypa
             clear_history=lambda: None,
             register_hook=lambda hook: None,
         )
-        context = SimpleNamespace(working_dir=workspace, subagent_manager=None)
+        context = SimpleNamespace(working_dir=workspace, subagent_executor=None)
         monkeypatch.setattr("cli.interactive_input.PromptSession", lambda: SimpleNamespace())
 
         cli = TGAgentCLI(

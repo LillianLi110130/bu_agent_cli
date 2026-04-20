@@ -6,6 +6,7 @@ category: Knowledge
 examples:
   - /wiki:ingest llm-wiki/raw/article.md
   - /wiki:ingest llm-wiki/raw/interview-notes.md
+  - /wiki:ingest
 ---
 
 # Wiki 编译
@@ -16,16 +17,20 @@ examples:
 
 编译步骤：
 
-1. 先阅读 `llm-wiki/WIKI_AGENT.md` 和 `llm-wiki/wiki/index.md`
-2. 确认来源文件存在
-3. 仔细阅读来源内容
-4. 在 `llm-wiki/wiki/summaries/` 下创建或更新该来源的摘要页
-5. 先识别这份来源涉及的核心概念，并判断需要创建或更新哪些 `llm-wiki/wiki/concepts/` 页面
-6. 再识别来源中的命名实体，并判断是否需要创建或更新 `llm-wiki/wiki/entities/` 页面
-7. 更新最相关的 `llm-wiki/wiki/concepts/` 和 `llm-wiki/wiki/entities/` 页面
-8. 如果高层理解发生变化，也要更新 `llm-wiki/wiki/Overview.md`
-9. 更新 `llm-wiki/wiki/index.md`
-10. 在 `llm-wiki/wiki/log.md` 中追加一条本次编译记录
+1. 先阅读 `llm-wiki/WIKI_AGENT.md`、`llm-wiki/wiki/index.md` 和 `llm-wiki/state/ingest-status.md`
+2. 如果给出了来源路径，就处理这个来源
+3. 如果没有给出来源路径，就检查 `llm-wiki/raw/` 下哪些来源还没有出现在 `llm-wiki/state/ingest-status.md` 中
+4. 对这些尚未登记为已编译的来源逐个执行下面的编译流程
+5. 确认当前要处理的来源文件存在
+6. 仔细阅读来源内容
+7. 在 `llm-wiki/wiki/summaries/` 下创建或更新该来源的摘要页
+8. 先识别这份来源涉及的核心概念，并判断需要创建或更新哪些 `llm-wiki/wiki/concepts/` 页面
+9. 再识别来源中的命名实体，并判断是否需要创建或更新 `llm-wiki/wiki/entities/` 页面
+10. 更新最相关的 `llm-wiki/wiki/concepts/` 和 `llm-wiki/wiki/entities/` 页面
+11. 如果高层理解发生变化，也要更新 `llm-wiki/wiki/Overview.md`
+12. 更新 `llm-wiki/wiki/index.md`
+13. 更新 `llm-wiki/state/ingest-status.md`
+14. 在 `llm-wiki/wiki/log.md` 中追加一条本次编译记录
 
 概念识别规则：
 
@@ -54,7 +59,9 @@ examples:
 - 新增或更新页面时，主动补充摘要页、概念综合页和实体页之间的交叉链接
 - 说明这份来源带来了什么新信息、确认了什么、削弱了什么
 - 尽量给出具体引用，说明涉及的摘要页和原始路径
-- 如果参数为空或路径无效，要直接说明需要哪个来源路径
+- 如果参数为空，应直接处理 `llm-wiki/raw/` 下所有尚未出现在 `ingest-status.md` 里的来源
+- 如果参数为空并且 `llm-wiki/raw/` 下的来源都已经编译过，要直接说明当前没有未编译文件
+- 如果一次要处理多个未编译来源，必须每完成一个来源就立即更新 `index.md`、更新 `ingest-status.md` 并追加一条 `log.md` 记录，然后再处理下一个来源
 - 更新 `index.md` 时，为新增或显著更新的页面补上一行摘要，而不是只把文件名塞进去
 
 一次成功的编译至少应完成：
@@ -64,6 +71,7 @@ examples:
 - 检查本次是否需要创建或更新实体页
 - 如有必要，更新额外的 wiki 页面（概念综合页或实体页）
 - 更新 `index.md`
+- 更新 `ingest-status.md`
 - 追加 `log.md`
 - 在结果中明确列出更新了哪些概念综合页，或说明为何没有创建
 - 在结果中明确列出更新了哪些实体页，或说明为何没有创建

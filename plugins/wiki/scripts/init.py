@@ -57,6 +57,11 @@ def _wiki_agent_content() -> str:
 3. 维护协议：`llm-wiki/WIKI_AGENT.md`
    - 规定 Wiki 的结构、约定和执行方式
 
+补充说明：
+
+- `llm-wiki/state/` 用于保存编译状态等记录
+- 当前主要使用 `llm-wiki/state/ingest-status.md` 记录 `llm-wiki/raw/` 中哪些文件已经编译完成
+
 ## 核心原则
 
 - 优先更新已有页面，不要轻易创建近义重复页
@@ -132,6 +137,22 @@ def _wiki_agent_content() -> str:
 - 避免把索引写成日志；索引应服务于导航和检索
 - 如果某一类页面很多，优先保留高信号摘要而不是长段说明
 
+## 编译记录规则
+
+`llm-wiki/state/ingest-status.md` 用于记录已经编译完成的原始来源。
+
+维护要求：
+
+- 这里记录已经编译过的来源
+- 当 `/wiki:ingest` 没有指定来源路径时，应检查 `llm-wiki/raw/` 中哪些来源还没有出现在这个文件里
+- 每当一个来源成功编译完成后，都应立即把它补充到这个文件里
+
+建议使用统一条目格式：
+
+`- source: llm-wiki/raw/example.md`
+`  - first_compiled_at: 2026-04-20`
+`  - last_compiled_at: 2026-04-20`
+
 ## 日志维护规则
 
 `llm-wiki/wiki/log.md` 是追加式日志，不要重写历史。
@@ -157,11 +178,15 @@ def _wiki_agent_content() -> str:
 ### 编译来源
 
 1. 先读 `llm-wiki/wiki/index.md`
-2. 读取原始来源
-3. 更新摘要页
-4. 更新相关概念综合页或实体页
-5. 更新 `index.md`
-6. 追加 `log.md`
+2. 再读 `llm-wiki/state/ingest-status.md`
+3. 如果没有指定来源路径，就把 `llm-wiki/raw/` 中尚未登记为已编译的来源逐个编译
+4. 每完成一个来源，都先完成一次最小闭环，再处理下一个来源
+5. 读取原始来源
+6. 更新摘要页
+7. 更新相关概念综合页或实体页
+8. 更新 `index.md`
+9. 更新 `ingest-status.md`
+10. 追加 `log.md`
 
 ### 查询
 
@@ -373,6 +398,12 @@ def _log_content() -> str:
     )
 
 
+def _ingest_status_content() -> str:
+    return """# 编译记录
+
+这里记录已经编译进 Wiki 的原始来源。
+"""
+
 def _home_content() -> str:
     return (
         _frontmatter("home")
@@ -410,6 +441,7 @@ def main() -> int:
 
     for rel_dir in (
         "llm-wiki/raw",
+        "llm-wiki/state",
         "llm-wiki/wiki",
         "llm-wiki/wiki/summaries",
         "llm-wiki/wiki/concepts",
@@ -423,6 +455,7 @@ def main() -> int:
     files = {
         "llm-wiki/WIKI_AGENT.md": _wiki_agent_content(),
         "llm-wiki/wiki/index.md": _index_content(),
+        "llm-wiki/state/ingest-status.md": _ingest_status_content(),
         "llm-wiki/wiki/log.md": _log_content(),
         "llm-wiki/wiki/Overview.md": _home_content(),
     }
