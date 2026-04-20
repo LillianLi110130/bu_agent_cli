@@ -15,12 +15,14 @@ class DelegateParallelItem(BaseModel):
     """One foreground delegated agent invocation."""
 
     prompt: str = Field(description="Full task prompt for this child agent.")
-    description: str = Field(description="Short label shown in the task dashboard.")
+    description: str = Field(
+        description="Short, specific label shown in task status, such as `Review auth files`."
+    )
     subagent_type: str | None = Field(
         default=None,
         description=(
-            "Optional named agent to use. Leave empty to fork the current agent "
-            "with the current conversation context."
+            "Optional named agent to use. Leave empty only when you intentionally "
+            "want to fork the current agent with the current conversation context."
         ),
     )
     model: str | None = Field(
@@ -54,23 +56,25 @@ class DelegateParallelParams(BaseModel):
         min_length=2,
         description=(
             "Two or more new foreground delegated agents to run in parallel. "
-            "Use this only when you need multiple foreground agents at once."
+            "Use this only when you need multiple new foreground agents right now."
         ),
     )
 
 
 @tool(
     "Delegate exactly one agent task. "
-    "Use this when you need one child agent, either in the foreground or in the background. "
+    "Do not delegate by default; use this only when one child agent will materially help. "
+    "Use this when you need exactly one child agent, either in the foreground or in the background. "
     "If you need multiple new foreground agents at the same time, use `delegate_parallel` instead. "
     "Set `subagent_type` to call a named agent such as `code_reviewer` or `code_writer`. "
-    "Leave `subagent_type` empty to fork the current agent with the current conversation context. "
+    "Leave `subagent_type` empty only when you intentionally want to fork the current agent with the current conversation context. "
     "Named subagents use the model defined in markdown config, and `model: inherit` means use the parent agent model. "
     "Forked children always use the parent agent model. "
     "Any `model` argument on this tool is ignored by runtime policy. "
-    "`prompt` must contain the full task for the child agent. "
-    "`description` must be a short human-readable label shown in task status and the CLI dashboard. "
-    "Set `run_in_background=true` only for long-running work that does not need an immediate answer. "
+    "`prompt` must contain a complete task the child agent can execute immediately, including target, scope, constraints, and expected output. "
+    "`description` must be a short, concrete human-readable label shown in task status and the CLI dashboard. "
+    "Set `run_in_background=true` only for long-running work whose final result is not needed immediately. "
+    "When a background agent finishes, the system will notify you automatically; do not sleep, poll, or proactively check progress just to wait. "
     "Leave `run_in_background` unset or false for a normal foreground call.",
     name="delegate",
 )
@@ -108,9 +112,10 @@ async def delegate(
 
 @tool(
     "Start two or more new foreground agent tasks in parallel. "
-    "Use this only when you need multiple foreground agents at the same time. "
-    "Do not use this for a single agent, and do not use this for background work. "
+    "Use this only when you need multiple new foreground agents at the same time. "
+    "Do not use this for a single agent, sequential delegation, or any background work. "
     "For exactly one child agent, use `delegate` instead. "
+    "Split the work first and make each child prompt non-overlapping and directly executable. "
     "Each item follows the same agent selection rules as `delegate`: "
     "named subagents read model from markdown config, `model: inherit` uses the parent model, "
     "and forked children always use the parent model. "

@@ -31,6 +31,8 @@ class AtCommand:
     description: str
     path: Path
     category: str = "General"
+    source: str = "workspace"
+    writable: bool = False
 
     @classmethod
     def from_file(cls, path: Path) -> "AtCommand":
@@ -149,6 +151,8 @@ class AtCommandRegistry:
                     description=skill.description,
                     path=skill.path,
                     category=skill.category,
+                    source=skill.source,
+                    writable=skill.writable,
                 )
             )
 

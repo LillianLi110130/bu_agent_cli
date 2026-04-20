@@ -8,5 +8,5 @@ import org.apache.ibatis.annotations.Param;
 public interface OutboundMessageMapper {
     int insert(OutboundMessageEntity entity);
 
-    int updateStatus(@Param("id") Long id, @Param("status") String status);
+    OutboundMessageEntity findLatestBySessionKey(@Param("sessionKey") String sessionKey);
 }

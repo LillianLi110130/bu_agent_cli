@@ -51,6 +51,8 @@ from agent_core.runtime_paths import (
     load_runtime_env,
 )
 from agent_core.skill.discovery import default_skill_dirs
+from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
+from agent_core.skill.runtime_service import SkillRuntimeService
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
@@ -65,6 +67,7 @@ from cli.worker.auth import (
 from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 from tools.sandbox import get_current_agent
+from tools.skills import get_skill_runtime_service, skill_list, skill_manage, skill_view
 
 # =============================================================================
 # Prompt & Skills Loading
@@ -77,6 +80,35 @@ _SKILLS_DIR = _SCRIPT_DIR / "skills"
 _AGENTS_DIR = _PROMPTS_DIR / "agents"
 _PLUGINS_DIR = _SCRIPT_DIR / "plugins"
 _INTERNAL_WORKER_FLAG = "--run-worker-internal"
+CLI_TOOLS = [
+    *ALL_TOOLS,
+    skill_list,
+    skill_view,
+    skill_manage,
+]
+
+_SKILL_MANAGEMENT_GUIDANCE = """
+## Skill Learning
+
+After completing a complex task (5+ tool calls), fixing a tricky error, or discovering
+a reusable workflow, tool/API/platform pitfall, or stable user preference, consider saving
+the approach as a user-level skill with `skill_manage` so it can be reused next time.
+
+When using a user-level skill and finding it outdated, incomplete, or wrong, patch it
+immediately with `skill_manage(action="patch")`. Do not modify builtin, plugin, workspace,
+or project-private skills. `skill_manage` may only write under `~/.tg_agent/skills`;
+never delete skills and do not create draft skills.
+
+When the user asks to create, update, optimize, refine, or fix a skill, inspect
+visible skills with `skill_list`/`skill_view` and write changes with `skill_manage`. Do not
+use generic `read`, `write`, or `edit` tools to modify skills under `~/.tg_agent/skills`, 
+because that bypasses skill validation and skill index refresh.
+
+Only use generic file editing tools for skills when the user explicitly asks to modify a
+repository/workspace skill file, or when `skill_manage` cannot write that skill source.
+"""
+
+
 @dataclass(slots=True)
 class RuntimeRegistries:
     slash_registry: SlashCommandRegistry
@@ -262,7 +294,7 @@ def _build_system_prompt(
         PROJECT_CONTEXT=build_project_context(),
     )
 
-    return prompt
+    return f"{prompt.rstrip()}\n\n{_SKILL_MANAGEMENT_GUIDANCE.strip()}\n"
 
 
 console = Console()
@@ -504,7 +536,7 @@ async def _authenticate_worker_startup(args: argparse.Namespace) -> None:
 
 def create_llm(model: str | None = None) -> ChatOpenAI:
     """Create LLM instance based on environment or model parameter."""
-    model = model or (os.getenv("LLM_MODEL") or "").strip() or "GLM-4.7"
+    model = model or (os.getenv("LLM_MODEL") or "").strip() or "GLM-5.1"
     base_url = (os.getenv("LLM_BASE_URL") or "").strip() or "https://open.bigmodel.cn/api/coding/paas/v4"
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or "OPENAI_API_KEY"
 
@@ -555,10 +587,21 @@ def create_agent(
         skill_registry=runtime.skill_registry,
         agent_registry=runtime.agent_registry,
     )
+    def system_prompt_builder() -> str:
+        return _build_system_prompt(
+            ctx.working_dir,
+            skill_registry=runtime.skill_registry,
+            agent_registry=runtime.agent_registry,
+        )
+    skill_runtime_service = SkillRuntimeService(
+        skill_registry=runtime.skill_registry,
+        plugin_manager=runtime.plugin_manager,
+        system_prompt_builder=system_prompt_builder,
+    )
 
     subagent_executor = SubagentTaskManager(
         registry=runtime.agent_registry,
-        all_tools=ALL_TOOLS,
+        all_tools=CLI_TOOLS,
         context=ctx,
         skill_registry=runtime.skill_registry,
     )
@@ -566,14 +609,23 @@ def create_agent(
 
     agent = Agent(
         llm=llm,
-        tools=ALL_TOOLS,
+        tools=CLI_TOOLS,
         system_prompt=system_prompt,
         dependency_overrides={
             get_sandbox_context: lambda: ctx,
             get_current_agent: lambda: agent,
+            get_skill_runtime_service: lambda: skill_runtime_service,
         },
         agent_config=agent_config,
         hooks=build_agent_hooks(),
+    )
+    skill_runtime_service.bind_agent(agent)
+    setattr(agent, "_skill_runtime_service", skill_runtime_service)
+    setattr(ctx, "skill_runtime_service", skill_runtime_service)
+    agent.register_hook(
+        SkillReviewHook(
+            runner=SkillReviewRunner(service=skill_runtime_service),
+        )
     )
 
     subagent_executor.set_main_agent(agent)
@@ -599,12 +651,17 @@ def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: li
         f"The current environment: {system_info_text}"
     )
 
+    dependency_overrides = {get_sandbox_context: lambda: parent_ctx}
+    skill_runtime_service = getattr(parent_ctx, "skill_runtime_service", None)
+    if skill_runtime_service is not None:
+        dependency_overrides[get_skill_runtime_service] = lambda: skill_runtime_service
+
     agent = Agent(
         llm=llm,
         tools=all_tools,
         system_prompt=system_prompt,
         agent_config=config,
-        dependency_overrides={get_sandbox_context: lambda: parent_ctx},
+        dependency_overrides=dependency_overrides,
         hooks=build_agent_hooks(),
     )
     agent.dependency_overrides[get_current_agent] = lambda: agent
@@ -650,6 +707,7 @@ async def main():
             skill_registry=runtime.skill_registry,
             agent_registry=runtime.agent_registry,
         ),
+        skill_runtime_service=getattr(agent, "_skill_runtime_service", None),
         bridge_store=bridge_store,
         session_runtime=session_runtime,
     )
@@ -661,6 +719,8 @@ async def main():
     finally:
         if ctx.shell_task_manager is not None:
             await ctx.shell_task_manager.shutdown(cancel_running=True)
+        if ctx.subagent_executor is not None:
+            await ctx.subagent_executor.shutdown(cancel_running=True)
         await _close_llm_runtime(agent.llm)
         await _mark_worker_offline(
             worker_id=args.im_worker_id,

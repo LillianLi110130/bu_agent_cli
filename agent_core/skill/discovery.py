@@ -15,6 +15,9 @@ class DiscoveredSkill:
     description: str
     path: Path
     category: str = "General"
+    source: str = "workspace"
+    root: Path | None = None
+    writable: bool = False
 
 
 def user_tgagent_dir() -> Path:
@@ -29,12 +32,50 @@ def builtin_skills_dir() -> Path:
     return user_skills_dir() / ".builtin"
 
 
+def sync_builtin_skills_dir() -> Path:
+    return user_skills_dir() / ".builtin.__sync__"
+
+
+def is_path_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def is_user_writable_skill_path(path: Path) -> bool:
+    resolved = path.resolve()
+    user_root = user_skills_dir().resolve()
+    if not is_path_relative_to(resolved, user_root):
+        return False
+    if is_path_relative_to(resolved, builtin_skills_dir()):
+        return False
+    if is_path_relative_to(resolved, sync_builtin_skills_dir()):
+        return False
+    return True
+
+
+def classify_skill_source(root_dir: Path, skill_path: Path) -> tuple[str, bool]:
+    resolved_root = root_dir.resolve()
+    resolved_path = skill_path.resolve()
+    if is_path_relative_to(resolved_path, builtin_skills_dir()):
+        return "builtin", False
+    if is_user_writable_skill_path(resolved_path):
+        return "user", True
+    if "plugins" in {part.lower() for part in resolved_path.parts}:
+        return "plugin", False
+    if resolved_root.name == "skills" and resolved_root.parent.name == ".tg_agent":
+        return "workspace", False
+    return "workspace", False
+
+
 def sync_builtin_skills(packaged_skills_dir: Path) -> Path:
     runtime_skills_root = user_skills_dir()
     runtime_skills_root.mkdir(parents=True, exist_ok=True)
 
     builtin_root = builtin_skills_dir()
-    temp_root = runtime_skills_root / ".builtin.__sync__"
+    temp_root = sync_builtin_skills_dir()
     if temp_root.exists():
         shutil.rmtree(temp_root, ignore_errors=True)
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -71,7 +112,7 @@ def discover_skill_files(skill_dirs: Sequence[Path]) -> list[DiscoveredSkill]:
 
         for skill_path in _iter_skill_paths(root_dir):
             try:
-                skill = parse_discovered_skill(skill_path)
+                skill = parse_discovered_skill(skill_path, root_dir=root_dir)
             except (ValueError, FileNotFoundError, OSError):
                 continue
             merged[skill.name] = skill
@@ -79,7 +120,7 @@ def discover_skill_files(skill_dirs: Sequence[Path]) -> list[DiscoveredSkill]:
     return sorted(merged.values(), key=lambda item: item.name)
 
 
-def parse_discovered_skill(path: Path) -> DiscoveredSkill:
+def parse_discovered_skill(path: Path, root_dir: Path | None = None) -> DiscoveredSkill:
     content = path.read_text(encoding="utf-8")
     frontmatter_match = re.match(r"\A---\s*\r?\n(.*?)\r?\n---\s*(?:\r?\n|$)", content, re.DOTALL)
     if not frontmatter_match:
@@ -90,11 +131,15 @@ def parse_discovered_skill(path: Path) -> DiscoveredSkill:
     if not name:
         raise ValueError(f"Skill name is required for {path}")
 
+    source, writable = classify_skill_source(root_dir or path.parent.parent, path)
     return DiscoveredSkill(
         name=name,
         description=metadata.get("description", ""),
         path=path,
         category=metadata.get("category", "General"),
+        source=source,
+        root=root_dir,
+        writable=writable,
     )
 
 

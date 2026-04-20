@@ -170,7 +170,7 @@ class SubagentTaskManager:
         result = await self.run_foreground(
             parent_agent=parent_agent,
             request=request,
-            timeout=timeout or 300.0,
+            timeout=timeout,
         )
         if result.status == "completed":
             return result.final_response or "Task completed but returned empty result."
@@ -213,7 +213,7 @@ class SubagentTaskManager:
         *,
         parent_agent: Agent,
         request: SubagentCallRequest,
-        timeout: float = 300.0,
+        timeout: float | None = None,
     ) -> SubagentTaskResult:
         task_id = self._new_task_id()
         normalized_request = self._normalize_request(request)
@@ -245,7 +245,10 @@ class SubagentTaskManager:
         task.add_done_callback(lambda _: self._finalize_local_agent_run(task_id))
 
         try:
-            await asyncio.wait_for(self._completion_events[task_id].wait(), timeout=timeout)
+            if timeout is None:
+                await self._completion_events[task_id].wait()
+            else:
+                await asyncio.wait_for(self._completion_events[task_id].wait(), timeout=timeout)
         except asyncio.CancelledError:
             status = self._task_statuses.get(task_id)
             logger.warning(
@@ -285,7 +288,7 @@ class SubagentTaskManager:
         *,
         parent_agent: Agent,
         requests: Iterable[SubagentCallRequest],
-        timeout: float = 300.0,
+        timeout: float | None = None,
     ) -> list[SubagentTaskResult]:
         return await asyncio.gather(
             *[
@@ -310,7 +313,21 @@ class SubagentTaskManager:
                 for status in self._task_statuses.values()
                 if status.status == "running"
             ],
-            "finished": [result.to_dict() for result in self._task_results.values()],
+            "completed": [
+                result.to_dict()
+                for result in self._task_results.values()
+                if result.status == "completed"
+            ],
+            "failed": [
+                result.to_dict()
+                for result in self._task_results.values()
+                if result.status == "failed"
+            ],
+            "cancelled": [
+                result.to_dict()
+                for result in self._task_results.values()
+                if result.status == "cancelled"
+            ],
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -332,6 +349,18 @@ class SubagentTaskManager:
         except asyncio.CancelledError:
             pass
         return f"Task '{task_id}' cancellation requested"
+
+    async def shutdown(self, *, cancel_running: bool = True) -> None:
+        """Best-effort shutdown for delegated subagent tasks."""
+        if not cancel_running:
+            return
+
+        running_task_ids = list(self._running_tasks.keys())
+        for task_id in running_task_ids:
+            try:
+                await self.cancel_run(task_id)
+            except Exception:
+                logger.exception("Failed to cancel subagent task during shutdown: %s", task_id)
 
     async def _execute_local_agent_run(
         self,
@@ -573,12 +602,13 @@ class SubagentTaskManager:
         )
 
     def _resolve_background(self, request: SubagentCallRequest) -> bool:
-        if request.run_in_background is not None:
-            return bool(request.run_in_background)
         if request.subagent_type:
             config = self._registry.get_config(request.subagent_type)
-            if config is not None:
+            # 如果在agent定义md里指定background=true，则强制在后台运行
+            if config is not None and bool(config.background)==True:
                 return bool(config.background)
+        if request.run_in_background is not None:
+            return bool(request.run_in_background)
         return False
 
     @staticmethod
