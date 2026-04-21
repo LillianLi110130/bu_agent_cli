@@ -149,6 +149,11 @@ class AgentSlashHandler:
         self.console.print(table)
         self.console.print()
         self.console.print("[dim]使用 /agents show <name> 查看详情[/dim]")
+        self.console.print("[dim]使用 /agents create <name> [--scope workspace|user] 创建智能体[/dim]")
+        self.console.print("[dim]使用 /agents edit <name> 修改项目/用户智能体[/dim]")
+        self.console.print("[dim]使用 /agents delete <name> 删除项目/用户智能体[/dim]")
+        self.console.print("[dim]使用 /agents reload 重新加载智能体定义[/dim]")
+        self.console.print("[dim]使用 /agents list <workspace|user|builtin|plugin> 按来源筛选[/dim]")
         return True
 
     async def _show(self, args: list[str]) -> bool:
