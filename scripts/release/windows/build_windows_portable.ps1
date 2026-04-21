@@ -3,6 +3,7 @@ param(
     [string]$PythonExecutable = "",
     [string]$PythonHome = "",
     [string]$SourceWheelhouse = "",
+    [string]$ShortcutIcon = "",
     [string]$OutputRoot = "",
     [switch]$AllowCondaPythonRuntime,
     [switch]$SkipZip,
@@ -228,6 +229,36 @@ function Test-CondaPythonHome {
         (Test-Path -LiteralPath (Join-Path $PythonHomeDir "condabin"))
 }
 
+function Resolve-ShortcutIcon {
+    param(
+        [string]$ExplicitShortcutIcon,
+        [Parameter(Mandatory = $true)]
+        [string]$DefaultShortcutIcon
+    )
+
+    $candidate = ""
+    if ($ExplicitShortcutIcon) {
+        $candidate = [Environment]::ExpandEnvironmentVariables($ExplicitShortcutIcon.Trim().Trim('"'))
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            throw "Shortcut icon file not found: $ExplicitShortcutIcon"
+        }
+    }
+    elseif (Test-Path -LiteralPath $DefaultShortcutIcon -PathType Leaf) {
+        $candidate = $DefaultShortcutIcon
+    }
+
+    if (-not $candidate) {
+        return ""
+    }
+
+    $resolved = [System.IO.Path]::GetFullPath($candidate)
+    if ([System.IO.Path]::GetExtension($resolved) -ine ".ico") {
+        throw "Shortcut icon must be an .ico file: $resolved"
+    }
+
+    return $resolved
+}
+
 function Test-PathUnderRoot {
     param(
         [Parameter(Mandatory = $true)]
@@ -419,6 +450,17 @@ function Copy-Wheelhouse {
     Copy-Item -Path (Join-Path $SourceWheelhouseDir "*") -Destination $TargetWheelhouseDir -Recurse -Force
 }
 
+function Copy-ShortcutIcon {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceIconPath,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetIconPath
+    )
+
+    Copy-Item -LiteralPath $SourceIconPath -Destination $TargetIconPath -Force
+}
+
 function Build-ProjectWheel {
     param(
         [Parameter(Mandatory = $true)]
@@ -540,6 +582,7 @@ Contents:
 - deploy.bat
 - win_deploy.ps1
 - crab-launcher.bat
+- crab.ico (optional shortcut icon)
 - python-runtime\
 - wheelhouse\
 - app\
@@ -586,6 +629,7 @@ $RuntimePython = Join-Path $RuntimeDir "python.exe"
 $WheelhouseDir = Join-Path $BundleRoot "wheelhouse"
 $AppDir = Join-Path $BundleRoot "app"
 $LauncherPath = Join-Path $BundleRoot "crab-launcher.bat"
+$ShortcutIconPath = Join-Path $BundleRoot "crab.ico"
 $UserProfileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath("UserProfile") }
 $InstallRoot = Join-Path $UserProfileDir ".tg_agent"
 $VenvDir = Join-Path $InstallRoot ".venv"
@@ -905,8 +949,14 @@ if (-not $SkipDesktopShortcut) {
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $LauncherPath
         $shortcut.WorkingDirectory = $desktopDir
+        if (Test-Path -LiteralPath $ShortcutIconPath) {
+            $shortcut.IconLocation = "$ShortcutIconPath,0"
+        }
         $shortcut.Save()
         Write-Host "[portable] desktop shortcut created: $shortcutPath"
+        if (Test-Path -LiteralPath $ShortcutIconPath) {
+            Write-Host "[portable] desktop shortcut icon: $ShortcutIconPath"
+        }
     }
 }
 
@@ -954,6 +1004,8 @@ $resolvedOutputRoot = if ($OutputRoot) {
 else {
     [System.IO.Path]::GetFullPath((Join-Path $repoRoot "dist\release"))
 }
+$defaultShortcutIcon = Join-Path $PSScriptRoot "assets\crab.ico"
+$resolvedShortcutIcon = Resolve-ShortcutIcon -ExplicitShortcutIcon $ShortcutIcon -DefaultShortcutIcon $defaultShortcutIcon
 
 $resolvedPythonExe = Resolve-PythonExecutable -ExplicitPython $PythonExecutable
 $resolvedPythonHome = Resolve-PythonHome -PythonExe $resolvedPythonExe -ExplicitPythonHome $PythonHome
@@ -980,6 +1032,7 @@ $runtimeDir = Join-Path $bundleDir "python-runtime"
 $wheelhouseDir = Join-Path $bundleDir "wheelhouse"
 $tempDir = Join-Path $bundleDir "tmp"
 $launcherPath = Join-Path $bundleDir "crab-launcher.bat"
+$bundleIconPath = Join-Path $bundleDir "crab.ico"
 $deployBat = Join-Path $bundleDir "deploy.bat"
 $deployPs1 = Join-Path $bundleDir "win_deploy.ps1"
 $readmePath = Join-Path $bundleDir "README.txt"
@@ -1019,6 +1072,11 @@ if ($resolvedSourceWheelhouse -and -not $SkipProjectWheelBuild) {
 
 if (Test-Path -LiteralPath $tempDir) {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($resolvedShortcutIcon) {
+    Write-Host "[portable] copying shortcut icon from $resolvedShortcutIcon"
+    Copy-ShortcutIcon -SourceIconPath $resolvedShortcutIcon -TargetIconPath $bundleIconPath
 }
 
 & (Join-Path $PSScriptRoot "render_launcher.ps1") -OutputPath $launcherPath -RuntimeDirName "python-runtime" -AppDirName "app"

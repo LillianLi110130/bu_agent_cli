@@ -23,6 +23,7 @@ tg-agent-windows-x64-v0.1.0-portable/
   deploy.bat
   win_deploy.ps1
   tg-agent-launcher.bat
+  crab.ico
   README.txt
   python-runtime/
   wheelhouse/
@@ -37,6 +38,8 @@ tg-agent-windows-x64-v0.1.0-portable/
   真正执行安装逻辑的 PowerShell 脚本。
 - `tg-agent-launcher.bat`
   日常启动入口。
+- `crab.ico`
+  桌面快捷方式使用的自定义图标。没有提供时，快捷方式回退到系统默认图标。
 - `python-runtime/`
   随包分发的 Python 运行时。
 - `wheelhouse/`
@@ -112,6 +115,18 @@ D:\python\python.exe -c "import sys; print(sys.executable); print(sys.version); 
 
 这样更稳，也更容易排查问题。
 
+如果你希望桌面快捷方式带自定义图标，先把 `.ico` 文件放到：
+
+```text
+scripts/release/windows/assets/crab.ico
+```
+
+也可以在构建 portable bundle 时显式传：
+
+```powershell
+-ShortcutIcon D:\path\to\your\crab.ico
+```
+
 ### 4.1 第一步：构建 wheelhouse
 
 脚本位置：
@@ -163,6 +178,8 @@ powershell -ExecutionPolicy Bypass -File ./scripts/release/windows/build_windows
   指定 portable bundle 内置 runtime 的来源 Python。
 - `-SourceWheelhouse`
   指定已经构建好的离线 wheelhouse。
+- `-ShortcutIcon`
+  可选，显式指定桌面快捷方式图标的 `.ico` 文件。若不传，脚本会尝试使用 `scripts/release/windows/assets/crab.ico`。
 
 默认输出目录：
 
@@ -269,6 +286,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\verify_window
 ```text
 TG-Agent Portable.lnk
 ```
+
+如果 bundle 根目录里存在 `crab.ico`，这个快捷方式会使用它作为图标；否则使用系统默认图标。
 
 ### 7.3 `tg-agent-launcher.bat` 做了什么
 

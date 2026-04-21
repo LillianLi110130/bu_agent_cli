@@ -97,6 +97,7 @@ else {
 $appDir = Join-Path $resolvedBundleDir "app"
 $runtimeDir = Join-Path $resolvedBundleDir "python-runtime"
 $wheelhouseDir = Join-Path $resolvedBundleDir "wheelhouse"
+$shortcutIcon = Join-Path $resolvedBundleDir "crab.ico"
 
 Assert-PathExists -Path $resolvedBundleDir -Label "bundle directory"
 Assert-PathExists -Path (Join-Path $resolvedBundleDir "deploy.bat") -Label "deploy.bat"
@@ -123,6 +124,9 @@ if (-not $projectWheel) {
 }
 
 Write-Host "[portable] structure verification passed: $resolvedBundleDir"
+if (Test-Path -LiteralPath $shortcutIcon) {
+    Write-Host "[portable] shortcut icon detected: $shortcutIcon"
+}
 
 if ($RunSmoke) {
     Invoke-SmokeRun -BundleRoot $resolvedBundleDir
