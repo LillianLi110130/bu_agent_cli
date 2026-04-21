@@ -173,14 +173,6 @@ def build_system_prompt(
     )
 
 
-def build_subagent_system_prompt(system_prompt: str) -> str:
-    """Append shared runtime context for subagent system prompts."""
-    return (
-        f"{system_prompt}\n\n## System Information\n\n"
-        f"The current environment: {_get_system_info()}"
-    )
-
-
 def create_llm(model: str | None = None) -> ChatOpenAI:
     """Create an LLM instance from a preset or environment variables."""
     resolved_model = model or (os.getenv("LLM_MODEL") or "").strip() or "GLM-4.7"
@@ -228,27 +220,3 @@ def create_agent(
     subagent_executor.set_main_agent(agent)
     ctx.current_agent = agent
     return agent, ctx
-
-
-def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
-    """Factory function to create subagent instances."""
-    from config.model_config import get_model_config
-
-    model, base_url, api_key = get_model_config(config.model)
-
-    llm = ChatOpenAI(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=config.temperature,
-    )
-
-    agent = Agent(
-        llm=llm,
-        tools=all_tools,
-        system_prompt=build_subagent_system_prompt(config.system_prompt),
-        agent_config=config,
-        dependency_overrides={get_sandbox_context: lambda: parent_ctx},
-    )
-    agent.dependency_overrides[get_current_agent] = lambda: agent
-    return agent
