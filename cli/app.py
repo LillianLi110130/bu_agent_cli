@@ -734,6 +734,18 @@ class TGAgentCLI:
             return f"{value / 1_000:.1f}k"
         return str(value)
 
+    def _format_duration_compact(self, seconds: float | int | None) -> str:
+        if seconds is None:
+            return "-"
+        total_seconds = max(0, int(round(float(seconds))))
+        minutes, secs = divmod(total_seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours > 0:
+            return f"{hours}h{minutes}m{secs}s"
+        if minutes > 0:
+            return f"{minutes}m{secs}s"
+        return f"{secs}s"
+
     def _format_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> str:
         percent = self._context_budget_left_percent(snapshot)
         used = self._format_token_count(snapshot.estimated_tokens)
@@ -1084,14 +1096,18 @@ class TGAgentCLI:
                 description = str(task.get("description", "")).strip().replace("\n", " ")
                 if len(description) > 56:
                     description = description[:53] + "..."
-                tools_used = task.get("tools_used")
-                if isinstance(tools_used, list):
-                    tools_text = f"tools={len(tools_used)}"
+                tool_calls = task.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    tools_text = f"tools={len(tool_calls)}"
                 else:
                     tools_text = f"tools={int(task.get('steps_completed', 0) or 0)}"
+                total_tokens = int(task.get("total_tokens", 0) or 0)
+                tokens_text = (
+                    f"tokens={self._format_token_count(total_tokens)}" if total_tokens > 0 else "tokens=-"
+                )
                 self._console.print(
                     f"  {task_id} | {self._task_status_label(status)} | {name} | "
-                    f"{description or '(no description)'} | {tools_text}"
+                    f"{description or '(no description)'} | {tools_text} | {tokens_text}"
                 )
         if not has_any:
             self._console.print("[dim]  (none)[/dim]")
@@ -1120,27 +1136,41 @@ class TGAgentCLI:
         prompt = str(task_info.get("prompt", "") or "").strip()
         final_response = str(task_info.get("final_response", "") or "").strip()
         error = str(task_info.get("error", "") or "").strip()
+        status = str(task_info.get("status", "-"))
+        subagent_name = str(task_info.get("subagent_name", "-"))
+        subagent_type = str(task_info.get("subagent_type", "") or "").strip()
+        execution_time_ms = float(task_info.get("execution_time_ms", 0) or 0)
+        created_at = task_info.get("created_at")
+        completed_at = task_info.get("completed_at")
 
         lines = [
             f"[bold]类型：[/] subagent",
             f"[bold]任务 ID：[/] {task_info.get('task_id', '-')}",
-            f"[bold]状态：[/] {self._task_status_label(str(task_info.get('status', '-')))}",
-            f"[bold]子代理：[/] {task_info.get('subagent_name', '-')}",
+            f"[bold]状态：[/] {self._task_status_label(status)}",
+            f"[bold]子代理名称：[/] {subagent_name}",
+            f"[bold]子代理类型：[/] {subagent_type or '-'}",
             f"[bold]描述：[/] {task_info.get('description', '-')}",
             f"[bold]模式：[/] {'background' if task_info.get('run_in_background') else 'foreground'}",
             f"[bold]任务种类：[/] {task_info.get('task_kind', '-')}",
-            f"[bold]subagent_type：[/] {task_info.get('subagent_type', '-')}",
             f"[bold]模型：[/] {task_info.get('model', '-')}",
-            f"[bold]耗时：[/] {task_info.get('execution_time_ms', '-')}",
-            f"[bold]创建时间：[/] {self._format_timestamp(task_info.get('created_at'))}",
-            f"[bold]结束时间：[/] {self._format_timestamp(task_info.get('completed_at'))}",
+            f"[bold]总 Tokens：[/] {self._format_token_count(int(task_info.get('total_tokens', 0) or 0))}",
+            f"[bold]Prompt Tokens：[/] {self._format_token_count(int(task_info.get('total_prompt_tokens', 0) or 0))}",
+            f"[bold]Completion Tokens：[/] {self._format_token_count(int(task_info.get('total_completion_tokens', 0) or 0))}",
         ]
+        if isinstance(tool_calls, list):
+            lines.append(f"[bold]工具调用次数：[/] {len(tool_calls)}")
+        if execution_time_ms > 0:
+            lines.append(
+                f"[bold]耗时：[/] {self._format_duration_compact(execution_time_ms / 1000.0)}"
+            )
+        if created_at:
+            lines.append(f"[bold]创建时间：[/] {self._format_timestamp(created_at)}")
+        if completed_at:
+            lines.append(f"[bold]结束时间：[/] {self._format_timestamp(completed_at)}")
         self._console.print("\n".join(lines))
 
         if isinstance(tools_used, list):
             self._console.print(f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}")
-        if isinstance(tool_calls, list):
-            self._console.print(f"[bold]工具调用次数：[/] {len(tool_calls)}")
         if isinstance(recent_logs, list) and recent_logs:
             self._console.print("[bold]最近日志：[/]")
             for line in recent_logs:
@@ -1665,6 +1695,8 @@ class TGAgentCLI:
                 # Cancellation is now handled inside query_stream for immediate response
                 # This check is for final confirmation
                 if cancel_event.is_set():
+                    if self._ctx.subagent_executor is not None:
+                        await self._ctx.subagent_executor.cancel_running_foreground_runs()
                     self._console.print()
                     self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     break
@@ -1736,13 +1768,8 @@ class TGAgentCLI:
                     self._stop_loading(self._loading)
                     self._loading = None
                     final_response = event.content
-                    # Check if this was a cancellation
-                    if event.content == "[Cancelled by user]":
-                        self._console.print()
-                        self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
-                    else:
-                        self._console.print()
-                        self._console.print()
+                    self._console.print()
+                    self._console.print()
 
         except Exception as e:
             self._stop_loading(self._loading)
@@ -1781,8 +1808,9 @@ class TGAgentCLI:
 
         if result.status == "completed":
             self._console.print(
-                f"[dim]\\[bg done\\] {result.subagent_name} {result.task_id} "
-                f"finished in {result.execution_time_ms / 1000:.1f}s. "
+                f"[dim]\\[bg done] {result.subagent_name} {result.task_id} "
+                f"finished in {self._format_duration_compact(result.execution_time_ms / 1000.0)} "
+                f"(tokens={self._format_token_count(int(result.total_tokens or 0))}). "
                 f"Use /task {result.task_id} to inspect the result.[/dim]"
             )
         elif result.status == "failed":
@@ -2329,8 +2357,9 @@ class TGAgentCLI:
 
         if result.status == "completed":
             self._console.print(
-                f"[dim]\\[bg done\\] {result.subagent_name} {result.task_id} "
-                f"finished in {result.execution_time_ms / 1000:.1f}s. "
+                f"[dim]\\[bg done] {result.subagent_name} {result.task_id} "
+                f"finished in {self._format_duration_compact(result.execution_time_ms / 1000.0)} "
+                f"(tokens={self._format_token_count(int(result.total_tokens or 0))}). "
                 f"Use /task {result.task_id} to inspect the result.[/dim]"
             )
             return
@@ -2374,6 +2403,8 @@ class TGAgentCLI:
         step = event.current_step or "Running"
         if len(step) > 72:
             step = step[:69] + "..."
+        total_tokens = int(getattr(event, "total_tokens", 0) or 0)
+        tokens_text = self._format_token_count(total_tokens) if total_tokens > 0 else "-"
         phase = self._classify_subagent_progress_phase(step)
         signature = (event.status, event.steps_completed, phase)
         if self._subagent_progress_signatures.get(event.task_id) == signature:
@@ -2389,10 +2420,10 @@ class TGAgentCLI:
         self._loading = None
 
         self._console.print(
-            "[dim]"
-            "[subagent:fg] "
-            f"{event.task_id} | {event.subagent_name} | {event.description} | "
-            f"tools={event.steps_completed} | {elapsed:.1f}s | {step}"
+            f"[dim]\\[subagent] {event.task_id} | "
+            f"{event.subagent_name} | {event.description} | "
+            f"tools={event.steps_completed} | tokens={tokens_text} | "
+            f"{self._format_duration_compact(elapsed)} | {step}"
             "[/dim]"
         )
 

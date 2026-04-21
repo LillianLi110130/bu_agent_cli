@@ -51,6 +51,9 @@ class SubagentTaskResult:
     run_in_background: bool = False
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     tools_used: list[str] = field(default_factory=list)
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
     error: str | None = None
     created_at: datetime = field(default_factory=datetime.now)
     completed_at: datetime | None = None
@@ -70,6 +73,9 @@ class SubagentTaskResult:
             "run_in_background": self.run_in_background,
             "tool_calls": self.tool_calls,
             "tools_used": self.tools_used,
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_tokens,
             "error": self.error,
             "created_at": self.created_at.isoformat(),
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
@@ -89,6 +95,9 @@ class SubagentTaskStatus:
     current_step: str | None = None
     steps_completed: int = 0
     run_in_background: bool = False
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
     last_activity: datetime | None = None
     recent_logs: list[str] = field(default_factory=list)
 
@@ -105,6 +114,9 @@ class SubagentTaskStatus:
             "current_step": self.current_step,
             "steps_completed": self.steps_completed,
             "run_in_background": self.run_in_background,
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_tokens,
             "last_activity": self.last_activity.isoformat() if self.last_activity else None,
             "recent_logs": list(self.recent_logs),
         }
@@ -120,6 +132,7 @@ class SubagentProgressEvent:
     steps_completed: int
     run_in_background: bool
     created_at: datetime
+    total_tokens: int = 0
     last_activity: datetime | None = None
 
 
@@ -298,12 +311,12 @@ class SubagentTaskManager:
         )
 
     def get_run_status(self, task_id: str) -> str | None:
-        status = self._task_statuses.get(task_id)
-        if status is not None:
-            return json.dumps(status.to_dict(), ensure_ascii=False, indent=2)
         result = self._task_results.get(task_id)
         if result is not None:
             return json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
+        status = self._task_statuses.get(task_id)
+        if status is not None:
+            return json.dumps(status.to_dict(), ensure_ascii=False, indent=2)
         return None
 
     def list_all_runs(self) -> str:
@@ -350,6 +363,18 @@ class SubagentTaskManager:
             pass
         return f"Task '{task_id}' cancellation requested"
 
+    async def cancel_running_foreground_runs(self) -> list[str]:
+        """Cancel only live foreground delegated runs."""
+        running_foreground_ids = [
+            task_id
+            for task_id, status in self._task_statuses.items()
+            if status.status == "running" and not status.run_in_background
+        ]
+        results: list[str] = []
+        for task_id in running_foreground_ids:
+            results.append(await self.cancel_run(task_id))
+        return results
+
     async def shutdown(self, *, cancel_running: bool = True) -> None:
         """Best-effort shutdown for delegated subagent tasks."""
         if not cancel_running:
@@ -374,6 +399,9 @@ class SubagentTaskManager:
         tools_used: set[str] = set()
         final_response = ""
         first_event_seen = False
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_tokens = 0
 
         try:
             status.current_step = "Building child agent..."
@@ -409,6 +437,11 @@ class SubagentTaskManager:
                         type(event).__name__,
                     )
                 if isinstance(event, ToolCallEvent):
+                    (
+                        total_prompt_tokens,
+                        total_completion_tokens,
+                        total_tokens,
+                    ) = await self._sync_usage_snapshot(status, child_agent)
                     tool_calls.append({"tool": event.tool, "args": event.args, "timestamp": time.time()})
                     status.current_step = f"Calling {event.tool}..."
                     status.steps_completed += 1
@@ -440,6 +473,11 @@ class SubagentTaskManager:
                     if preview:
                         self._append_status_log(status, f"Text: {preview}")
                 elif isinstance(event, FinalResponseEvent):
+                    (
+                        total_prompt_tokens,
+                        total_completion_tokens,
+                        total_tokens,
+                    ) = await self._sync_usage_snapshot(status, child_agent)
                     final_response = event.content
                     preview = event.content.strip().replace("\n", " ")
                     if len(preview) > 120:
@@ -447,13 +485,14 @@ class SubagentTaskManager:
                     self._append_status_log(status, f"Final: {preview or '(empty)'}")
                     await self._emit_progress_event(status, force=True)
 
+            was_cancelled_by_user = final_response == "[Cancelled by user]"
             result = SubagentTaskResult(
                 task_id=task_id,
                 subagent_name=request.subagent_type or "fork",
                 prompt=request.prompt,
-                final_response=final_response,
+                final_response="" if was_cancelled_by_user else final_response,
                 execution_time_ms=(time.time() - started) * 1000,
-                status="completed",
+                status="cancelled" if was_cancelled_by_user else "completed",
                 description=request.description,
                 task_kind=self._resolve_task_kind(request),
                 subagent_type=request.subagent_type,
@@ -461,16 +500,22 @@ class SubagentTaskManager:
                 run_in_background=self._resolve_background(request),
                 tool_calls=tool_calls,
                 tools_used=sorted(tools_used),
+                total_prompt_tokens=total_prompt_tokens,
+                total_completion_tokens=total_completion_tokens,
+                total_tokens=total_tokens,
+                error="Task was cancelled" if was_cancelled_by_user else None,
+                created_at=status.created_at,
                 completed_at=datetime.now(),
             )
             self._task_results[task_id] = result
-            status.status = "completed"
-            status.current_step = "Completed"
+            status.status = "cancelled" if was_cancelled_by_user else "completed"
+            status.current_step = "Cancelled" if was_cancelled_by_user else "Completed"
             await self._emit_progress_event(status, force=True)
             logger.info(
-                "subagent run completed task_id=%s subagent=%s tool_calls=%s tools_used=%s duration_ms=%.1f",
+                "subagent run finished task_id=%s subagent=%s status=%s tool_calls=%s tools_used=%s duration_ms=%.1f",
                 task_id,
                 request.subagent_type or "fork",
+                result.status,
                 len(tool_calls),
                 sorted(tools_used),
                 result.execution_time_ms,
@@ -489,7 +534,11 @@ class SubagentTaskManager:
                 subagent_type=request.subagent_type,
                 model=request.model,
                 run_in_background=self._resolve_background(request),
+                total_prompt_tokens=status.total_prompt_tokens,
+                total_completion_tokens=status.total_completion_tokens,
+                total_tokens=status.total_tokens,
                 error="Task was cancelled",
+                created_at=status.created_at,
                 completed_at=datetime.now(),
             )
             self._task_results[task_id] = result
@@ -519,7 +568,11 @@ class SubagentTaskManager:
                 subagent_type=request.subagent_type,
                 model=request.model,
                 run_in_background=self._resolve_background(request),
+                total_prompt_tokens=status.total_prompt_tokens,
+                total_completion_tokens=status.total_completion_tokens,
+                total_tokens=status.total_tokens,
                 error=str(exc),
+                created_at=status.created_at,
                 completed_at=datetime.now(),
             )
             self._task_results[task_id] = result
@@ -577,9 +630,25 @@ class SubagentTaskManager:
                 current_step=status.current_step,
                 steps_completed=status.steps_completed,
                 run_in_background=status.run_in_background,
+                total_tokens=status.total_tokens,
                 created_at=status.created_at,
                 last_activity=status.last_activity,
             )
+        )
+
+    async def _sync_usage_snapshot(
+        self,
+        status: SubagentTaskStatus,
+        agent: Agent,
+    ) -> tuple[int, int, int]:
+        summary = await agent.get_usage()
+        status.total_prompt_tokens = int(summary.total_prompt_tokens)
+        status.total_completion_tokens = int(summary.total_completion_tokens)
+        status.total_tokens = int(summary.total_tokens)
+        return (
+            status.total_prompt_tokens,
+            status.total_completion_tokens,
+            status.total_tokens,
         )
 
     def _normalize_request(self, request: SubagentCallRequest) -> SubagentCallRequest:
