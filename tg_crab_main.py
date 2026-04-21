@@ -634,40 +634,6 @@ def create_agent(
     return agent, ctx, runtime
 
 
-def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
-    """Factory function to create subagent instances."""
-    from config.model_config import get_model_config
-
-    model, base_url, api_key = get_model_config(config.model)
-
-    llm = ChatOpenAI(
-        model=model, api_key=api_key, base_url=base_url, temperature=config.temperature
-    )
-
-    # 为子代理添加系统信息到系统提示词
-    system_info_text = _get_system_info()
-    system_prompt = (
-        f"{config.system_prompt}\n\n## System Information\n\n"
-        f"The current environment: {system_info_text}"
-    )
-
-    dependency_overrides = {get_sandbox_context: lambda: parent_ctx}
-    skill_runtime_service = getattr(parent_ctx, "skill_runtime_service", None)
-    if skill_runtime_service is not None:
-        dependency_overrides[get_skill_runtime_service] = lambda: skill_runtime_service
-
-    agent = Agent(
-        llm=llm,
-        tools=all_tools,
-        system_prompt=system_prompt,
-        agent_config=config,
-        dependency_overrides=dependency_overrides,
-        hooks=build_agent_hooks(),
-    )
-    agent.dependency_overrides[get_current_agent] = lambda: agent
-    return agent
-
-
 async def main():
     """Main entry point."""
     _load_cli_runtime_env()

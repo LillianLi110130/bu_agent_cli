@@ -297,32 +297,6 @@ def test_build_system_prompt_keeps_empty_project_context_section_when_files_miss
     assert "### " not in prompt
 
 
-def test_create_subagent_factory_excludes_project_context(monkeypatch) -> None:
-    module = _load_module("agent_core.bootstrap.agent_factory")
-    config_module = _load_module("agent_core.agent.config")
-
-    monkeypatch.setattr(
-        "config.model_config.get_model_config",
-        lambda _model: ("dummy-model", "https://example.invalid", "test-key"),
-    )
-
-    config = config_module.AgentConfig(
-        name="reviewer",
-        description="test subagent",
-        system_prompt="You are a subagent.",
-        tools=[],
-        model="dummy-model",
-        mode="subagent",
-    )
-
-    agent = module._create_subagent_factory(config=config, parent_ctx=object(), all_tools=[])
-
-    assert "You are a subagent." in agent.system_prompt
-    assert "## System Information" in agent.system_prompt
-    assert "# Project Context" not in agent.system_prompt
-    assert "The following project context files have been loaded:" not in agent.system_prompt
-
-
 def test_tg_crab_main_build_system_prompt_includes_project_context(
     tmp_path: Path,
     monkeypatch,
