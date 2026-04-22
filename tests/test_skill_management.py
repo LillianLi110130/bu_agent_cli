@@ -22,6 +22,10 @@ from agent_core.skill.review import (
 )
 from agent_core.skill.runtime_service import SkillRuntimeService
 from cli.at_commands import AtCommandRegistry
+from cli.app import (
+    _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY,
+    _summarize_unclassified_skill_review,
+)
 from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
 from tools.skills import skill_manage
 
@@ -366,3 +370,17 @@ def test_skill_review_hook_reports_unclassified_no_change() -> None:
     hook._handle_background_result(CompletedTask())  # type: ignore[arg-type]  # noqa: SLF001
 
     assert captured == ["No reusable workflow was found."]
+
+
+def test_unclassified_skill_review_summary_keeps_head_and_tail() -> None:
+    head = "A" * 200
+    middle = "B" * 50
+    tail = "C" * 200
+
+    summary = _summarize_unclassified_skill_review(head + middle + tail)
+
+    assert summary == f"{head}\n...\n{tail}"
+
+
+def test_unclassified_skill_review_summary_uses_empty_fallback() -> None:
+    assert _summarize_unclassified_skill_review("   \n") == _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY

@@ -113,6 +113,18 @@ logger = logging.getLogger("cli.app")
 _REMOTE_RESET_STARTUP_PROMPT_PATH = (
     application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
 )
+_UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY = (
+    "review agent 没有产生变更，也没有返回标准 Nothing to save."
+)
+
+
+def _summarize_unclassified_skill_review(final_response: str) -> str:
+    summary = final_response.strip()
+    if not summary:
+        return _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY
+    if len(summary) <= 400:
+        return summary
+    return f"{summary[:200]}\n...\n{summary[-200:]}"
 
 
 @dataclass
@@ -524,9 +536,7 @@ class TGAgentCLI:
         )
 
     def _on_skill_review_unclassified_no_change(self, final_response: str) -> None:
-        summary = final_response.strip()[:240]
-        if not summary:
-            summary = "review agent 没有产生变更，也没有返回标准 Nothing to save."
+        summary = _summarize_unclassified_skill_review(final_response)
         self._append_skill_review_history(
             status="no_change_unclassified",
             summary=summary,
