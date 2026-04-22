@@ -63,6 +63,7 @@ class AgentCallRunner:
             dependency_overrides=dict(parent_agent.dependency_overrides or {}),
             agent_config=config,
             hooks=list(parent_agent.hooks),
+            runtime_role="subagent",
         )
         return child, request.prompt
 
@@ -82,6 +83,7 @@ class AgentCallRunner:
             compaction=parent_agent.compaction,
             dependency_overrides=dict(parent_agent.dependency_overrides or {}),
             hooks=list(parent_agent.hooks),
+            runtime_role="subagent",
             is_fork_child=True,
         )
         child.load_history(self._build_fork_messages(parent_agent))

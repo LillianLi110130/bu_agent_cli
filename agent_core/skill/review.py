@@ -86,7 +86,7 @@ class SkillReviewRunner:
             system_prompt=main_agent.system_prompt,
             max_iterations=self.max_iterations,
             dependency_overrides={get_skill_runtime_service: lambda: self.service},
-            mode="skill_review",
+            runtime_role="skill_review",
             hooks=[],
         )
         review_agent.load_history(list(messages_snapshot))
@@ -211,7 +211,7 @@ class SkillReviewHook(BaseAgentHook):
         )
 
     def _should_trigger(self, event: RunFinished, agent: Agent) -> bool:
-        if getattr(agent, "mode", "primary") != "primary":
+        if getattr(agent, "runtime_role", "primary") != "primary":
             return False
         if "skill_manage" not in getattr(agent, "_tool_map", {}):
             return False

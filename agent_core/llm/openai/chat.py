@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -5,8 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 
 import httpx
-
-logger = logging.getLogger("agent_core.llm.openai")
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
@@ -14,13 +13,14 @@ from openai.types.shared.chat_model import ChatModel
 from openai.types.shared.function_definition import FunctionDefinition
 from openai.types.shared_params.reasoning_effort import ReasoningEffort
 
-
-from config.model_config import get_model_limits
 from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition
 from agent_core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from agent_core.llm.messages import AssistantMessage, BaseMessage, Function, ToolCall, ToolMessage
 from agent_core.llm.openai.serializer import OpenAIMessageSerializer
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
+from config.model_config import get_model_limits
+
+logger = logging.getLogger("agent_core.llm.openai")
 
 
 @dataclass
@@ -181,32 +181,35 @@ class ChatOpenAI(BaseChatModel):
     def name(self) -> str:
         return str(self.model)
 
+    def _build_usage(self, raw_usage: Any) -> ChatInvokeUsage | None:
+        if raw_usage is None:
+            return None
+
+        completion_tokens = raw_usage.completion_tokens
+        completion_token_details = getattr(raw_usage, "completion_tokens_details", None)
+        if completion_token_details is not None:
+            reasoning_tokens = getattr(completion_token_details, "reasoning_tokens", None)
+            if reasoning_tokens is not None:
+                completion_tokens += reasoning_tokens
+
+        prompt_tokens_details = getattr(raw_usage, "prompt_tokens_details", None)
+        prompt_cached_tokens = (
+            getattr(prompt_tokens_details, "cached_tokens", None)
+            if prompt_tokens_details is not None
+            else None
+        )
+
+        return ChatInvokeUsage(
+            prompt_tokens=raw_usage.prompt_tokens,
+            prompt_cached_tokens=prompt_cached_tokens,
+            prompt_cache_creation_tokens=None,
+            prompt_image_tokens=None,
+            completion_tokens=completion_tokens,
+            total_tokens=raw_usage.total_tokens,
+        )
+
     def _get_usage(self, response: ChatCompletion) -> ChatInvokeUsage | None:
-        if response.usage is not None:
-            completion_tokens = response.usage.completion_tokens
-            completion_token_details = response.usage.completion_tokens_details
-            if completion_token_details is not None:
-                reasoning_tokens = completion_token_details.reasoning_tokens
-                if reasoning_tokens is not None:
-                    completion_tokens += reasoning_tokens
-
-            usage = ChatInvokeUsage(
-                prompt_tokens=response.usage.prompt_tokens,
-                prompt_cached_tokens=(
-                    response.usage.prompt_tokens_details.cached_tokens
-                    if response.usage.prompt_tokens_details is not None
-                    else None
-                ),
-                prompt_cache_creation_tokens=None,
-                prompt_image_tokens=None,
-                # Completion
-                completion_tokens=completion_tokens,
-                total_tokens=response.usage.total_tokens,
-            )
-        else:
-            usage = None
-
-        return usage
+        return self._build_usage(response.usage)
 
     def _serialize_tools(self, tools: list[ToolDefinition]) -> list[ChatCompletionToolParam]:
         """Convert ToolDefinitions to OpenAI's tool format."""
@@ -648,6 +651,7 @@ class ChatOpenAI(BaseChatModel):
                     model_params["tool_choice"] = openai_tool_choice
 
             # 流式调用
+            model_params["stream_options"] = {"include_usage": True}
             stream = await self.get_client().chat.completions.create(
                 model=self.model,
                 messages=openai_messages,
@@ -661,9 +665,15 @@ class ChatOpenAI(BaseChatModel):
             tool_call_aliases: dict[tuple[str, str | int], str] = {}
             anonymous_tool_call_counter = 0
             tool_call_update_order: list[str] = []
+            last_usage: ChatInvokeUsage | None = None
+            usage_emitted = False
 
             # 遍历流式响应
             async for chunk in stream:
+                usage = self._build_usage(getattr(chunk, "usage", None))
+                if usage is not None:
+                    last_usage = usage
+
                 if not chunk.choices:
                     continue
 
@@ -741,31 +751,6 @@ class ChatOpenAI(BaseChatModel):
                             tool_call_update_order.remove(canonical_key)
                         tool_call_update_order.append(canonical_key)
 
-                # 处理 usage（只在最后）
-                usage = None
-                if chunk.usage:
-                    completion_tokens = chunk.usage.completion_tokens
-                    completion_token_details = chunk.usage.completion_tokens_details
-                    if completion_token_details:
-                        reasoning_tokens = completion_token_details.reasoning_tokens
-                        if reasoning_tokens:
-                            completion_tokens += reasoning_tokens
-
-                    from agent_core.llm.views import ChatInvokeUsage
-
-                    usage = ChatInvokeUsage(
-                        prompt_tokens=chunk.usage.prompt_tokens,
-                        prompt_cached_tokens=(
-                            chunk.usage.prompt_tokens_details.cached_tokens
-                            if chunk.usage.prompt_tokens_details
-                            else None
-                        ),
-                        prompt_cache_creation_tokens=None,
-                        prompt_image_tokens=None,
-                        completion_tokens=completion_tokens,
-                        total_tokens=chunk.usage.total_tokens,
-                    )
-
                 # 在中间 chunk 中，只返回 delta 和空的 tool_calls
                 # 完整的 tool_calls 只在最后一个 chunk 返回
                 yield ChatInvokeCompletionChunk(
@@ -775,6 +760,8 @@ class ChatOpenAI(BaseChatModel):
                     usage=usage,
                     stop_reason=choice.finish_reason,
                 )
+                if usage is not None:
+                    usage_emitted = True
 
             # 流结束后，构建完整的工具调用列表
             complete_tool_calls: list[ToolCall] = []
@@ -795,12 +782,21 @@ class ChatOpenAI(BaseChatModel):
 
             # 最后再 yield 一次，这次包含完整的工具调用信息
             # 如果流结束时没有工具调用，这个 chunk 会被 agent 层忽略
+            final_usage = last_usage if not usage_emitted else None
             if complete_tool_calls:
                 yield ChatInvokeCompletionChunk(
                     delta="",
                     tool_calls=complete_tool_calls,
                     thinking=None,
-                    usage=None,
+                    usage=final_usage,
+                    stop_reason=None,
+                )
+            elif final_usage is not None:
+                yield ChatInvokeCompletionChunk(
+                    delta="",
+                    tool_calls=[],
+                    thinking=None,
+                    usage=final_usage,
                     stop_reason=None,
                 )
 

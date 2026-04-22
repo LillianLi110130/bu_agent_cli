@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_core.agent import Agent, SubagentCompletionHook
+from agent_core.agent.events import FinalResponseEvent
 from agent_core.agent.config import parse_agent_config
 from agent_core.agent.registry import AgentRegistry
 from agent_core.runtime import AgentCallRunner
@@ -184,6 +185,7 @@ def test_fork_execution_builds_child_directive_and_disables_delegate() -> None:
     )
 
     assert child.is_fork_child is True
+    assert child.runtime_role == "subagent"
     assert [tool.name for tool in child.tools] == ["read", "bash"]
     assert "You are a forked child agent" in initial_message
     assert "Do not call `delegate`" in initial_message
@@ -237,6 +239,7 @@ Review carefully.
     )
 
     assert child.llm is parent.llm
+    assert child.runtime_role == "subagent"
     assert initial_message == "Review the auth patch"
 
 
@@ -342,6 +345,49 @@ class _CancellingTaskManager(SubagentTaskManager):
     async def cancel_run(self, task_id: str) -> str:
         self.cancelled_task_ids.append(task_id)
         return await super().cancel_run(task_id)
+
+
+def test_cancelled_final_response_is_recorded_as_cancelled() -> None:
+    manager = SubagentTaskManager(
+        registry=AgentRegistry(agent_sources=[]),
+        all_tools=[],
+        context=SimpleNamespace(subagent_events=None),
+        skill_registry=None,
+    )
+    parent = Agent(llm=_FakeLLM(), tools=[], system_prompt="parent system")
+
+    class _CancelledChild:
+        def __init__(self) -> None:
+            self.llm = SimpleNamespace(model="fake-model")
+
+        async def query_stream(self, initial_message, cancel_event=None):
+            del initial_message, cancel_event
+            yield FinalResponseEvent(content="[Cancelled by user]")
+
+        async def get_usage(self):
+            return SimpleNamespace(
+                total_prompt_tokens=0,
+                total_completion_tokens=0,
+                total_tokens=0,
+            )
+
+    manager._runner = SimpleNamespace(
+        build_execution=lambda parent_agent, request: (_CancelledChild(), request.prompt)
+    )
+
+    result = asyncio.run(
+        manager.run_foreground(
+            parent_agent=parent,
+            request=SubagentCallRequest(
+                prompt="Review auth patch",
+                description="Review auth patch",
+            ),
+        )
+    )
+
+    assert result.status == "cancelled"
+    assert result.final_response == ""
+    assert result.error == "Task was cancelled"
 
 
 def test_run_foreground_cancels_child_when_parent_is_cancelled() -> None:
