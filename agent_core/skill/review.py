@@ -86,7 +86,6 @@ class SkillReviewRunner:
             system_prompt=main_agent.system_prompt,
             max_iterations=self.max_iterations,
             dependency_overrides={get_skill_runtime_service: lambda: self.service},
-            mode="skill_review",
             hooks=[],
         )
         review_agent.load_history(list(messages_snapshot))
