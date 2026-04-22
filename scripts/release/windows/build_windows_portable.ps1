@@ -556,7 +556,8 @@ Workspace behavior:
 - After deploy.bat, `crab` works in cmd, PowerShell, and Git Bash.
 
 Notes:
-- deploy.bat creates %USERPROFILE%\.tg_agent\.venv using the bundled Python runtime.
+- deploy.bat copies the bundled Python runtime into %USERPROFILE%\.tg_agent\python-runtime and creates
+  %USERPROFILE%\.tg_agent\.venv from that stable runtime.
 - crab and dependencies are installed offline from wheelhouse\.
 - deploy.bat also installs a `crab` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
 - deploy.bat removes stale crab/tg-agent command shim files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
@@ -588,8 +589,11 @@ $AppDir = Join-Path $BundleRoot "app"
 $LauncherPath = Join-Path $BundleRoot "crab-launcher.bat"
 $UserProfileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath("UserProfile") }
 $InstallRoot = Join-Path $UserProfileDir ".tg_agent"
+$InstalledRuntimeDir = Join-Path $InstallRoot "python-runtime"
+$InstalledRuntimePython = Join-Path $InstalledRuntimeDir "python.exe"
 $VenvDir = Join-Path $InstallRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+$PyvenvConfig = Join-Path $VenvDir "pyvenv.cfg"
 $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
@@ -605,6 +609,47 @@ $EnvFile = Join-Path $InstallRoot ".env"
 $WorkerConfig = Join-Path $InstallRoot "tg_crab_worker.json"
 $PackagedEnvFile = Join-Path $AppDir ".env"
 $PackagedWorkerConfig = Join-Path $AppDir "tg_crab_worker.json"
+
+function Install-BundledRuntime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceRuntimeDir,
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRootDir,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetRuntimeDir
+    )
+
+    if (Test-Path -LiteralPath $TargetRuntimeDir) {
+        Remove-Item -LiteralPath $TargetRuntimeDir -Recurse -Force
+    }
+
+    Copy-Item -LiteralPath $SourceRuntimeDir -Destination $InstallRootDir -Recurse -Force
+}
+
+function Test-VenvUsesRuntime {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PyvenvConfigPath,
+        [Parameter(Mandatory = $true)]
+        [string]$ExpectedRuntimeDir
+    )
+
+    if (-not (Test-Path -LiteralPath $PyvenvConfigPath)) {
+        return $false
+    }
+
+    $homeLine = Get-Content -LiteralPath $PyvenvConfigPath -ErrorAction SilentlyContinue |
+        Where-Object { $_ -match '^\s*home\s*=' } |
+        Select-Object -First 1
+    if (-not $homeLine) {
+        return $false
+    }
+
+    $configuredHome = [System.IO.Path]::GetFullPath(($homeLine -replace '^\s*home\s*=\s*', '').Trim())
+    $expectedHome = [System.IO.Path]::GetFullPath($ExpectedRuntimeDir)
+    return $configuredHome.TrimEnd('\') -ieq $expectedHome.TrimEnd('\')
+}
 
 function Add-UserPathEntry {
     param(
@@ -778,13 +823,24 @@ if (-not $projectWheel) {
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
+Install-BundledRuntime -SourceRuntimeDir $RuntimeDir -InstallRootDir $InstallRoot -TargetRuntimeDir $InstalledRuntimeDir
+
+if (-not (Test-Path -LiteralPath $InstalledRuntimePython)) {
+    throw "Installed Python runtime not found after copy: $InstalledRuntimePython"
+}
 
 if ($ForceRecreateVenv -and (Test-Path -LiteralPath $VenvDir)) {
     Remove-Item -LiteralPath $VenvDir -Recurse -Force
 }
 
+$venvNeedsRebuild = (-not (Test-Path -LiteralPath $VenvPython)) -or
+    (-not (Test-VenvUsesRuntime -PyvenvConfigPath $PyvenvConfig -ExpectedRuntimeDir $InstalledRuntimeDir))
+if ($venvNeedsRebuild -and (Test-Path -LiteralPath $VenvDir)) {
+    Remove-Item -LiteralPath $VenvDir -Recurse -Force
+}
+
 if (-not (Test-Path -LiteralPath $VenvPython)) {
-    & $RuntimePython -m venv $VenvDir
+    & $InstalledRuntimePython -m venv $VenvDir
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
         throw "Failed to create virtual environment: $VenvDir"
     }
@@ -911,6 +967,7 @@ if (-not $SkipDesktopShortcut) {
 }
 
 Write-Host "[portable] install root: $InstallRoot"
+Write-Host "[portable] installed runtime: $InstalledRuntimeDir"
 Write-Host "[portable] venv ready: $VenvDir"
 Write-Host "[portable] command shim: $CommandShim"
 Write-Host "[portable] bash shim: $BashCommandShim"
