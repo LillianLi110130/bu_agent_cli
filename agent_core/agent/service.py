@@ -61,7 +61,7 @@ from collections.abc import AsyncIterator
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from agent_core.agent.compaction import CompactionConfig
 from agent_core.agent.context import ContextManager
@@ -266,6 +266,8 @@ class Agent:
     """HTTP status codes that trigger retries (matches browser-use)."""
     agent_config: AgentConfig | None = None
     """Agent configuration with tool permissions and other metadata."""
+    runtime_role: Literal["primary", "subagent", "skill_review"] = "primary"
+    """Execution role used by runtime hooks to distinguish primary and internal agents."""
     is_fork_child: bool = False
     """Whether this runtime instance is a forked child agent."""
     human_in_loop_config: HumanInLoopConfig = field(default_factory=HumanInLoopConfig, repr=False)

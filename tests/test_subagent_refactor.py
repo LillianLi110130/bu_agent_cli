@@ -185,6 +185,7 @@ def test_fork_execution_builds_child_directive_and_disables_delegate() -> None:
     )
 
     assert child.is_fork_child is True
+    assert child.runtime_role == "subagent"
     assert [tool.name for tool in child.tools] == ["read", "bash"]
     assert "You are a forked child agent" in initial_message
     assert "Do not call `delegate`" in initial_message
@@ -238,6 +239,7 @@ Review carefully.
     )
 
     assert child.llm is parent.llm
+    assert child.runtime_role == "subagent"
     assert initial_message == "Review the auth patch"
 
 
