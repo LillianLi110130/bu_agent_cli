@@ -1,7 +1,7 @@
 """File operation tools: read, write, edit."""
 
 import difflib
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
 from agent_core.tools import Depends, tool
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
@@ -164,13 +164,25 @@ async def read(
         return f"Error reading file: {e}"
 
 
-@tool("Write content to a file")
+@tool(
+    "Write content to a file. Supports overwrite, append, and append_line modes; "
+    "use append_line when adding lines without rewriting the whole file."
+)
 async def write(
     file_path: str,
     content: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
+    mode: Literal["overwrite", "append", "append_line"] = "overwrite",
 ) -> str:
-    """Write content to a file, creating directories if needed."""
+    """Write content to a file, creating directories if needed.
+
+    Args:
+        file_path: Path to the file to write.
+        content: Content to write.
+        mode: "overwrite" replaces the whole file. "append" appends content exactly to
+            the end. "append_line" appends content as complete line content, ensuring
+            it starts on a new line when needed and ends with a newline.
+    """
     try:
         path = ctx.resolve_path(file_path)
     except Exception as e:
@@ -178,8 +190,28 @@ async def write(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return f"Wrote {len(content)} bytes to {file_path}"
+        if mode == "append":
+            with path.open("a", encoding="utf-8") as file:
+                file.write(content)
+            return f"Appended {len(content)} chars to {file_path}"
+        if mode == "append_line":
+            needs_leading_newline = False
+            if path.exists() and path.stat().st_size > 0:
+                with path.open("rb") as file:
+                    file.seek(-1, 2)
+                    needs_leading_newline = file.read(1) != b"\n"
+
+            with path.open("a", encoding="utf-8") as file:
+                if needs_leading_newline:
+                    file.write("\n")
+                file.write(content)
+                if not content.endswith(("\n", "\r")):
+                    file.write("\n")
+            return f"Appended {len(content)} chars as lines to {file_path}"
+        if mode == "overwrite":
+            path.write_text(content, encoding="utf-8")
+            return f"Wrote {len(content)} chars to {file_path}"
+        return f"Error writing file: unsupported mode {mode!r}"
     except Exception as e:
         return f"Error writing file: {e}"
 
