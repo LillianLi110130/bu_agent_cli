@@ -88,6 +88,7 @@ from cli.image_input import (
     ImageInputError,
     is_image_command,
     parse_image_command,
+    parse_remote_image_message,
 )
 from cli.init_agent import build_init_agent, build_init_user_prompt, validate_init_output
 from cli.im_bridge import BridgeRequest, FileBridgeStore
@@ -1869,6 +1870,7 @@ class TGAgentCLI:
         user_input: str,
         *,
         source: str = "local",
+        parsed_remote_image=None,
     ) -> _ExecutionOutcome:
         """Execute one normalized line of user input."""
         user_input = user_input.strip()
@@ -1892,6 +1894,10 @@ class TGAgentCLI:
                 self._console.print(f"[dim]{IMAGE_USAGE}[/dim]")
                 return _ExecutionOutcome()
             final_content = await self._run_agent(parsed.content_parts, has_image=True)
+            return _ExecutionOutcome(final_content=final_content or "")
+
+        if parsed_remote_image is not None:
+            final_content = await self._run_agent(parsed_remote_image.content_parts, has_image=True)
             return _ExecutionOutcome(final_content=final_content or "")
 
         # Handle @ commands (skill invocation)
@@ -1945,8 +1951,29 @@ class TGAgentCLI:
             if request is None:
                 return True
 
+            parsed_remote_image = None
             if request.source == "remote":
-                preview = request.content.strip().replace("\n", " ")
+                try:
+                    parsed_remote_image = parse_remote_image_message(request.content)
+                except ImageInputError as exc:
+                    self._bridge_store.fail_request(
+                        request,
+                        final_content=f"执行失败：{exc}",
+                        error_code="REMOTE_IMAGE_MESSAGE_INVALID",
+                        error_message=str(exc),
+                    )
+                    self._console.print(
+                        f"\n[bold red]远程图片消息无效[/bold red] "
+                        f"[dim](seq={request.seq}, request_id={request.request_id})[/dim]"
+                    )
+                    self._console.print(f"[dim]{exc}[/dim]")
+                    continue
+
+                if parsed_remote_image is not None:
+                    request.input_kind = "image"
+                    preview = parsed_remote_image.user_text.replace("\n", " ")
+                else:
+                    preview = request.content.strip().replace("\n", " ")
                 if len(preview) > 80:
                     preview = preview[:77] + "..."
                 self._console.print(
@@ -1955,9 +1982,17 @@ class TGAgentCLI:
                 )
                 if preview:
                     self._console.print(f"[dim]{preview}[/dim]")
+                if parsed_remote_image is not None and parsed_remote_image.invalid_images:
+                    self._console.print(
+                        f"[yellow]已跳过 {len(parsed_remote_image.invalid_images)} 张无效图片，继续处理其余图片。[/yellow]"
+                    )
 
             try:
-                outcome = await self._execute_input_text(request.content, source=request.source)
+                outcome = await self._execute_input_text(
+                    request.content,
+                    source=request.source,
+                    parsed_remote_image=parsed_remote_image,
+                )
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
