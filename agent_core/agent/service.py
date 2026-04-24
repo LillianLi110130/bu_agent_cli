@@ -1566,6 +1566,9 @@ Keep the summary brief but informative."""
         _prefix_messages, compactable_messages = self._split_persistent_instruction_prefix()
         if not compactable_messages:
             return False
+        recent_messages = self._pop_trailing_image_messages(compactable_messages)
+        if not compactable_messages:
+            return False
 
         try:
             result = await self._context.compact_messages(compactable_messages, self.llm)
@@ -1573,10 +1576,25 @@ Keep the summary brief but informative."""
             logger.warning(f"Failed to compact messages for recovery: {e}")
             return False
 
-        self._context.apply_compaction_result(result, recent_messages=[])
+        self._context.apply_compaction_result(result, recent_messages=recent_messages)
         if self._context._budget_engine is not None:
             self._context._budget_engine.note_trigger("overflow_recovery")
         return True
+
+    @staticmethod
+    def _message_has_image_content(message: BaseMessage) -> bool:
+        if not isinstance(message, UserMessage):
+            return False
+        if not isinstance(message.content, list):
+            return False
+        return any(getattr(part, "type", None) == "image_url" for part in message.content)
+
+    @classmethod
+    def _pop_trailing_image_messages(cls, messages: list[BaseMessage]) -> list[BaseMessage]:
+        recent_messages: list[BaseMessage] = []
+        while messages and cls._message_has_image_content(messages[-1]):
+            recent_messages.insert(0, messages.pop())
+        return recent_messages
 
     async def preflight_model_switch(
         self,
