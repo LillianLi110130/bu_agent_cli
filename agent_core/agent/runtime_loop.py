@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 from agent_core.agent.events import (
     AgentEvent,
     FinalResponseEvent,
+    HiddenUserMessageEvent,
     StepCompleteEvent,
     StepStartEvent,
     TextEvent,
@@ -35,6 +36,7 @@ from agent_core.agent.runtime_events import (
 )
 from agent_core.agent.runtime_state import AgentRunState
 from agent_core.agent.tool_args import parse_tool_arguments_for_display
+from agent_core.agent.tool_call_validation import build_invalid_tool_call_recovery_prompt
 from agent_core.llm.messages import AssistantMessage, SystemMessage, ToolMessage, UserMessage
 
 if TYPE_CHECKING:
@@ -218,6 +220,25 @@ class AgentRuntimeLoop:
         event: LLMResponseReceived,
     ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
         response = event.response
+        ui_events = self._build_llm_response_ui_events(response)
+
+        if response.tool_calls:
+            validation_errors = self.agent._validate_tool_calls_for_recovery(
+                response.tool_calls
+            )
+            if validation_errors:
+                self.agent._remember_tool_call_recovery_requirements(validation_errors)
+                if response.content is not None:
+                    self.agent._context.add_message(
+                        AssistantMessage(content=response.content, tool_calls=None)
+                    )
+                recovery_prompt = build_invalid_tool_call_recovery_prompt(validation_errors)
+                self.agent._context.add_message(UserMessage(content=recovery_prompt))
+                return [IterationStarted(iteration=event.iteration + 1)], [
+                    *ui_events,
+                    HiddenUserMessageEvent(content=recovery_prompt),
+                ]
+
         self.agent._context.add_message(
             AssistantMessage(
                 content=response.content,
@@ -225,7 +246,6 @@ class AgentRuntimeLoop:
             )
         )
 
-        ui_events = self._build_llm_response_ui_events(response)
         if not response.has_tool_calls:
             return [
                 ContextMaintenanceRequested(response=response, iteration=event.iteration),
@@ -278,6 +298,8 @@ class AgentRuntimeLoop:
         event: ToolResultReceived,
     ) -> tuple[list[RuntimeEvent], list[AgentEvent]]:
         self.agent._context.add_message(event.tool_result)
+        if not event.tool_result.is_error:
+            self.agent._record_successful_recovery_tool_call(event.tool_call)
         ui_events = [
             ToolResultEvent(
                 tool=event.tool_call.function.name,
