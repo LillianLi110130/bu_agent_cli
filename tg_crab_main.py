@@ -19,6 +19,7 @@ Environment Variables:
 import argparse
 import asyncio
 import inspect
+import logging
 import os
 import socket
 import sys
@@ -318,6 +319,38 @@ def _load_cli_runtime_env() -> None:
     ensure_cli_runtime_state()
     load_runtime_env()
 
+
+def _configure_llm_debug_logging() -> None:
+    """Enable OpenAI tool-call debug logs when explicitly requested."""
+    if not (os.getenv("BU_AGENT_SDK_LLM_DEBUG") or os.getenv("bu_agent_sdk_LLM_DEBUG")):
+        return
+
+    log_path_raw = os.getenv("BU_AGENT_SDK_LLM_DEBUG_FILE")
+    log_path = (
+        Path(log_path_raw).expanduser()
+        if log_path_raw
+        else ensure_cli_runtime_state() / "logs" / "llm-debug.log"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    debug_logger = logging.getLogger("agent_core.llm.openai")
+    debug_logger.setLevel(logging.INFO)
+    debug_logger.propagate = False
+
+    for handler in list(debug_logger.handlers):
+        if getattr(handler, "_bu_agent_llm_debug_handler", False):
+            debug_logger.removeHandler(handler)
+            handler.close()
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+    )
+    file_handler._bu_agent_llm_debug_handler = True  # type: ignore[attr-defined]
+    debug_logger.addHandler(file_handler)
 
 def _should_run_internal_worker(argv: list[str] | None = None) -> bool:
     """Return whether the current process should dispatch to the worker entrypoint."""
@@ -637,6 +670,7 @@ def create_agent(
 async def main():
     """Main entry point."""
     _load_cli_runtime_env()
+    _configure_llm_debug_logging()
     args = parse_args()
     await _authenticate_worker_startup(args)
 

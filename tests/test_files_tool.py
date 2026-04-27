@@ -82,3 +82,13 @@ def test_write_tool_schema_exposes_write_mode():
     assert mode_schema["enum"] == ["overwrite", "append", "append_line"]
     assert "replaces the whole file" in mode_schema["description"]
     assert "starts on a new line" in mode_schema["description"]
+
+
+def test_write_tool_schema_describes_chunked_long_writes():
+    content_schema = write.definition.parameters["properties"]["content"]
+
+    assert "write in chunks" in write.definition.description
+    assert "around 4000 characters" in write.definition.description
+    assert "truncated tool arguments" in write.definition.description
+    assert "one chunk at a time" in content_schema["description"]
+    assert "around 4000 characters" in content_schema["description"]
