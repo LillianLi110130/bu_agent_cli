@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -66,6 +67,47 @@ def test_sanitize_messages_keeps_complete_tool_transactions():
 
     assert [message.role for message in sanitized] == ["user", "assistant", "tool", "user"]
     assert sanitized[1].tool_calls is not None
+
+
+def test_tool_call_debug_summary_reports_invalid_json_without_full_content():
+    long_content = "x" * 1200
+    arguments = f'{{"file_path":"/tmp/doc.md","content":"{long_content}"'
+
+    summary = ChatOpenAI._summarize_tool_arguments(arguments)
+
+    assert summary["args_len"] == len(arguments)
+    assert summary["json_ok"] is False
+    assert "Expecting" in summary["json_error"] or "Unterminated" in summary["json_error"]
+    assert summary["has_content_key_text"] is True
+    assert summary["parsed_keys"] is None
+    assert len(summary["args_head"]) == 500
+    assert len(summary["args_tail"]) == 500
+
+
+def test_curl_debug_log_redacts_api_key_and_truncates_body(monkeypatch, caplog):
+    monkeypatch.setenv("BU_AGENT_SDK_LLM_DEBUG", "1")
+    caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
+    llm = ChatOpenAI(
+        model="debug-model",
+        api_key="real-secret",
+        base_url="https://example.test/v4",
+        default_headers={"X-Api-Key": "another-secret", "X-Trace": "trace-id"},
+    )
+
+    llm._log_curl_debug(
+        openai_messages=[{"role": "user", "content": "x" * 2100}],
+        model_params={"temperature": 0.2},
+        stream=True,
+    )
+
+    log_text = caplog.text
+    assert "[LLM_DEBUG] outbound_curl" in log_text
+    assert "https://example.test/v4/chat/completions" in log_text
+    assert "Bearer ***REDACTED***" in log_text
+    assert "X-Api-Key: ***REDACTED***" in log_text
+    assert "real-secret" not in log_text
+    assert "another-secret" not in log_text
+    assert "<truncated 100 chars>" in log_text
 
 
 @pytest.mark.asyncio

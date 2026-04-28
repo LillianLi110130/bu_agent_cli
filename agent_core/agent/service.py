@@ -76,6 +76,13 @@ from agent_core.agent.tool_args import (
     parse_tool_arguments_for_display,
     parse_tool_arguments_for_execution,
 )
+from agent_core.agent.tool_call_validation import (
+    WriteRecoveryState,
+    build_invalid_tool_call_recovery_prompt,
+    record_successful_write_recovery_chunk,
+    remember_write_recovery_requirements,
+    validate_tool_calls,
+)
 
 logger = logging.getLogger("agent_core.agent")
 from agent_core.agent.events import (
@@ -286,6 +293,11 @@ class Agent:
     _hook_manager: HookManager = field(default_factory=HookManager, repr=False)
     _cancel_event: asyncio.Event | None = field(default=None, init=False, repr=False)
     """Cancellation event for interrupting long-running operations."""
+    _write_recovery_state: WriteRecoveryState = field(
+        default_factory=WriteRecoveryState.empty,
+        init=False,
+        repr=False,
+    )
     task_complete_exc_type: type[TaskComplete] = field(default=TaskComplete, init=False, repr=False)
 
     def __post_init__(self):
@@ -335,6 +347,19 @@ class Agent:
         self.llm = llm
         if self._context._compaction_service is not None:
             self._context._compaction_service.llm = llm
+
+    def _validate_tool_calls_for_recovery(self, tool_calls: list[ToolCall]):
+        return validate_tool_calls(
+            tool_calls,
+            self._tool_map,
+            write_recovery_state=self._write_recovery_state,
+        )
+
+    def _remember_tool_call_recovery_requirements(self, validation_errors) -> None:
+        remember_write_recovery_requirements(self._write_recovery_state, validation_errors)
+
+    def _record_successful_recovery_tool_call(self, tool_call: ToolCall) -> None:
+        record_successful_write_recovery_chunk(self._write_recovery_state, tool_call)
 
     def bind_session_runtime(self, runtime: "CLISessionRuntime") -> None:
         """Bind rollout-local filesystem stores used by CLI context engineering."""
@@ -1885,6 +1910,19 @@ Keep the summary brief but informative."""
                     usage=response_usage,
                 )
 
+            if tool_calls:
+                validation_errors = self._validate_tool_calls_for_recovery(tool_calls)
+                if validation_errors:
+                    self._remember_tool_call_recovery_requirements(validation_errors)
+                    if final_content is not None:
+                        self._context.add_message(
+                            AssistantMessage(content=final_content, tool_calls=None)
+                        )
+                    recovery_prompt = build_invalid_tool_call_recovery_prompt(validation_errors)
+                    self._context.add_message(UserMessage(content=recovery_prompt))
+                    yield HiddenUserMessageEvent(content=recovery_prompt)
+                    continue
+
             # Add assistant message to history
             assistant_msg = AssistantMessage(
                 content=final_content,
@@ -1938,6 +1976,8 @@ Keep the summary brief but informative."""
                 try:
                     tool_result = await self._execute_tool_call(tool_call)
                     self._context.add_message(tool_result)
+                    if not tool_result.is_error:
+                        self._record_successful_recovery_tool_call(tool_call)
 
                     screenshot_base64 = self._extract_screenshot(tool_result)
 
