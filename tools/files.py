@@ -148,7 +148,7 @@ async def read(
             return _build_artifact_header_hint(artifact_body_start_line)
 
         selected = lines[start:end]
-        numbered = [f"{start + i + 1:4d}  {line}" for i, line in enumerate(selected)]
+        numbered = [f"{start + i + 1:6d}|{line}" for i, line in enumerate(selected)]
 
         result = f"[Lines {start + 1}-{end} of {total}]\n" + "\n".join(numbered)
 
@@ -166,10 +166,11 @@ async def read(
 
 @tool(
     "Write content to a file. Supports overwrite, append, and append_line modes; "
-    "use append_line when adding lines without rewriting the whole file. "
-    "For long files or multi-section content, write in chunks: first overwrite, "
-    "then append or append_line. Keep each content chunk around 4000 characters "
-    "to avoid truncated tool arguments."
+    "use append_line when adding lines without rewriting the whole file. Prefer edit "
+    "for localized changes to existing files. Use overwrite for new files or intentional "
+    "full rewrites; for long full writes, write in chunks: first overwrite, then append "
+    "or append_line. Keep each content chunk around 5000 characters to avoid truncated "
+    "tool arguments."
 )
 async def write(
     file_path: str,
@@ -181,8 +182,8 @@ async def write(
 
     Args:
         file_path: Path to the file to write.
-        content: Content to write. For long files, pass only one chunk at a time,
-            preferably around 4000 characters.
+        content: Content to write. For long new files or intentional full rewrites,
+            pass only one chunk at a time, preferably around 5000 characters.
         mode: "overwrite" replaces the whole file. "append" appends content exactly to
             the end. "append_line" appends content as complete line content, ensuring
             it starts on a new line when needed and ends with a newline.
@@ -220,7 +221,10 @@ async def write(
         return f"Error writing file: {e}"
 
 
-@tool("Replace text in a file")
+@tool(
+    "Edit an existing file by replacing an exact text span. Prefer this for small or "
+    "localized changes to existing code files."
+)
 async def edit(
     file_path: str,
     old_string: str,
@@ -232,7 +236,8 @@ async def edit(
 
     Args:
         file_path: Path to the file to edit.
-        old_string: The exact text to find and replace.
+        old_string: The exact file text to find and replace. Do not include read output
+            line numbers, the leading "     1|" prefix, or the "[Lines ...]" header.
         new_string: The text to replace with.
         replace_all: If False, only replaces first occurrence and warns on duplicates.
                      If True, replaces all occurrences.

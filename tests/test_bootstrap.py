@@ -104,6 +104,9 @@ def test_system_prompt_guides_chunked_writes_and_read_before_overwrite() -> None
     assert "优先分段写入" in template
     assert "4000 字符左右" in template
     assert "write.content" in template
+    assert "默认优先使用 `edit`" in template
+    assert "不是用 `write mode=\"overwrite\"` 重写整个文件" in template
+    assert "创建新文件；用户明确要求整体重写" in template
     assert "先读取目标文件的相关内容" in template
     assert 'write mode="overwrite"' in template
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from tools.files import write
+from tools import ALL_TOOLS
+from tools.files import edit, read, write
 from tools.sandbox import SandboxContext
 
 
@@ -76,6 +77,19 @@ async def test_write_append_line_creates_missing_file_with_trailing_newline(tmp_
     assert target.read_text(encoding="utf-8") == "created\n"
 
 
+@pytest.mark.anyio
+async def test_read_uses_pipe_separated_line_numbers(tmp_path):
+    ctx = SandboxContext.create(tmp_path)
+    target = tmp_path / "code.py"
+    target.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+    result = await read.func("code.py", ctx=ctx)
+
+    assert "[Lines 1-2 of 2]" in result
+    assert "     1|def add(a, b):" in result
+    assert "     2|    return a + b" in result
+
+
 def test_write_tool_schema_exposes_write_mode():
     mode_schema = write.definition.parameters["properties"]["mode"]
 
@@ -87,8 +101,33 @@ def test_write_tool_schema_exposes_write_mode():
 def test_write_tool_schema_describes_chunked_long_writes():
     content_schema = write.definition.parameters["properties"]["content"]
 
+    assert "Prefer edit" in write.definition.description
+    assert "localized changes" in write.definition.description
+    assert "intentional full rewrites" in write.definition.description
     assert "write in chunks" in write.definition.description
     assert "around 4000 characters" in write.definition.description
     assert "truncated tool arguments" in write.definition.description
     assert "one chunk at a time" in content_schema["description"]
     assert "around 4000 characters" in content_schema["description"]
+    assert "intentional full rewrites" in content_schema["description"]
+
+
+def test_edit_tool_schema_guides_localized_code_changes():
+    assert "existing file" in edit.definition.description
+    assert "exact text span" in edit.definition.description
+    assert "localized changes" in edit.definition.description
+    assert "code files" in edit.definition.description
+
+
+def test_edit_tool_schema_warns_old_string_must_exclude_read_line_numbers():
+    old_string_schema = edit.definition.parameters["properties"]["old_string"]
+
+    assert "exact file text" in old_string_schema["description"]
+    assert "line numbers" in old_string_schema["description"]
+    assert '"[Lines ...]" header' in old_string_schema["description"]
+
+
+def test_file_tool_order_prefers_edit_before_write():
+    tool_names = [tool.name for tool in ALL_TOOLS]
+
+    assert tool_names.index("edit") < tool_names.index("write")

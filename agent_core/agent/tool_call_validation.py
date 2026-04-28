@@ -14,7 +14,7 @@ from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_
 from agent_core.llm.messages import ToolCall
 from agent_core.tools.decorator import Tool
 
-WRITE_RECOVERY_CHUNK_MAX_CHARS = 1000
+WRITE_RECOVERY_CHUNK_MAX_CHARS = 5000
 
 ToolCallValidationKind = Literal[
     "unknown_tool",
