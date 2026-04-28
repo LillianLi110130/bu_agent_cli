@@ -15,6 +15,9 @@ if TYPE_CHECKING:
     from agent_core.task.local_agent_task import SubagentCallRequest
 
 
+_DELEGATION_TOOL_NAMES = {"delegate", "delegate_parallel"}
+
+
 class AgentCallRunner:
     """Build and execute a concrete agent instance for one call request."""
 
@@ -57,7 +60,7 @@ class AgentCallRunner:
 
         child = Agent(
             llm=llm,
-            tools=list(self._all_tools),
+            tools=self._without_delegation_tools(self._all_tools),
             system_prompt=system_prompt,
             max_iterations=config.max_turns or parent_agent.max_iterations,
             dependency_overrides=dict(parent_agent.dependency_overrides or {}),
@@ -65,6 +68,7 @@ class AgentCallRunner:
             hooks=list(parent_agent.hooks),
             runtime_role="subagent",
         )
+        child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)
         return child, request.prompt
 
     def _build_fork_agent(
@@ -73,10 +77,9 @@ class AgentCallRunner:
         parent_agent: Agent,
         request: "SubagentCallRequest",
     ) -> tuple[Agent, str]:
-        fork_tools = [tool for tool in parent_agent.tools if tool.name != "delegate"]
         child = Agent(
             llm=parent_agent.llm,
-            tools=fork_tools,
+            tools=self._without_delegation_tools(parent_agent.tools),
             system_prompt=parent_agent.system_prompt,
             max_iterations=parent_agent.max_iterations,
             tool_choice=parent_agent.tool_choice,
@@ -86,8 +89,19 @@ class AgentCallRunner:
             runtime_role="subagent",
             is_fork_child=True,
         )
+        child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)
         child.load_history(self._build_fork_messages(parent_agent))
         return child, self._build_fork_child_message(request)
+
+    def _without_delegation_tools(self, tools: list[Any]) -> list[Any]:
+        return [tool for tool in tools if getattr(tool, "name", None) not in _DELEGATION_TOOL_NAMES]
+
+    def _bind_current_agent(self, overrides: dict | None, child: Agent) -> dict:
+        from tools.sandbox import get_current_agent
+
+        resolved = dict(overrides or {})
+        resolved[get_current_agent] = lambda: child
+        return resolved
 
     def _resolve_named_llm(
         self,
@@ -114,7 +128,7 @@ class AgentCallRunner:
             "Rules:",
             "1. You are not the primary agent.",
             "2. Execute the assigned task directly; do not ask the user follow-up questions unless you are blocked.",
-            "3. Do not call `delegate` and do not create additional forked children.",
+            "3. Do not call `delegate` or `delegate_parallel`, and do not create additional subagents.",
             "4. Do not narrate between tool calls unless necessary for progress.",
             "5. Prefer acting with tools over discussing plans.",
             "6. When finished, return a concise result summary only.",
