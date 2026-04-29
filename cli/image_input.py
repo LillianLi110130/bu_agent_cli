@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import base64
+import binascii
+import json
 import mimetypes
 import re
 from dataclasses import dataclass
@@ -31,6 +33,7 @@ _QUOTED_IMAGE_RE = re.compile(
     flags=re.DOTALL,
 )
 IMAGE_USAGE = "用法：@\"<图片路径>\"<消息> 或 @'<图片路径>'<消息>"
+REMOTE_IMAGE_MSG_TYPE = "image"
 
 
 class ImageInputError(ValueError):
@@ -45,6 +48,7 @@ class ParsedImageInput:
     user_text: str
     mime_type: str
     content_parts: list[ContentPartTextParam | ContentPartImageParam]
+    invalid_images: list[str] | None = None
 
 
 def is_image_command(text: str) -> bool:
@@ -113,6 +117,84 @@ def parse_image_command(
         user_text=prompt,
         mime_type=mime_type,
         content_parts=[text_part, image_part],
+        invalid_images=[],
+    )
+
+
+def parse_remote_image_message(
+    text: str,
+    default_prompt: str = DEFAULT_IMAGE_PROMPT,
+) -> ParsedImageInput | None:
+    """Parse one remote JSON image message into multimodal content.
+
+    Returns ``None`` when *text* is not a JSON image payload.
+    Raises ``ImageInputError`` when it looks like an image payload but is invalid.
+    """
+    stripped = text.strip()
+    if not stripped or not stripped.startswith("{"):
+        return None
+
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    msg_type = str(payload.get("msgType", "")).strip().lower()
+    if msg_type != REMOTE_IMAGE_MSG_TYPE:
+        return None
+
+    image_data_base64 = payload.get("imageDataBase64")
+    if not isinstance(image_data_base64, list):
+        raise ImageInputError("远程图片消息缺少 imageDataBase64。")
+
+    if not image_data_base64:
+        raise ImageInputError("远程图片消息中的 imageDataBase64 列表不能为空。")
+
+    user_input = payload.get("userInput", "")
+    if user_input is None:
+        user_input = ""
+    if not isinstance(user_input, str):
+        user_input = str(user_input)
+
+    prompt = user_input.strip() or default_prompt
+    text_part = ContentPartTextParam(text=prompt)
+    image_parts: list[ContentPartImageParam] = []
+    mime_types: list[str] = []
+    invalid_images: list[str] = []
+
+    for index, image_data_item in enumerate(image_data_base64, start=1):
+        try:
+            if not isinstance(image_data_item, str) or not image_data_item.strip():
+                raise ImageInputError(f"第 {index} 张图片数据为空或不是字符串。")
+
+            mime_type, data_b64 = _normalize_remote_image_data(image_data_item)
+            mime_types.append(mime_type)
+            image_url = f"data:{mime_type};base64,{data_b64}"
+            image_parts.append(
+                ContentPartImageParam(
+                    image_url=ImageURL(
+                        url=image_url,
+                        detail="auto",
+                        media_type=_to_supported_media_type(mime_type),
+                    )
+                )
+            )
+        except ImageInputError as exc:
+            invalid_images.append(str(exc))
+
+    if not image_parts:
+        summary = "；".join(invalid_images) if invalid_images else "未提供可用图片。"
+        raise ImageInputError(f"远程图片消息中没有可用图片。{summary}")
+
+    return ParsedImageInput(
+        source_path=Path("<remote-image>"),
+        user_text=prompt,
+        mime_type=mime_types[0],
+        content_parts=[text_part, *image_parts],
+        invalid_images=invalid_images,
     )
 
 
@@ -134,6 +216,64 @@ def _detect_supported_mime_type(path: Path) -> str | None:
         ".webp": "image/webp",
     }
     return suffix_map.get(path.suffix.lower())
+
+
+def _normalize_remote_image_data(image_data_base64: str) -> tuple[str, str]:
+    raw_value = image_data_base64.strip()
+    if not raw_value:
+        raise ImageInputError("远程图片消息中的 imageDataBase64 不能为空。")
+
+    mime_type: str | None = None
+    data_b64 = raw_value
+
+    if raw_value.startswith("data:"):
+        match = re.match(
+            r"^data:(?P<mime>[^;,]+);base64,(?P<data>.+)$",
+            raw_value,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            raise ImageInputError("远程图片消息中的 data URL 格式无效。")
+        mime_type = match.group("mime").lower().strip()
+        data_b64 = match.group("data").strip()
+        if mime_type == "image/jpg":
+            mime_type = "image/jpeg"
+        if mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+            supported = ", ".join(sorted(SUPPORTED_IMAGE_MIME_TYPES))
+            raise ImageInputError(f"远程图片 MIME 不支持：{mime_type}。支持的类型：{supported}")
+
+    normalized_b64 = "".join(data_b64.split())
+    try:
+        raw_bytes = base64.b64decode(normalized_b64, validate=True)
+    except (ValueError, binascii.Error) as e:
+        raise ImageInputError("远程图片消息中的 imageDataBase64 不是合法的 base64。") from e
+
+    if not raw_bytes:
+        raise ImageInputError("远程图片消息解码后内容为空。")
+    if len(raw_bytes) > MAX_IMAGE_BYTES:
+        raise ImageInputError(
+            f"远程图片过大：{len(raw_bytes)} 字节（最大 {MAX_IMAGE_BYTES} 字节）"
+        )
+
+    detected_mime_type = _detect_mime_type_from_bytes(raw_bytes)
+    resolved_mime_type = mime_type or detected_mime_type
+    if resolved_mime_type not in SUPPORTED_IMAGE_MIME_TYPES:
+        supported = ", ".join(sorted(SUPPORTED_IMAGE_MIME_TYPES))
+        raise ImageInputError(f"远程图片类型不支持。支持的类型：{supported}")
+
+    return resolved_mime_type, base64.b64encode(raw_bytes).decode("ascii")
+
+
+def _detect_mime_type_from_bytes(raw_bytes: bytes) -> str | None:
+    if raw_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if raw_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if raw_bytes.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if raw_bytes.startswith(b"RIFF") and raw_bytes[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _to_supported_media_type(

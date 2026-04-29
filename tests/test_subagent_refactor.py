@@ -17,6 +17,7 @@ from agent_core.tools import tool
 from agent_core.llm.messages import UserMessage
 from tools import ALL_TOOLS
 from tools.agent_tool import DelegateParallelParams, delegate, delegate_parallel
+from tools.sandbox import get_current_agent
 from agent_core.llm.views import ChatInvokeCompletion
 
 
@@ -170,7 +171,7 @@ def test_fork_execution_builds_child_directive_and_disables_delegate() -> None:
 
     parent = Agent(
         llm=_FakeLLM(),
-        tools=[delegate, read, bash],
+        tools=[delegate, delegate_parallel, read, bash],
         system_prompt="parent system",
     )
     parent.load_history([UserMessage(content="Parent context")])
@@ -188,26 +189,28 @@ def test_fork_execution_builds_child_directive_and_disables_delegate() -> None:
     assert child.runtime_role == "subagent"
     assert [tool.name for tool in child.tools] == ["read", "bash"]
     assert "You are a forked child agent" in initial_message
-    assert "Do not call `delegate`" in initial_message
+    assert "Do not call `delegate` or `delegate_parallel`" in initial_message
     assert "Task summary: Debug test failures" in initial_message
     assert "Investigate the failing tests" in initial_message
     assert child.messages == parent.messages
+    assert child.dependency_overrides is not None
+    assert child.dependency_overrides[get_current_agent]() is child
 
 
-def test_delegate_rejects_nested_fork_from_fork_child() -> None:
+def test_delegate_rejects_nested_delegation_from_subagent() -> None:
     result = asyncio.run(
         delegate.func(
             ctx=SimpleNamespace(subagent_executor=object()),
             prompt="do work",
-            description="fork again",
-            current_agent=SimpleNamespace(is_fork_child=True),
-            subagent_type=None,
+            description="delegate again",
+            current_agent=SimpleNamespace(runtime_role="subagent", is_fork_child=False),
+            subagent_type="reviewer",
             model=None,
             run_in_background=None,
         )
     )
 
-    assert result == "Error: fork child agents cannot create nested forks."
+    assert result == "Error: subagents cannot delegate other subagents."
 
 
 def test_named_subagent_model_inherit_uses_parent_llm(tmp_path: Path) -> None:
@@ -225,8 +228,13 @@ Review carefully.
     )
 
     registry = AgentRegistry(agent_sources=[("workspace", agents_dir, 1)])
-    parent = Agent(llm=_FakeLLM(), tools=[], system_prompt="parent system")
-    runner = AgentCallRunner(registry=registry, all_tools=[])
+    parent = Agent(
+        llm=_FakeLLM(),
+        tools=[],
+        system_prompt="parent system",
+        dependency_overrides={get_current_agent: lambda: parent},
+    )
+    runner = AgentCallRunner(registry=registry, all_tools=[delegate, delegate_parallel])
 
     child, initial_message = runner.build_execution(
         parent_agent=parent,
@@ -240,6 +248,9 @@ Review carefully.
 
     assert child.llm is parent.llm
     assert child.runtime_role == "subagent"
+    assert child.tools == []
+    assert child.dependency_overrides is not None
+    assert child.dependency_overrides[get_current_agent]() is child
     assert initial_message == "Review the auth patch"
 
 
@@ -303,7 +314,7 @@ def test_delegate_parallel_runs_multiple_foreground_agents() -> None:
     assert [item["final_response"] for item in payload["results"]] == ["done-1", "done-2"]
 
 
-def test_delegate_parallel_rejects_nested_fork_from_fork_child() -> None:
+def test_delegate_parallel_rejects_nested_delegation_from_subagent() -> None:
     result = asyncio.run(
         delegate_parallel.func(
             params=DelegateParallelParams(
@@ -311,6 +322,7 @@ def test_delegate_parallel_rejects_nested_fork_from_fork_child() -> None:
                     {
                         "prompt": "Handle task A",
                         "description": "Task A",
+                        "subagent_type": "reviewer",
                     },
                     {
                         "prompt": "Handle task B",
@@ -320,11 +332,11 @@ def test_delegate_parallel_rejects_nested_fork_from_fork_child() -> None:
                 ]
             ),
             ctx=SimpleNamespace(subagent_executor=_FakeParallelExecutor()),
-            current_agent=SimpleNamespace(is_fork_child=True),
+            current_agent=SimpleNamespace(runtime_role="subagent", is_fork_child=False),
         )
     )
 
-    assert result == "Error: fork child agents cannot create nested forks."
+    assert result == "Error: subagents cannot delegate other subagents."
 
 
 def test_delegate_parallel_is_registered_in_all_tools() -> None:

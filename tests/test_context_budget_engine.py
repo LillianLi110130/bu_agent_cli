@@ -1,15 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
 import pytest
 
 from agent_core.agent import Agent, CompactionConfig, ContextBudgetEngine
 from agent_core.agent.budget import BudgetAssessment
 from agent_core.agent.context import ContextManager
-from agent_core.llm.messages import AssistantMessage, BaseMessage, ToolMessage, UserMessage
+from agent_core.llm.messages import (
+    AssistantMessage,
+    BaseMessage,
+    ContentPartImageParam,
+    ContentPartTextParam,
+    ImageURL,
+    ToolMessage,
+    UserMessage,
+)
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
 
 
@@ -47,6 +54,20 @@ class FakeLLM:
             raise AssertionError("No scripted response left for FakeLLM")
         return self.responses.pop(0)
 
+    async def ainvoke_streaming(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
+        return await self.ainvoke(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+
     async def astream(
         self,
         messages: list[BaseMessage],
@@ -68,6 +89,16 @@ def _usage(prompt_tokens: int, completion_tokens: int = 10) -> ChatInvokeUsage:
         completion_tokens=completion_tokens,
         total_tokens=prompt_tokens + completion_tokens,
     )
+
+
+def _has_image_part(messages: list[BaseMessage]) -> bool:
+    for message in messages:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            continue
+        if any(getattr(part, "type", None) == "image_url" for part in content):
+            return True
+    return False
 
 
 @pytest.mark.asyncio
@@ -111,6 +142,60 @@ async def test_context_budget_engine_reestimates_full_history_when_model_changes
     assert assessment.incremental_tokens == full_estimate
     assert assessment.estimated_tokens == full_estimate
     assert assessment.token_estimate_source == "local_full"
+
+
+def test_context_budget_engine_does_not_count_base64_image_payload_as_text_tokens():
+    engine = ContextBudgetEngine(config=CompactionConfig())
+    image_data = "A" * 240_000
+    message = UserMessage(
+        content=[
+            ContentPartTextParam(text="describe"),
+            ContentPartImageParam(
+                image_url=ImageURL(
+                    url=f"data:image/png;base64,{image_data}",
+                    media_type="image/png",
+                )
+            ),
+        ]
+    )
+
+    raw_json_estimate = len(message.model_dump_json()) // 4 + 4
+    estimate = engine.estimate_tokens_for_messages([message])
+
+    assert raw_json_estimate > 50_000
+    assert estimate < 5_000
+    assert estimate >= 2_048
+
+
+@pytest.mark.asyncio
+async def test_preflight_compaction_preserves_trailing_image_message_outside_text_compaction():
+    llm = FakeLLM(
+        responses=[
+            ChatInvokeCompletion(
+                content="<summary>older context</summary><working_state>{}</working_state>"
+            )
+        ]
+    )
+    agent = Agent(llm=llm, tools=[])
+    image_message = UserMessage(
+        content=[
+            ContentPartTextParam(text="what is this image"),
+            ContentPartImageParam(
+                image_url=ImageURL(
+                    url="data:image/png;base64,AAAA",
+                    media_type="image/png",
+                )
+            ),
+        ]
+    )
+    agent.load_history([UserMessage(content="older context"), image_message])
+
+    compacted = await agent._compact_messages_now()
+
+    assert compacted is True
+    assert len(llm.invocations) == 1
+    assert not _has_image_part(llm.invocations[0])
+    assert agent.messages[-1] == image_message
 
 
 @pytest.mark.asyncio

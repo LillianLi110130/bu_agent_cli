@@ -11,6 +11,10 @@ from agent_core.tools import Depends, tool
 from tools.sandbox import SandboxContext, get_current_agent, get_sandbox_context
 
 
+def _is_subagent(agent: Any) -> bool:
+    return agent is not None and getattr(agent, "runtime_role", None) == "subagent"
+
+
 class DelegateParallelItem(BaseModel):
     """One foreground delegated agent invocation."""
 
@@ -91,12 +95,8 @@ async def delegate(
     executor = ctx.subagent_executor
     if executor is None:
         return "Error: Subagent executor not initialized"
-    if (
-        current_agent is not None
-        and getattr(current_agent, "is_fork_child", False)
-        and subagent_type is None
-    ):
-        return "Error: fork child agents cannot create nested forks."
+    if _is_subagent(current_agent):
+        return "Error: subagents cannot delegate other subagents."
 
     return await executor.run_local_agent_task(
         parent_agent=current_agent,
@@ -134,9 +134,8 @@ async def delegate_parallel(
     if executor is None:
         return "Error: Subagent executor not initialized"
 
-    if current_agent is not None and getattr(current_agent, "is_fork_child", False):
-        if any(item.subagent_type is None for item in params.agents):
-            return "Error: fork child agents cannot create nested forks."
+    if _is_subagent(current_agent):
+        return "Error: subagents cannot delegate other subagents."
 
     requests = [
         SubagentCallRequest(
