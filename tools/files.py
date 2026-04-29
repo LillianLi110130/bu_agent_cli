@@ -169,8 +169,8 @@ async def read(
     "use append_line when adding lines without rewriting the whole file. Prefer edit "
     "for localized changes to existing files. Use overwrite for new files or intentional "
     "full rewrites; for long full writes, write in chunks: first overwrite, then append "
-    "or append_line. Keep each content chunk around 5000 characters to avoid truncated "
-    "tool arguments."
+    "or append_line. Keep every content chunk no more than 4000 characters to avoid "
+    "rejected or truncated tool arguments."
 )
 async def write(
     file_path: str,
@@ -183,7 +183,7 @@ async def write(
     Args:
         file_path: Path to the file to write.
         content: Content to write. For long new files or intentional full rewrites,
-            pass only one chunk at a time, preferably around 5000 characters.
+            pass only one chunk at a time, no more than 4000 characters.
         mode: "overwrite" replaces the whole file. "append" appends content exactly to
             the end. "append_line" appends content as complete line content, ensuring
             it starts on a new line when needed and ends with a newline.
