@@ -105,10 +105,10 @@ def test_write_tool_schema_describes_chunked_long_writes():
     assert "localized changes" in write.definition.description
     assert "intentional full rewrites" in write.definition.description
     assert "write in chunks" in write.definition.description
-    assert "around 4000 characters" in write.definition.description
-    assert "truncated tool arguments" in write.definition.description
+    assert "no more than 4000 characters" in write.definition.description
+    assert "rejected or truncated tool arguments" in write.definition.description
     assert "one chunk at a time" in content_schema["description"]
-    assert "around 4000 characters" in content_schema["description"]
+    assert "no more than 4000 characters" in content_schema["description"]
     assert "intentional full rewrites" in content_schema["description"]
 
 

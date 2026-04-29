@@ -102,7 +102,8 @@ def test_system_prompt_guides_chunked_writes_and_read_before_overwrite() -> None
     template = module._load_prompt_template("system.md")
 
     assert "优先分段写入" in template
-    assert "4000 字符左右" in template
+    assert "4000 字符以内" in template
+    assert "执行前被拒绝" in template
     assert "write.content" in template
     assert "默认优先使用 `edit`" in template
     assert "不是用 `write mode=\"overwrite\"` 重写整个文件" in template
