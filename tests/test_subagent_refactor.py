@@ -14,7 +14,7 @@ from agent_core.task import SubagentTaskResult
 from agent_core.task.local_agent_task import SubagentTaskManager
 from agent_core.task.local_agent_task import SubagentCallRequest
 from agent_core.tools import tool
-from agent_core.llm.messages import UserMessage
+from agent_core.llm.messages import AssistantMessage, Function, ToolCall, UserMessage
 from tools import ALL_TOOLS
 from tools.agent_tool import DelegateParallelParams, delegate, delegate_parallel
 from tools.sandbox import get_current_agent
@@ -195,6 +195,41 @@ def test_fork_execution_builds_child_directive_and_disables_delegate() -> None:
     assert child.messages == parent.messages
     assert child.dependency_overrides is not None
     assert child.dependency_overrides[get_current_agent]() is child
+
+
+def test_fork_execution_strips_incomplete_trailing_tool_call_block() -> None:
+    parent = Agent(
+        llm=_FakeLLM(),
+        tools=[delegate, delegate_parallel],
+        system_prompt="parent system",
+    )
+    parent.load_history(
+        [
+            UserMessage(content="Parent context"),
+            AssistantMessage(
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id="call_incomplete",
+                        function=Function(name="delegate", arguments="{}"),
+                    )
+                ],
+            ),
+        ]
+    )
+
+    runner = AgentCallRunner(registry=AgentRegistry(agent_sources=[]), all_tools=[])
+    child, _ = runner.build_execution(
+        parent_agent=parent,
+        request=SubagentCallRequest(
+            prompt="Investigate the failing tests",
+            description="Debug test failures",
+        ),
+    )
+
+    assert len(child.messages) == 1
+    assert child.messages[0].role == "user"
+    assert child.messages[0].text == "Parent context"
 
 
 def test_delegate_rejects_nested_delegation_from_subagent() -> None:

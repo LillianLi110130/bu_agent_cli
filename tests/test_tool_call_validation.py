@@ -7,7 +7,7 @@ import pytest
 
 from agent_core.agent import Agent
 from agent_core.agent.events import FinalResponseEvent, HiddenUserMessageEvent
-from agent_core.agent.tool_call_validation import WRITE_RECOVERY_CHUNK_MAX_CHARS
+from agent_core.agent.tool_call_validation import WRITE_CONTENT_CHUNK_MAX_CHARS
 from agent_core.llm.messages import AssistantMessage, BaseMessage, Function, ToolCall, ToolMessage
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 from agent_core.tools.decorator import tool
@@ -136,8 +136,85 @@ async def test_query_rejects_write_tool_call_missing_content_argument():
 
 
 @pytest.mark.asyncio
+async def test_query_rejects_large_single_write_before_execution():
+    oversized_content = "x" * (WRITE_CONTENT_CHUNK_MAX_CHARS + 1)
+    writes: list[tuple[str, str, str]] = []
+
+    @tool("Write content", name="write")
+    async def fake_write(
+        file_path: str,
+        content: str,
+        mode: Literal["overwrite", "append", "append_line"] = "overwrite",
+    ) -> str:
+        writes.append((file_path, content, mode))
+        return "wrote"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    _write_call(
+                        '{"file_path": "/tmp/design.md", '
+                        f'"content": "{oversized_content}", '
+                        '"mode": "overwrite"}'
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="recovered"),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[fake_write])
+
+    result = await agent.query("write a document")
+
+    assert result == "recovered"
+    assert len(llm.invocations) == 2
+    recovery_message = llm.invocations[1][-1]
+    assert "exceeding the hard limit of 4000" in recovery_message.text
+    assert "will be rejected before execution" in recovery_message.text
+    assert writes == []
+    assert not any(isinstance(message, ToolMessage) for message in agent.messages)
+
+
+@pytest.mark.asyncio
+async def test_query_allows_write_at_content_limit():
+    limit_content = "x" * WRITE_CONTENT_CHUNK_MAX_CHARS
+    writes: list[tuple[str, str, str]] = []
+
+    @tool("Write content", name="write")
+    async def fake_write(
+        file_path: str,
+        content: str,
+        mode: Literal["overwrite", "append", "append_line"] = "overwrite",
+    ) -> str:
+        writes.append((file_path, content, mode))
+        return "wrote"
+
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    _write_call(
+                        '{"file_path": "/tmp/design.md", '
+                        f'"content": "{limit_content}", '
+                        '"mode": "overwrite"}'
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="done"),
+        ]
+    )
+    agent = Agent(llm=llm, tools=[fake_write])
+
+    result = await agent.query("write a document")
+
+    assert result == "done"
+    assert writes == [("/tmp/design.md", limit_content, "overwrite")]
+
+
+@pytest.mark.asyncio
 async def test_query_rejects_large_single_write_after_truncated_write_recovery():
-    oversized_content = "x" * (WRITE_RECOVERY_CHUNK_MAX_CHARS + 1)
+    oversized_content = "x" * (WRITE_CONTENT_CHUNK_MAX_CHARS + 1)
     llm = FakeLLM(
         [
             ChatInvokeCompletion(tool_calls=[_write_call('{"file_path": "/tmp/design.md"')]),
@@ -160,7 +237,7 @@ async def test_query_rejects_large_single_write_after_truncated_write_recovery()
     assert result == "recovered"
     assert len(llm.invocations) == 3
     second_recovery_message = llm.invocations[2][-1]
-    assert "exceeding the recovery chunk limit of 1000" in second_recovery_message.text
+    assert "exceeding the hard limit of 4000" in second_recovery_message.text
     assert "will be rejected before execution" in second_recovery_message.text
     assert not any(isinstance(message, ToolMessage) for message in agent.messages)
 

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 from agent_core.agent import Agent
 from agent_core.llm.base import BaseChatModel
 from agent_core.llm.factory import create_chat_model
-from agent_core.llm.messages import BaseMessage
+from agent_core.llm.messages import AssistantMessage, BaseMessage, ToolMessage
 
 if TYPE_CHECKING:
     from agent_core.task.local_agent_task import SubagentCallRequest
@@ -114,7 +114,59 @@ class AgentCallRunner:
 
     def _build_fork_messages(self, parent_agent: Agent) -> list[BaseMessage]:
         """Copy the parent conversation history for a forked child execution."""
-        return [message.model_copy(deep=True) for message in parent_agent.messages]
+        copied_messages = [message.model_copy(deep=True) for message in parent_agent.messages]
+        return self._strip_incomplete_trailing_tool_block(copied_messages)
+
+    def _strip_incomplete_trailing_tool_block(
+        self,
+        messages: list[BaseMessage],
+    ) -> list[BaseMessage]:
+        """Remove a trailing assistant tool-call block when its tool results are incomplete.
+
+        Forked children inherit the parent's in-flight history snapshot. If the parent
+        is currently executing a tool, the copied history may end with an assistant
+        message that declares `tool_calls` but does not yet have the matching trailing
+        tool messages. OpenAI-compatible backends reject this shape, so trim or
+        downgrade that trailing block before the forked child starts.
+        """
+        if not messages:
+            return messages
+
+        last_index = len(messages) - 1
+        trailing_tool_messages: list[ToolMessage] = []
+        while last_index >= 0 and isinstance(messages[last_index], ToolMessage):
+            trailing_tool_messages.append(messages[last_index])
+            last_index -= 1
+
+        if last_index < 0:
+            return messages
+
+        assistant_message = messages[last_index]
+        if not isinstance(assistant_message, AssistantMessage) or not assistant_message.tool_calls:
+            return messages
+
+        expected_tool_ids = {tool_call.id for tool_call in assistant_message.tool_calls}
+        received_tool_ids = {
+            tool_message.tool_call_id
+            for tool_message in trailing_tool_messages
+            if tool_message.tool_call_id in expected_tool_ids
+        }
+
+        if received_tool_ids == expected_tool_ids:
+            return messages
+
+        sanitized = list(messages[:last_index])
+        if assistant_message.content is not None or assistant_message.refusal is not None:
+            sanitized.append(
+                AssistantMessage(
+                    content=assistant_message.content,
+                    name=assistant_message.name,
+                    refusal=assistant_message.refusal,
+                    tool_calls=None,
+                    cache=assistant_message.cache,
+                )
+            )
+        return sanitized
 
     def _build_fork_child_message(self, request: "SubagentCallRequest") -> str:
         """Build the directive injected as the fork child's first message."""

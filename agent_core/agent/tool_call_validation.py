@@ -14,7 +14,8 @@ from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_
 from agent_core.llm.messages import ToolCall
 from agent_core.tools.decorator import Tool
 
-WRITE_RECOVERY_CHUNK_MAX_CHARS = 5000
+WRITE_CONTENT_CHUNK_MAX_CHARS = 4000
+WRITE_RECOVERY_CHUNK_MAX_CHARS = WRITE_CONTENT_CHUNK_MAX_CHARS
 
 ToolCallValidationKind = Literal[
     "unknown_tool",
@@ -98,6 +99,7 @@ def validate_tool_call(
     errors.extend(_validate_unknown_arguments(tool_call, tool, args))
     errors.extend(_validate_enum_arguments(tool_call, tool, args))
     errors.extend(_validate_pydantic_schema(tool_call, tool, args))
+    errors.extend(_validate_write_content_limit(tool_call, args))
     if write_recovery_state is not None:
         errors.extend(
             _validate_write_recovery_constraints(
@@ -183,8 +185,8 @@ def build_invalid_tool_call_recovery_prompt(
                 '- First call write with mode="overwrite".',
                 '- Then call write with mode="append" or mode="append_line" for subsequent chunks.',
                 (
-                    "Each following write.content for this target must be no longer than "
-                    f"{WRITE_RECOVERY_CHUNK_MAX_CHARS} characters."
+                    "Every write.content must be no longer than "
+                    f"{WRITE_CONTENT_CHUNK_MAX_CHARS} characters."
                 ),
                 (
                     "Do not retry a single write call containing the entire file content; "
@@ -288,6 +290,30 @@ def _validate_pydantic_schema(
     return []
 
 
+def _validate_write_content_limit(
+    tool_call: ToolCall,
+    args: dict[str, Any],
+) -> list[ToolCallValidationError]:
+    if tool_call.function.name != "write":
+        return []
+
+    content = args.get("content")
+    if not isinstance(content, str) or len(content) <= WRITE_CONTENT_CHUNK_MAX_CHARS:
+        return []
+
+    return [
+        ToolCallValidationError(
+            tool_call=tool_call,
+            kind="invalid_value",
+            argument="content",
+            message=(
+                f"write.content has {len(content)} characters, exceeding the "
+                f"hard limit of {WRITE_CONTENT_CHUNK_MAX_CHARS}."
+            ),
+        )
+    ]
+
+
 def _validate_write_recovery_constraints(
     tool_call: ToolCall,
     args: dict[str, Any],
@@ -311,20 +337,6 @@ def _validate_write_recovery_constraints(
         return []
 
     errors: list[ToolCallValidationError] = []
-    content = args.get("content")
-    if isinstance(content, str) and len(content) > WRITE_RECOVERY_CHUNK_MAX_CHARS:
-        errors.append(
-            ToolCallValidationError(
-                tool_call=tool_call,
-                kind="invalid_value",
-                argument="content",
-                message=(
-                    f"write.content has {len(content)} characters, exceeding the "
-                    f"recovery chunk limit of {WRITE_RECOVERY_CHUNK_MAX_CHARS}."
-                ),
-            )
-        )
-
     chunk_index = state.next_chunk_index_by_path.get(file_path, 0)
     mode = args.get("mode", "overwrite")
     if chunk_index == 0 and mode != "overwrite":
