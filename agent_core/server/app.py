@@ -38,6 +38,7 @@ from agent_core.agent.events import (
 # 导入 API 数据模型
 from agent_core.server.models import (
     QueryRequest,
+    LLMQueryRequest,
     QueryResponse,
     UsageInfo,
     StreamEvent,
@@ -57,6 +58,7 @@ from agent_core.server.models import (
     SkillUpdateRequest,
     SkillDeleteResponse,
 )
+from agent_core.server.llm_gateway import LLMGatewayService
 from agent_core.server.session import SessionManager, AgentFactory
 
 
@@ -334,6 +336,7 @@ def create_app(
     app.state.config = config
     app.state.agent_factory = agent_factory
     app.state.memory_service = memory_service
+    app.state.llm_gateway = LLMGatewayService()
 
     # ================================
     # 健康检查端点
@@ -680,6 +683,35 @@ def create_app(
 
             except Exception as e:
                 logger.error(f"Error in delta stream: {e}", exc_info=True)
+                error_event = {
+                    "type": "error",
+                    "error": str(e),
+                }
+                yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+                yield ": done\n\n"
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "close",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/llm/query-stream", tags=["LLM"])
+    async def llm_query_stream(request: LLMQueryRequest):
+        """Pure LLM gateway stream that keeps the Agent runtime local."""
+
+        async def event_generator():
+            try:
+                gateway: LLMGatewayService = app.state.llm_gateway
+                async for event in gateway.query_stream(request):
+                    yield _serialize_event(event)
+                yield ": done\n\n"
+            except Exception as e:
+                logger.error(f"Error in llm gateway stream: {e}", exc_info=True)
                 error_event = {
                     "type": "error",
                     "error": str(e),

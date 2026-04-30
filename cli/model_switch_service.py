@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from typing import Any
 
 from agent_core import Agent
-from agent_core.llm import ChatOpenAI
+from agent_core.llm.factory import create_chat_model
 from agent_core.llm.messages import (
     ContentPartImageParam,
     ContentPartTextParam,
@@ -15,7 +14,8 @@ from agent_core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
-from config.model_config import ModelPreset
+from cli.worker.auth import load_persisted_auth_result
+from config.model_config import ModelPreset, resolve_model_config
 
 
 @dataclass
@@ -30,6 +30,16 @@ class ModelSwitchService:
 
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
+
+    @staticmethod
+    def _has_gateway_authorization(explicit_authorization: str | None) -> bool:
+        if (explicit_authorization or "").strip():
+            return True
+        try:
+            persisted = load_persisted_auth_result()
+        except Exception:
+            return False
+        return bool(persisted and persisted.authorization)
 
     def __init__(
         self,
@@ -137,18 +147,26 @@ class ModelSwitchService:
         if not preset:
             return None, None, f"未找到视觉预设：{target_preset}"
 
-        api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
-        api_key = os.getenv(api_key_env)
-        if not api_key:
+        resolved = resolve_model_config(
+            target_preset,
+            presets=self._model_presets,
+            fallback_base_url=str(getattr(self._agent.llm, "base_url", "")) or None,
+            fallback_api_key=str(getattr(self._agent.llm, "api_key", "")) or None,
+        )
+        api_key = resolved.api_key
+        if resolved.provider != "gateway" and not api_key:
+            api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
             return None, None, f"缺少 API Key 环境变量：{api_key_env}"
-
-        model = str(preset["model"])
-        base_url_raw = preset.get("base_url")
-        base_url = str(base_url_raw) if isinstance(base_url_raw, str) else None
+        if resolved.provider == "gateway" and not self._has_gateway_authorization(api_key):
+            return None, None, "缺少网关 Authorization，请先完成登录或配置网关鉴权信息"
 
         try:
             return (
-                ChatOpenAI(model=model, api_key=api_key, base_url=base_url),
+                create_chat_model(
+                    target_preset,
+                    presets=self._model_presets,
+                    fallback_llm=self._agent.llm,
+                ),
                 target_preset,
                 None,
             )
@@ -525,11 +543,20 @@ class ModelSwitchService:
             self._print(f"[dim]当前已在使用预设 [cyan]{preset_name}[/cyan]。[/dim]")
             return True
 
-        model = str(preset["model"])
-        api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
-        api_key = os.getenv(api_key_env)
-        if not api_key:
+        resolved = resolve_model_config(
+            preset_name,
+            presets=self._model_presets,
+            fallback_base_url=str(getattr(self._agent.llm, "base_url", "")) or None,
+            fallback_api_key=str(getattr(self._agent.llm, "api_key", "")) or None,
+        )
+        api_key = resolved.api_key
+        model = resolved.model
+        if resolved.provider != "gateway" and not api_key:
+            api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
             self._print(f"[red]缺少 API Key 环境变量：{api_key_env}。已中止切换。[/red]")
+            return False
+        if resolved.provider == "gateway" and not self._has_gateway_authorization(api_key):
+            self._print("[red]缺少网关 Authorization，请先完成登录或配置网关鉴权信息。已中止切换。[/red]")
             return False
 
         prepared, context_snapshot = await self._prepare_switch_context(
@@ -549,14 +576,13 @@ class ModelSwitchService:
 
         old_llm = self._agent.llm
         old_model = str(old_llm.model)
-        new_base_url = self._resolve_switch_target_base_url(preset, old_llm)
 
         try:
             self._agent.set_llm(
-                ChatOpenAI(
-                    model=model,
-                    api_key=api_key,
-                    base_url=new_base_url,
+                create_chat_model(
+                    preset_name,
+                    presets=self._model_presets,
+                    fallback_llm=old_llm,
                 )
             )
         except Exception as e:

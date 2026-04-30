@@ -1,5 +1,6 @@
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,14 @@ _MODEL_PRESETS_PATH = (
 )
 
 ModelPreset = dict[str, str | bool | int]
+
+
+@dataclass(frozen=True)
+class ResolvedModelConfig:
+    provider: str
+    model: str
+    base_url: str | None
+    api_key: str | None
 
 
 def _load_model_presets_document() -> dict[str, Any]:
@@ -56,15 +65,24 @@ def load_model_presets() -> dict[str, ModelPreset]:
 
         cleaned: ModelPreset = {"model": model.strip()}
 
+        provider = config.get("provider")
+        if isinstance(provider, str) and provider.strip():
+            cleaned["provider"] = provider.strip().lower()
+
         base_url = config.get("base_url")
         if isinstance(base_url, str) and base_url.strip():
             cleaned["base_url"] = base_url.strip()
 
-        api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
-        if isinstance(api_key_env, str) and api_key_env.strip():
-            cleaned["api_key_env"] = api_key_env.strip()
+        if str(cleaned.get("provider", "openai")).lower() == "gateway":
+            api_key_env = config.get("api_key_env")
+            if isinstance(api_key_env, str) and api_key_env.strip():
+                cleaned["api_key_env"] = api_key_env.strip()
         else:
-            cleaned["api_key_env"] = "OPENAI_API_KEY"
+            api_key_env = config.get("api_key_env", "OPENAI_API_KEY")
+            if isinstance(api_key_env, str) and api_key_env.strip():
+                cleaned["api_key_env"] = api_key_env.strip()
+            else:
+                cleaned["api_key_env"] = "OPENAI_API_KEY"
 
         cleaned["vision"] = bool(config.get("vision", False))
 
@@ -79,8 +97,6 @@ def load_model_presets() -> dict[str, ModelPreset]:
         presets[name.strip()] = cleaned
 
     return presets
-
-
 def get_default_preset(presets: dict[str, ModelPreset] | None = None) -> str | None:
     """Get the default preset name from model_presets.json."""
     if presets is None:
@@ -168,18 +184,82 @@ def get_model_config(
     Returns:
         Tuple of (model, base_url, api_key)
     """
+    resolved = resolve_model_config(model_name, presets=presets)
+    return resolved.model, resolved.base_url, resolved.api_key
+
+
+def resolve_model_config(
+    model_name: str | None,
+    presets: dict[str, ModelPreset] | None = None,
+    *,
+    fallback_base_url: str | None = None,
+    fallback_api_key: str | None = None,
+) -> ResolvedModelConfig:
+    """Resolve provider-aware runtime config from presets or environment variables."""
     if presets is None:
         presets = load_model_presets()
 
     if model_name and model_name in presets:
         preset = presets[model_name]
-        model = preset["model"]
-        base_url = preset.get("base_url")
-        api_key_env = preset.get("api_key_env", "OPENAI_API_KEY")
-        api_key = os.getenv(api_key_env) or os.getenv("OPENAI_API_KEY")
-    else:
-        model = model_name or os.getenv("LLM_MODEL", "GLM-4.7")
-        base_url = os.getenv("LLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4")
-        api_key = os.getenv("OPENAI_API_KEY")
+        provider = str(preset.get("provider", "openai")).strip().lower() or "openai"
+        model = str(preset["model"]).strip()
+        base_url_raw = preset.get("base_url")
+        base_url = str(base_url_raw).strip() if isinstance(base_url_raw, str) else None
+        if not base_url:
+            base_url = fallback_base_url
 
-    return model, base_url, api_key
+        api_key: str | None = None
+        api_key_env_raw = preset.get("api_key_env")
+        api_key_env = (
+            str(api_key_env_raw).strip()
+            if isinstance(api_key_env_raw, str) and str(api_key_env_raw).strip()
+            else None
+        )
+        if api_key_env:
+            api_key = os.getenv(api_key_env)
+        if not api_key and provider != "gateway":
+            api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key and provider == "gateway":
+            api_key = (
+                (os.getenv("LLM_GATEWAY_AUTHORIZATION") or "").strip()
+                or (os.getenv("CRAB_GATEWAY_API_KEY") or "").strip()
+                or None
+            )
+        if not api_key:
+            api_key = fallback_api_key
+
+        return ResolvedModelConfig(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+        )
+
+    provider = (os.getenv("LLM_PROVIDER") or "openai").strip().lower() or "openai"
+    model = model_name or os.getenv("LLM_MODEL", "GLM-4.7")
+
+    if provider == "gateway":
+        base_url = (
+            (os.getenv("LLM_GATEWAY_BASE_URL") or "").strip()
+            or (os.getenv("LLM_BASE_URL") or "").strip()
+            or fallback_base_url
+        )
+        api_key = (
+            (os.getenv("LLM_GATEWAY_AUTHORIZATION") or "").strip()
+            or (os.getenv("CRAB_GATEWAY_API_KEY") or "").strip()
+            or fallback_api_key
+        )
+    else:
+        base_url = (
+            (os.getenv("LLM_BASE_URL") or "").strip()
+            or fallback_base_url
+            or "https://open.bigmodel.cn/api/coding/paas/v4"
+        )
+        api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or fallback_api_key
+
+    return ResolvedModelConfig(
+        provider=provider,
+        model=model,
+        base_url=base_url or None,
+        api_key=api_key or None,
+    )

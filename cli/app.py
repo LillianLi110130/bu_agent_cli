@@ -910,7 +910,12 @@ class TGAgentCLI:
         for name, preset in self._model_presets.items():
             model = str(preset["model"])
             base_url = str(preset.get("base_url", "(继承当前配置)"))
-            api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
+            provider = str(preset.get("provider", "openai")).strip().lower()
+            api_key_env = (
+                str(preset.get("api_key_env", "共享 Authorization"))
+                if provider == "gateway"
+                else str(preset.get("api_key_env", "OPENAI_API_KEY"))
+            )
             vision_marker = " 视觉" if self._preset_supports_vision(name) else ""
             marker = " [green](默认)[/green]" if name == self._default_model_preset else ""
             if name == self._auto_vision_preset:
