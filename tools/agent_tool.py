@@ -11,8 +11,11 @@ from agent_core.tools import Depends, tool
 from tools.sandbox import SandboxContext, get_current_agent, get_sandbox_context
 
 
-def _is_subagent(agent: Any) -> bool:
-    return agent is not None and getattr(agent, "runtime_role", None) == "subagent"
+def _is_delegation_child(agent: Any) -> bool:
+    return agent is not None and getattr(agent, "runtime_role", None) in {
+        "subagent",
+        "team_member",
+    }
 
 
 class DelegateParallelItem(BaseModel):
@@ -95,7 +98,7 @@ async def delegate(
     executor = ctx.subagent_executor
     if executor is None:
         return "Error: Subagent executor not initialized"
-    if _is_subagent(current_agent):
+    if _is_delegation_child(current_agent):
         return "Error: subagents cannot delegate other subagents."
 
     return await executor.run_local_agent_task(
@@ -134,7 +137,7 @@ async def delegate_parallel(
     if executor is None:
         return "Error: Subagent executor not initialized"
 
-    if _is_subagent(current_agent):
+    if _is_delegation_child(current_agent):
         return "Error: subagents cannot delegate other subagents."
 
     requests = [

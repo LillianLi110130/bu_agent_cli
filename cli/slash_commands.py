@@ -179,6 +179,20 @@ class SlashCommandRegistry:
                 category="智能体",
             ),
             SlashCommand(
+                name="team",
+                description="管理多进程 agent team",
+                usage="/team [create|list|spawn|task|tasks|inbox|send|status|stop|shutdown]",
+                examples=[
+                    "/team create demo 分析当前项目",
+                    "/team spawn <team_id> explorer-1 --agent explore",
+                    "/team task <team_id> \"分析 subagent runtime\" --assign explorer-1",
+                    "/team tasks <team_id>",
+                    "/team inbox <team_id>",
+                    "/team shutdown <team_id>",
+                ],
+                category="智能体",
+            ),
+            SlashCommand(
                 name="ralph",
                 description="运行 Ralph 工作流命令",
                 usage="/ralph <init-spec|init-agent|dry-run|run|status|cancel> ...",

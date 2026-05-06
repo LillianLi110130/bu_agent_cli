@@ -42,6 +42,12 @@ from agent_core.agent import (
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources
 from agent_core.task import SubagentTaskManager
+from agent_core.team import (
+    TeamRuntime,
+    is_team_experiment_enabled,
+    team_experiment_disabled_message,
+)
+from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.plugin import PluginManager
@@ -50,6 +56,7 @@ from agent_core.runtime_paths import (
     ensure_cli_runtime_state,
     is_frozen_app,
     load_runtime_env,
+    tg_agent_home,
 )
 from agent_core.skill.discovery import default_skill_dirs
 from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
@@ -357,9 +364,19 @@ def _should_run_internal_worker(argv: list[str] | None = None) -> bool:
     return _INTERNAL_WORKER_FLAG in (argv or sys.argv[1:])
 
 
+def _should_run_internal_team_worker(argv: list[str] | None = None) -> bool:
+    """Return whether the current process should dispatch to a team worker."""
+    return TEAM_WORKER_INTERNAL_FLAG in (argv or sys.argv[1:])
+
+
 def _strip_internal_worker_flag(argv: list[str] | None = None) -> list[str]:
     """Return argv without the internal worker dispatch flag."""
     return [arg for arg in (argv or sys.argv[1:]) if arg != _INTERNAL_WORKER_FLAG]
+
+
+def _strip_internal_team_worker_flag(argv: list[str] | None = None) -> list[str]:
+    """Return argv without the internal team worker dispatch flag."""
+    return [arg for arg in (argv or sys.argv[1:]) if arg != TEAM_WORKER_INTERNAL_FLAG]
 
 
 def _build_worker_process_command(
@@ -639,6 +656,11 @@ def create_agent(
         skill_registry=runtime.skill_registry,
     )
     ctx.subagent_executor = subagent_executor
+    if is_team_experiment_enabled():
+        ctx.team_runtime = TeamRuntime(
+            teams_root=tg_agent_home() / "teams",
+            workspace_root=ctx.root_dir,
+        )
 
     agent = Agent(
         llm=llm,
@@ -731,6 +753,16 @@ async def main():
 
 def cli_main():
     """Console script entry point."""
+    if _should_run_internal_team_worker():
+        if not is_team_experiment_enabled():
+            console.print(f"[red]{team_experiment_disabled_message()}[/red]")
+            raise SystemExit(2)
+        from cli.team.worker import main as team_worker_main
+
+        sys.argv = [sys.argv[0], *_strip_internal_team_worker_flag()]
+        team_worker_main()
+        return
+
     if _should_run_internal_worker():
         from cli.worker.main import cli_main as worker_cli_main
 

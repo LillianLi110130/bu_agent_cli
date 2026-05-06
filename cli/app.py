@@ -1483,6 +1483,20 @@ class TGAgentCLI:
             )
             return await handler.handle(args)
 
+        if command_name == "team":
+            from cli.team.handler import TeamSlashHandler
+
+            handler = TeamSlashHandler(
+                runtime=self._ctx.team_runtime,
+                console=self._console,
+            )
+            try:
+                team_args = TeamSlashHandler.parse_args_text(args_text)
+            except ValueError as exc:
+                self._console.print(f"[red]参数解析失败：{exc}[/red]")
+                return True
+            return await handler.handle(team_args)
+
         if command_name == "plugins":
             if self._plugin_manager is None:
                 self._console.print("[yellow]插件管理器未配置。[/yellow]")

@@ -9,6 +9,17 @@ from tools.search import glob_search, grep
 from tools.task_cancel import task_cancel
 from tools.task_output import task_output
 from tools.task_status import task_status
+from tools.team_tool import (
+    team_create,
+    team_create_task,
+    team_list_tasks,
+    team_read_inbox,
+    team_send_message,
+    team_shutdown,
+    team_spawn_member,
+    team_status,
+    team_update_task,
+)
 from tools.todos import done, todo_read, todo_write
 from tools.web import web_fetch
 from tools.xlsx import read_excel
@@ -39,6 +50,15 @@ ALL_TOOLS = [
     task_output,
     task_status,
     task_cancel,
+    team_create,
+    team_spawn_member,
+    team_create_task,
+    team_update_task,
+    team_list_tasks,
+    team_read_inbox,
+    team_send_message,
+    team_status,
+    team_shutdown,
 ]
 
 __all__ = [
@@ -63,4 +83,13 @@ __all__ = [
     "task_output",
     "task_status",
     "task_cancel",
+    "team_create",
+    "team_spawn_member",
+    "team_create_task",
+    "team_update_task",
+    "team_list_tasks",
+    "team_read_inbox",
+    "team_send_message",
+    "team_status",
+    "team_shutdown",
 ]
