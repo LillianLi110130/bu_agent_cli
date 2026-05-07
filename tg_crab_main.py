@@ -559,6 +559,26 @@ async def _mark_worker_offline(
         await client.aclose()
 
 
+async def _shutdown_active_team_on_exit(ctx: SandboxContext) -> None:
+    """Best-effort shutdown for the active team owned by this CLI workspace."""
+    runtime = getattr(ctx, "team_runtime", None)
+    if runtime is None:
+        return
+
+    try:
+        active_team = runtime.get_active_team()
+    except Exception:
+        return
+    if not active_team:
+        return
+
+    try:
+        runtime.shutdown_team(active_team)
+        console.print(f"[dim]已请求关闭 active team：[/] {active_team}")
+    except Exception as exc:
+        console.print(f"[yellow]关闭 active team 失败：{exc}[/yellow]")
+
+
 async def _close_llm_runtime(llm: Any) -> None:
     """Best-effort close for LLM runtimes that own async clients/transports."""
     close = getattr(llm, "close", None)
@@ -739,6 +759,7 @@ async def main():
     except KeyboardInterrupt:
         console.print("\n[yellow]再见！[/yellow]")
     finally:
+        await _shutdown_active_team_on_exit(ctx)
         if ctx.shell_task_manager is not None:
             await ctx.shell_task_manager.shutdown(cancel_running=True)
         if ctx.subagent_executor is not None:

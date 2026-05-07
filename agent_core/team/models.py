@@ -46,9 +46,40 @@ class TeamConfig:
 
 
 @dataclass(slots=True)
+class TeamState:
+    team_id: str
+    goal: str
+    active: bool = True
+    phase: str = "created"
+    fix_loop_count: int = 0
+    max_fix_loops: int = 3
+    stage_history: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    version: int = 1
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "TeamState":
+        return cls(
+            team_id=str(payload["team_id"]),
+            goal=str(payload.get("goal") or ""),
+            active=bool(payload.get("active", True)),
+            phase=str(payload.get("phase") or "created"),
+            fix_loop_count=int(payload.get("fix_loop_count") or 0),
+            max_fix_loops=int(payload.get("max_fix_loops") or 3),
+            stage_history=[str(item) for item in _list(payload.get("stage_history"))],
+            created_at=str(payload.get("created_at") or utc_now_iso()),
+            updated_at=str(payload.get("updated_at") or utc_now_iso()),
+            version=int(payload.get("version") or 1),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(slots=True)
 class TeamMember:
     member_id: str
-    role: str
     agent_type: str
     status: str = "running"
     pid: int | None = None
@@ -61,7 +92,6 @@ class TeamMember:
         pid = payload.get("pid")
         return cls(
             member_id=str(payload["member_id"]),
-            role=str(payload.get("role") or "member"),
             agent_type=str(payload.get("agent_type") or "general-purpose"),
             status=str(payload.get("status") or "running"),
             pid=int(pid) if pid is not None else None,

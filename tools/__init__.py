@@ -16,6 +16,7 @@ from tools.team_tool import (
     team_read_inbox,
     team_send_message,
     team_shutdown,
+    team_snapshot,
     team_spawn_member,
     team_status,
     team_update_task,
@@ -57,6 +58,7 @@ ALL_TOOLS = [
     team_list_tasks,
     team_read_inbox,
     team_send_message,
+    team_snapshot,
     team_status,
     team_shutdown,
 ]
@@ -90,6 +92,7 @@ __all__ = [
     "team_list_tasks",
     "team_read_inbox",
     "team_send_message",
+    "team_snapshot",
     "team_status",
     "team_shutdown",
 ]

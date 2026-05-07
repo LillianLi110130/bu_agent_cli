@@ -57,3 +57,6 @@ class TeamMessenger:
         limit: int | None = None,
     ) -> list[TeamMessage]:
         return self.mailbox.receive(member_id, ack=ack, limit=limit)
+
+    def ack(self, member_id: str, message_ids: set[str]) -> list[TeamMessage]:
+        return self.mailbox.ack(member_id, message_ids)

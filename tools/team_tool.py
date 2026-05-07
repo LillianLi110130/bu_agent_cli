@@ -20,16 +20,24 @@ def _runtime_or_error(ctx: SandboxContext):
     return ctx.team_runtime, None
 
 
-@tool("Create a filesystem-backed agent team led by the primary CLI.", name="team_create")
+@tool("Create a filesystem-backed agent team led by the primary CLI and make it active.", name="team_create")
 async def team_create(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     name: str,
     goal: str,
+    make_active: bool = True,
 ) -> str:
     runtime, error = _runtime_or_error(ctx)
     if error is not None:
         return error
+    if make_active:
+        try:
+            runtime.ensure_can_start_team()
+        except ValueError as exc:
+            return f"Error: {exc}"
     team = runtime.create_team(name=name, goal=goal)
+    if make_active:
+        runtime.set_active_team(team.team_id)
     return json.dumps(team.to_dict(), ensure_ascii=False, indent=2)
 
 
@@ -39,7 +47,6 @@ async def team_spawn_member(
     team_id: str,
     member_id: str,
     agent_type: str,
-    role: str = "member",
 ) -> str:
     runtime, error = _runtime_or_error(ctx)
     if error is not None:
@@ -48,7 +55,6 @@ async def team_spawn_member(
         team_id=team_id,
         member_id=member_id,
         agent_type=agent_type,
-        role=role,
     )
     return json.dumps(member.to_dict(), ensure_ascii=False, indent=2)
 
@@ -151,6 +157,8 @@ async def team_send_message(
     body: str,
     sender: str = "lead",
     type: str = "note",
+    metadata: dict | None = None,
+    reply_to: str | None = None,
 ) -> str:
     runtime, error = _runtime_or_error(ctx)
     if error is not None:
@@ -161,6 +169,8 @@ async def team_send_message(
         recipient=recipient,
         body=body,
         type=type,
+        metadata=metadata,
+        reply_to=reply_to,
     )
     return json.dumps(message.to_dict(), ensure_ascii=False, indent=2)
 
@@ -174,6 +184,29 @@ async def team_status(
     if error is not None:
         return error
     return json.dumps(runtime.status(team_id), ensure_ascii=False, indent=2)
+
+
+@tool("Get an orchestration-friendly team snapshot.", name="team_snapshot")
+async def team_snapshot(
+    ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
+    team_id: str,
+    include_inbox: bool = True,
+    ack_inbox: bool = False,
+    stale_after_seconds: int = 120,
+) -> str:
+    runtime, error = _runtime_or_error(ctx)
+    if error is not None:
+        return error
+    return json.dumps(
+        runtime.snapshot(
+            team_id,
+            include_inbox=include_inbox,
+            ack_inbox=ack_inbox,
+            stale_after_seconds=stale_after_seconds,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 @tool("Shutdown a team and request all teammate processes to stop.", name="team_shutdown")

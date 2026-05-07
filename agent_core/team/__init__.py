@@ -2,7 +2,7 @@
 
 from agent_core.team.mailbox import Mailbox
 from agent_core.team.messaging import TeamMessenger
-from agent_core.team.models import TeamConfig, TeamMember, TeamMessage, TeamTask
+from agent_core.team.models import TeamConfig, TeamMember, TeamMessage, TeamState, TeamTask
 from agent_core.team.runtime import TeamRuntime
 from agent_core.team.store import TeamStore
 from agent_core.team.task_board import TaskBoard
@@ -19,6 +19,7 @@ __all__ = [
     "TeamMember",
     "TeamMessage",
     "TeamMessenger",
+    "TeamState",
     "TeamRuntime",
     "TeamStore",
     "TeamTask",

@@ -12,6 +12,7 @@ from typing import Any, Callable
 from agent_core.team.messaging import TeamMessenger
 from agent_core.team.models import TeamMessage
 from agent_core.team.models import TeamTask, utc_now_iso
+from agent_core.team.runtime import TeamRuntime
 from agent_core.team.store import TeamStore
 from agent_core.team.task_board import TaskBoard
 from cli.team.factory import create_team_member_agent
@@ -60,22 +61,32 @@ class TeamWorker:
         self.task_board = TaskBoard(self.team_dir)
 
     async def run(self) -> None:
-        agent, ctx = self._build_member_agent()
-        agent.register_hook(
-            TeamInboxAttachmentHook(
-                buffer=self.inbox_buffer,
-                member_id=self.member_id,
+        try:
+            agent, ctx = self._build_member_agent()
+            agent.register_hook(
+                TeamInboxAttachmentHook(
+                    buffer=self.inbox_buffer,
+                    member_id=self.member_id,
+                )
             )
-        )
-        agent.bind_session_runtime(self._create_member_session_runtime(ctx))
-        self.store.ensure_mailbox(self.team_id, self.member_id)
-        self._install_signal_handlers()
-        self._send_to_lead("started", f"{self.member_id} started as {self.agent_type}")
+            agent.bind_session_runtime(self._create_member_session_runtime(ctx))
+            self.store.ensure_mailbox(self.team_id, self.member_id)
+            self._install_signal_handlers()
+            self._send_to_lead("started", f"{self.member_id} started as {self.agent_type}")
 
-        await asyncio.gather(
-            self._message_pump(),
-            self._work_loop(agent),
-        )
+            await asyncio.gather(
+                self._message_pump(),
+                self._work_loop(agent),
+            )
+        except Exception as exc:
+            self._write_heartbeat("failed", error=str(exc))
+            self.store.mark_member_status(self.team_id, self.member_id, "failed")
+            self._send_to_lead(
+                "worker_failed",
+                str(exc),
+                metadata={"error": str(exc)},
+            )
+            raise
 
         self._write_heartbeat("stopped")
         self.store.mark_member_status(self.team_id, self.member_id, "stopped")
@@ -87,6 +98,10 @@ class TeamWorker:
             self.workspace,
             agent_type=self.agent_type,
             team_prompt=self._build_team_system_prompt(),
+        )
+        ctx.team_runtime = TeamRuntime(
+            teams_root=self.store.teams_root,
+            workspace_root=self.workspace,
         )
         return agent, ctx
 
@@ -102,6 +117,18 @@ class TeamWorker:
             "- Work on tasks claimed from the shared team task board.\n"
             "- Treat mailbox messages from the lead as coordination instructions.\n"
             "- Do not call delegate or delegate_parallel, and do not spawn other agents.\n"
+            "- Skills are read-only for teammates: you may list or view skills, but you must "
+            "not create, edit, patch, manage, or persist skills.\n"
+            "- Do not run skill review or attempt to save lessons learned as skills. Report "
+            "reusable lessons to the team lead instead.\n"
+            "- If a skill asks for user interaction, validation, approval, or clarification, "
+            "send a message to the team lead with the exact question and wait for guidance; "
+            "do not ask the end user directly.\n"
+            "- Use message type `clarification_request` for these blocker questions. Include "
+            "metadata with `question`, `options` when useful, `recommended` when you have a "
+            "safe default, `blocking: true`, and `task_id` when the question is task-specific.\n"
+            "- If a skill suggests writing planning/design files that are outside your assigned "
+            "task, ask the team lead first.\n"
             "- Return concise task results intended for the team lead to aggregate.\n"
             "- Keep file changes within the assigned task and write scope."
         )
@@ -138,8 +165,6 @@ class TeamWorker:
 
     async def _work_loop(self, agent) -> None:
         while not self._stopping:
-            self._write_heartbeat("running")
-
             if await self.inbox_buffer.has_messages():
                 await self._submit_pending_messages(agent)
                 continue
@@ -149,6 +174,7 @@ class TeamWorker:
                 await self._run_task(agent, task)
                 continue
 
+            self._write_heartbeat("idle")
             await asyncio.sleep(self.poll_interval)
 
     async def _submit_pending_messages(self, agent) -> None:
@@ -205,7 +231,10 @@ class TeamWorker:
             f"{task.description}\n\n"
             "Write scope:\n"
             f"{scope}\n\n"
-            "Complete the task directly. Return a concise result for the team lead."
+            "Complete the task directly. If you need user interaction, approval, validation, "
+            "or clarification, send a `clarification_request` message to the team lead with "
+            "the exact question, options, recommendation, blocking=true, and this task_id. "
+            "Do not ask the end user directly. Return a concise result for the team lead."
         )
 
     def _send_to_lead(

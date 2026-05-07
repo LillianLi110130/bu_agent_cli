@@ -18,6 +18,7 @@ from agent_core import Agent
 from agent_core.agent.events import FinalResponseEvent
 from agent_core.llm.messages import AssistantMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion
+from agent_core.team import TeamRuntime
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
 from cli.slash_commands import SlashCommandRegistry
@@ -94,6 +95,129 @@ async def test_local_bridge_drains_enqueued_input_through_execution(workspace_ro
     assert result.input_kind == "text"
     assert result.final_content == "processed:hello bridge"
 
+
+def test_team_inbox_watcher_enqueues_clarification_request_via_bridge(
+    workspace_root,
+    monkeypatch,
+):
+    async def run_case() -> None:
+        cli, store = _create_cli(workspace_root, monkeypatch)
+        cli.TEAM_INBOX_POLL_INTERVAL_SECONDS = 0.01
+        runtime = TeamRuntime(teams_root=workspace_root / "teams", workspace_root=workspace_root)
+        team = runtime.start_team(goal="Coordinate")
+        cli._ctx.team_runtime = runtime
+        runtime.send_message(
+            team_id=team.team_id,
+            sender="backend-1",
+            recipient="lead",
+            type="clarification_request",
+            body="Which database should I use?",
+            metadata={
+                "question": "Which database should I use?",
+                "options": ["sqlite", "postgres"],
+                "recommended": "sqlite",
+                "blocking": True,
+            },
+        )
+
+        task = asyncio.create_task(cli._consume_team_inbox_auto_triggers())
+        try:
+            for _ in range(50):
+                if store.pending_count() > 0:
+                    break
+                await asyncio.sleep(0.02)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert store.pending_count() == 1
+        request = store.claim_next_pending()
+        assert request is not None
+        assert request.source == "local"
+        assert request.source_meta["kind"] == "team_inbox_auto_trigger"
+        assert request.source_meta["team_id"] == team.team_id
+        assert "Team Inbox Auto Trigger" in request.content
+        assert "clarification_request" in request.content
+        assert "Which database should I use?" in request.content
+        assert runtime.read_lead_inbox(team.team_id, ack=False) == []
+
+    asyncio.run(run_case())
+
+
+def test_team_inbox_watcher_enqueues_lifecycle_triggers_via_bridge(
+    workspace_root,
+    monkeypatch,
+):
+    async def run_case() -> None:
+        cli, store = _create_cli(workspace_root, monkeypatch)
+        cli.TEAM_INBOX_POLL_INTERVAL_SECONDS = 0.01
+        runtime = TeamRuntime(teams_root=workspace_root / "teams", workspace_root=workspace_root)
+        team = runtime.start_team(goal="Coordinate")
+        cli._ctx.team_runtime = runtime
+        for message_type in ("task_completed", "task_blocked", "worker_failed"):
+            runtime.send_message(
+                team_id=team.team_id,
+                sender="backend-1",
+                recipient="lead",
+                type=message_type,
+                body=f"{message_type} body",
+            )
+
+        task = asyncio.create_task(cli._consume_team_inbox_auto_triggers())
+        try:
+            for _ in range(50):
+                if store.pending_count() > 0:
+                    break
+                await asyncio.sleep(0.02)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert store.pending_count() == 1
+        request = store.claim_next_pending()
+        assert request is not None
+        assert request.source_meta["kind"] == "team_inbox_auto_trigger"
+        assert request.source_meta["team_id"] == team.team_id
+        assert set(request.source_meta["message_ids"])
+        assert "task_completed" in request.content
+        assert "task_blocked" in request.content
+        assert "worker_failed" in request.content
+        assert runtime.read_lead_inbox(team.team_id, ack=False) == []
+
+    asyncio.run(run_case())
+
+
+def test_team_inbox_watcher_ignores_non_trigger_messages(workspace_root, monkeypatch):
+    async def run_case() -> None:
+        cli, store = _create_cli(workspace_root, monkeypatch)
+        cli.TEAM_INBOX_POLL_INTERVAL_SECONDS = 0.01
+        runtime = TeamRuntime(teams_root=workspace_root / "teams", workspace_root=workspace_root)
+        team = runtime.start_team(goal="Coordinate")
+        cli._ctx.team_runtime = runtime
+        runtime.send_message(
+            team_id=team.team_id,
+            sender="backend-1",
+            recipient="lead",
+            type="progress_update",
+            body="Done",
+        )
+
+        task = asyncio.create_task(cli._consume_team_inbox_auto_triggers())
+        try:
+            await asyncio.sleep(0.05)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert store.pending_count() == 0
+        unread = runtime.read_lead_inbox(team.team_id, ack=False)
+        assert len(unread) == 1
+        assert unread[0].type == "progress_update"
+
+    asyncio.run(run_case())
 
 @pytest.mark.asyncio
 async def test_init_command_uses_dedicated_agent_and_injects_immediately(

@@ -83,5 +83,37 @@ class Mailbox:
                     pass
         return messages
 
+    def ack(self, member_id: str, message_ids: set[str]) -> list[TeamMessage]:
+        """Move specific unread messages to the read mailbox."""
+        if not message_ids:
+            return []
+        self.ensure(member_id)
+        inbox = self._box(member_id) / "inbox"
+        read_dir = self._box(member_id) / "read"
+        messages: list[TeamMessage] = []
+        for message_id in sorted(message_ids):
+            path = inbox / f"{message_id}.json"
+            lock_dir = path.with_suffix(path.suffix + ".lock")
+            try:
+                lock_dir.mkdir()
+            except FileExistsError:
+                continue
+            try:
+                payload = read_json(path, None)
+                if payload is None:
+                    continue
+                message = TeamMessage.from_dict(payload)
+                message.read_at = utc_now_iso()
+                target = read_dir / path.name
+                atomic_write_json(target, message.to_dict())
+                path.unlink(missing_ok=True)
+                messages.append(message)
+            finally:
+                try:
+                    lock_dir.rmdir()
+                except OSError:
+                    pass
+        return messages
+
     def _box(self, member_id: str) -> Path:
         return self.team_dir / "mailboxes" / member_id

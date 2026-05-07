@@ -8,7 +8,7 @@ from pathlib import Path
 
 from agent_core.team.atomic_io import atomic_write_json, read_json
 from agent_core.team.file_lock import FileLock
-from agent_core.team.models import TeamConfig, TeamMember, utc_now_iso
+from agent_core.team.models import TeamConfig, TeamMember, TeamState, utc_now_iso
 
 
 class TeamStore:
@@ -45,6 +45,10 @@ class TeamStore:
             workspace_root=str(workspace_root.resolve()),
         )
         atomic_write_json(team_dir / "config.json", config.to_dict())
+        atomic_write_json(
+            team_dir / "state.json",
+            TeamState(team_id=team_id, goal=goal).to_dict(),
+        )
         atomic_write_json(team_dir / "members.json", {"members": []})
         atomic_write_json(team_dir / "tasks.json", {"version": 1, "tasks": []})
         self.append_event(team_id, "team_created", actor="lead", payload=config.to_dict())
@@ -72,6 +76,64 @@ class TeamStore:
         atomic_write_json(self.team_dir(team_id) / "config.json", config.to_dict())
         self.append_event(team_id, "team_status_updated", actor="lead", payload={"status": status})
         return config
+
+    def read_state(self, team_id: str) -> TeamState:
+        config = self.load_config(team_id)
+        path = self.team_dir(team_id) / "state.json"
+        payload = read_json(path, None)
+        if payload is None:
+            state = TeamState(
+                team_id=team_id,
+                goal=config.goal,
+                active=config.status not in {"shutdown", "completed", "failed"},
+            )
+            atomic_write_json(path, state.to_dict())
+            return state
+        return TeamState.from_dict(payload)
+
+    def write_state(self, team_id: str, **patch) -> TeamState:
+        state = self.read_state(team_id)
+        for key, value in patch.items():
+            if not hasattr(state, key):
+                continue
+            setattr(state, key, value)
+        state.updated_at = utc_now_iso()
+        atomic_write_json(self.team_dir(team_id) / "state.json", state.to_dict())
+        self.append_event(team_id, "state_updated", actor="lead", payload=state.to_dict())
+        return state
+
+    def update_phase(self, team_id: str, phase: str) -> TeamState:
+        state = self.read_state(team_id)
+        state.phase = phase
+        state.updated_at = utc_now_iso()
+        state.stage_history.append(f"{phase}:{state.updated_at}")
+        atomic_write_json(self.team_dir(team_id) / "state.json", state.to_dict())
+        self.append_event(team_id, "phase_updated", actor="lead", payload=state.to_dict())
+        return state
+
+    def set_active_team(self, *, workspace_root: Path, team_id: str) -> None:
+        self.load_config(team_id)
+        path = self.teams_root / "active.json"
+        payload = read_json(path, {"active_by_workspace": {}})
+        active_by_workspace = payload.get("active_by_workspace")
+        if not isinstance(active_by_workspace, dict):
+            active_by_workspace = {}
+        active_by_workspace[str(workspace_root.resolve())] = team_id
+        atomic_write_json(path, {"active_by_workspace": active_by_workspace})
+
+    def get_active_team(self, *, workspace_root: Path) -> str | None:
+        payload = read_json(self.teams_root / "active.json", {"active_by_workspace": {}})
+        active_by_workspace = payload.get("active_by_workspace")
+        if not isinstance(active_by_workspace, dict):
+            return None
+        team_id = active_by_workspace.get(str(workspace_root.resolve()))
+        if not team_id:
+            return None
+        try:
+            self.load_config(str(team_id))
+        except FileNotFoundError:
+            return None
+        return str(team_id)
 
     def list_members(self, team_id: str) -> list[TeamMember]:
         payload = read_json(self.team_dir(team_id) / "members.json", {"members": []})

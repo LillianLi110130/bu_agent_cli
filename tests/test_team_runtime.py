@@ -7,10 +7,17 @@ from types import SimpleNamespace
 
 from agent_core.agent import Agent
 from agent_core.agent.registry import AgentRegistry
+from agent_core.skill.review import SkillReviewHook
 from agent_core.llm.views import ChatInvokeCompletion
 from agent_core.team import Mailbox, TaskBoard, TeamMessage, TeamRuntime
 from agent_core.team.experiment import TEAM_EXPERIMENT_ENV
+from agent_core.team.models import utc_now_iso
 from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG, build_team_worker_command
+from cli.team.auto_prompt import (
+    TeamAutoParseError,
+    build_team_auto_prompt,
+    parse_team_auto_request,
+)
 from cli.team.factory import create_team_member_agent
 from cli.team.handler import TeamSlashHandler
 from cli.team.inbox import TeamInboxAttachmentHook, TeamInboxBuffer
@@ -18,7 +25,7 @@ from cli.team.worker import TeamWorker
 from rich.console import Console
 import tg_crab_main
 from tools import SandboxContext
-from tools.team_tool import team_create, team_update_task
+from tools.team_tool import team_create, team_send_message, team_snapshot, team_update_task
 
 
 class _FakeProcess:
@@ -100,6 +107,77 @@ def test_team_runtime_create_spawn_task_and_mailbox(tmp_path: Path) -> None:
     assert lead_messages[0].body == "done"
 
 
+def test_team_runtime_start_team_sets_active_and_state(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+
+    team = runtime.start_team(goal="Implement the team cockpit")
+
+    assert runtime.get_active_team() == team.team_id
+    state = runtime.read_state(team.team_id)
+    assert state.team_id == team.team_id
+    assert state.goal == "Implement the team cockpit"
+    assert state.phase == "created"
+    status = runtime.status(team.team_id)
+    assert status["state"]["phase"] == "created"
+
+
+def test_team_runtime_rejects_second_active_running_team(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+
+    first = runtime.start_team(goal="First team")
+
+    try:
+        runtime.start_team(goal="Second team")
+    except ValueError as exc:
+        assert first.team_id in str(exc)
+        assert "/team shutdown" in str(exc)
+    else:
+        raise AssertionError("expected active team guard")
+
+
+def test_team_runtime_allows_new_team_after_active_shutdown(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+
+    first = runtime.start_team(goal="First team")
+    runtime.shutdown_team(first.team_id)
+    second = runtime.start_team(goal="Second team")
+
+    assert runtime.get_active_team() == second.team_id
+
+
+def test_team_auto_prompt_parses_goal_and_keeps_orchestration_model_driven() -> None:
+    request = parse_team_auto_request(
+        ["Refactor", "auth", "module", "--name", "auth-refactor"]
+    )
+
+    assert request.goal == "Refactor auth module"
+    assert request.name == "auth-refactor"
+
+    prompt = build_team_auto_prompt(request)
+    assert "Team goal:\nRefactor auth module" in prompt
+    assert "Requested team name:\nauth-refactor" in prompt
+    assert "Do not use a hardcoded fixed team shape" in prompt
+    assert "team_snapshot" in prompt
+
+
+def test_team_auto_prompt_requires_goal() -> None:
+    try:
+        parse_team_auto_request(["--name", "demo"])
+    except TeamAutoParseError as exc:
+        assert "goal" in str(exc)
+    else:
+        raise AssertionError("expected TeamAutoParseError")
+
+
 def test_task_board_claim_complete_and_file_lock(tmp_path: Path) -> None:
     team_dir = tmp_path / "team"
     team_dir.mkdir()
@@ -125,6 +203,35 @@ def test_task_board_claim_complete_and_file_lock(tmp_path: Path) -> None:
     assert not any((team_dir / "locks" / "files").glob("*.lock"))
 
 
+def test_task_board_rejects_missing_self_and_cyclic_dependencies(tmp_path: Path) -> None:
+    team_dir = tmp_path / "team"
+    team_dir.mkdir()
+    board = TaskBoard(team_dir)
+    task_a = board.create_task(title="Task A", description="A")
+    task_b = board.create_task(title="Task B", description="B", depends_on=[task_a.task_id])
+
+    try:
+        board.create_task(title="Missing", description="Missing", depends_on=["task_missing"])
+    except ValueError as exc:
+        assert "Create dependency tasks first" in str(exc)
+    else:
+        raise AssertionError("expected missing dependency rejection")
+
+    try:
+        board.update_task(task_a.task_id, depends_on=[task_a.task_id])
+    except ValueError as exc:
+        assert "cannot depend on itself" in str(exc)
+    else:
+        raise AssertionError("expected self dependency rejection")
+
+    try:
+        board.update_task(task_a.task_id, depends_on=[task_b.task_id])
+    except ValueError as exc:
+        assert "cycle" in str(exc)
+    else:
+        raise AssertionError("expected cyclic dependency rejection")
+
+
 def test_team_runtime_send_message_accepts_any_sender(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     teams_root = tmp_path / "teams"
@@ -147,6 +254,186 @@ def test_team_runtime_send_message_accepts_any_sender(tmp_path: Path) -> None:
     assert inbox_messages[0].type == "handoff"
 
 
+def test_team_snapshot_groups_tasks_members_and_peeks_inbox(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="explorer-1",
+        agent_type="explore",
+    )
+    pending = runtime.create_task(
+        team_id=team.team_id,
+        title="Pending task",
+        description="Wait for worker",
+    )
+    blocked = runtime.create_task(
+        team_id=team.team_id,
+        title="Blocked task",
+        description="Needs guidance",
+    )
+    runtime.update_task(
+        team_id=team.team_id,
+        task_id=blocked.task_id,
+        status="blocked",
+        error="Missing context",
+    )
+    runtime.send_message(
+        team_id=team.team_id,
+        sender="explorer-1",
+        recipient="lead",
+        body="Need more context.",
+        type="note",
+    )
+
+    snapshot = runtime.snapshot(team.team_id)
+
+    assert snapshot["summary"]["tasks"]["pending"] == 1
+    assert snapshot["summary"]["tasks"]["blocked"] == 1
+    assert snapshot["summary"]["lead_inbox_unread"] == 1
+    assert snapshot["tasks_by_status"]["pending"][0]["task_id"] == pending.task_id
+    assert snapshot["tasks_by_status"]["blocked"][0]["task_id"] == blocked.task_id
+    assert snapshot["lead_inbox"][0]["body"] == "Need more context."
+    assert any("blocked" in warning for warning in snapshot["warnings"])
+    assert "inspect blocked tasks" in snapshot["suggested_next"]
+    still_unread = runtime.read_lead_inbox(team.team_id)
+    assert len(still_unread) == 1
+
+
+def test_team_snapshot_groups_idle_member_by_heartbeat(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="frontend-1",
+        agent_type="frontend",
+    )
+    runtime.store.write_heartbeat(
+        team.team_id,
+        "frontend-1",
+        {
+            "team_id": team.team_id,
+            "member_id": "frontend-1",
+            "status": "idle",
+            "updated_at": utc_now_iso(),
+        },
+    )
+
+    snapshot = runtime.snapshot(team.team_id)
+
+    assert snapshot["summary"]["members"]["idle"] == 1
+    assert "running" not in snapshot["summary"]["members"]
+    assert "running" not in snapshot["members_by_state"]
+    assert snapshot["members_by_state"]["idle"][0]["member_id"] == "frontend-1"
+
+
+def test_team_snapshot_treats_legacy_running_member_as_idle(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="legacy-1",
+        agent_type="general-purpose",
+    )
+    runtime.store.write_heartbeat(
+        team.team_id,
+        "legacy-1",
+        {
+            "team_id": team.team_id,
+            "member_id": "legacy-1",
+            "status": "running",
+            "updated_at": utc_now_iso(),
+        },
+    )
+
+    snapshot = runtime.snapshot(team.team_id)
+
+    assert snapshot["summary"]["members"]["idle"] == 1
+    assert "running" not in snapshot["summary"]["members"]
+    assert snapshot["members_by_state"]["idle"][0]["member_id"] == "legacy-1"
+
+
+def test_team_snapshot_groups_failed_member(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="backend-1",
+        agent_type="backend",
+    )
+    runtime.store.mark_member_status(team.team_id, "backend-1", "failed")
+    runtime.store.write_heartbeat(
+        team.team_id,
+        "backend-1",
+        {
+            "team_id": team.team_id,
+            "member_id": "backend-1",
+            "status": "failed",
+            "updated_at": utc_now_iso(),
+            "error": "boom",
+        },
+    )
+
+    snapshot = runtime.snapshot(team.team_id)
+
+    assert snapshot["summary"]["members"]["failed"] == 1
+    assert snapshot["members_by_state"]["failed"][0]["member_id"] == "backend-1"
+    assert any("backend-1 failed" in warning for warning in snapshot["warnings"])
+
+
+def test_team_snapshot_tool_returns_snapshot(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.create_task(
+        team_id=team.team_id,
+        title="Task",
+        description="Description",
+    )
+
+    result = asyncio.run(
+        team_snapshot.func(
+            ctx=SimpleNamespace(team_runtime=runtime),
+            team_id=team.team_id,
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["team"]["team_id"] == team.team_id
+    assert payload["summary"]["tasks"]["pending"] == 1
+    assert "tasks_by_status" in payload
+
+
 def test_team_slash_handler_create_and_list(tmp_path: Path) -> None:
     runtime = TeamRuntime(
         teams_root=tmp_path / "teams",
@@ -156,13 +443,54 @@ def test_team_slash_handler_create_and_list(tmp_path: Path) -> None:
     console = Console(record=True, width=100)
     handler = TeamSlashHandler(runtime=runtime, console=console)
 
-    asyncio.run(handler.handle(["create", "demo", "Analyze", "repo"]))
+    asyncio.run(handler.handle(["create", "Analyze", "repo", "--name", "demo"]))
     asyncio.run(handler.handle(["list"]))
 
     output = console.export_text()
-    assert "已创建 team" in output
+    assert "已创建并切换到 team" in output
     assert "demo-" in output
     assert "Analyze repo" in output
+
+
+def test_team_slash_handler_create_use_and_active_cockpit(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    console = Console(record=True, width=120)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["create", "Build", "a", "team", "cockpit"]))
+    active = runtime.get_active_team()
+    assert active is not None
+
+    asyncio.run(handler.handle([]))
+    asyncio.run(handler.handle(["task", "Check", "status", "--to", "explorer-1"]))
+    asyncio.run(handler.handle(["tasks"]))
+
+    output = console.export_text()
+    assert "已创建并切换到 team" in output
+    assert active in output
+    assert "Build a team cockpit" in output
+    assert "Check status" in output
+
+
+def test_team_slash_handler_rejects_second_active_team(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    console = Console(record=True, width=120)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["create", "First", "team"]))
+    asyncio.run(handler.handle(["create", "Second", "team"]))
+
+    output = console.export_text()
+    assert "already has an active running team" in output
+    assert "/team shutdown" in output
 
 
 def test_tg_crab_main_create_agent_initializes_team_runtime(
@@ -263,6 +591,44 @@ def test_tg_crab_main_create_agent_leaves_team_runtime_disabled_by_default(
     assert ctx.team_runtime is None
 
 
+def test_tg_crab_main_shutdowns_active_team_on_exit() -> None:
+    class _Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        def get_active_team(self) -> str:
+            return "team-1"
+
+        def shutdown_team(self, team_id: str) -> None:
+            self.shutdowns.append(team_id)
+
+    runtime = _Runtime()
+    ctx = SimpleNamespace(team_runtime=runtime)
+
+    asyncio.run(tg_crab_main._shutdown_active_team_on_exit(ctx))
+
+    assert runtime.shutdowns == ["team-1"]
+
+
+def test_tg_crab_main_shutdown_active_team_noops_without_active_team() -> None:
+    class _Runtime:
+        def __init__(self) -> None:
+            self.shutdowns: list[str] = []
+
+        def get_active_team(self) -> None:
+            return None
+
+        def shutdown_team(self, team_id: str) -> None:
+            self.shutdowns.append(team_id)
+
+    runtime = _Runtime()
+    ctx = SimpleNamespace(team_runtime=runtime)
+
+    asyncio.run(tg_crab_main._shutdown_active_team_on_exit(ctx))
+
+    assert runtime.shutdowns == []
+
+
 def test_build_team_worker_command_uses_unified_main_entrypoint(tmp_path: Path) -> None:
     command = build_team_worker_command(
         teams_root=tmp_path / "teams",
@@ -317,7 +683,25 @@ def test_team_slash_handler_reports_disabled_experiment() -> None:
     asyncio.run(handler.handle(["create", "demo"]))
 
     output = console.export_text()
+    assert "Agent team 实验功能未启用" in output
     assert TEAM_EXPERIMENT_ENV in output
+
+
+def test_team_slash_handler_empty_cockpit_suggests_auto(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    console = Console(record=True, width=100)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle([]))
+
+    output = console.export_text()
+    assert "当前 workspace 没有 active team" in output
+    assert "/team create <goal>" in output
+    assert "/team auto <goal>" in output
+    assert "[--name <name>]" in output
 
 
 def test_team_tool_reports_disabled_experiment() -> None:
@@ -333,6 +717,49 @@ def test_team_tool_reports_disabled_experiment() -> None:
     assert TEAM_EXPERIMENT_ENV in result
 
 
+def test_team_create_tool_sets_active_team_by_default(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+
+    result = asyncio.run(
+        team_create.func(
+            ctx=SimpleNamespace(team_runtime=runtime),
+            name="demo",
+            goal="Coordinate",
+        )
+    )
+
+    payload = json.loads(result)
+    assert runtime.get_active_team() == payload["team_id"]
+
+
+def test_team_create_tool_rejects_second_active_team(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+
+    asyncio.run(
+        team_create.func(
+            ctx=SimpleNamespace(team_runtime=runtime),
+            name="demo",
+            goal="Coordinate",
+        )
+    )
+    result = asyncio.run(
+        team_create.func(
+            ctx=SimpleNamespace(team_runtime=runtime),
+            name="demo-two",
+            goal="Coordinate again",
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert "already has an active running team" in result
+
+
 def test_team_update_task_tool_updates_existing_task(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     teams_root = tmp_path / "teams"
@@ -346,6 +773,11 @@ def test_team_update_task_tool_updates_existing_task(tmp_path: Path) -> None:
         assigned_to="explorer-1",
         write_scope=["old.py"],
     )
+    dependency = runtime.create_task(
+        team_id=team.team_id,
+        title="Dependency",
+        description="Dependency",
+    )
 
     result = asyncio.run(
         team_update_task.func(
@@ -356,7 +788,7 @@ def test_team_update_task_tool_updates_existing_task(tmp_path: Path) -> None:
             description="New description",
             status="blocked",
             assigned_to="coder-1",
-            depends_on=["task_dep"],
+            depends_on=[dependency.task_id],
             write_scope=["new.py"],
             error="Waiting for dependency",
         )
@@ -367,7 +799,7 @@ def test_team_update_task_tool_updates_existing_task(tmp_path: Path) -> None:
     assert payload["description"] == "New description"
     assert payload["status"] == "blocked"
     assert payload["assigned_to"] == "coder-1"
-    assert payload["depends_on"] == ["task_dep"]
+    assert payload["depends_on"] == [dependency.task_id]
     assert payload["write_scope"] == ["new.py"]
     assert payload["error"] == "Waiting for dependency"
     messages = Mailbox(teams_root / team.team_id).receive("coder-1")
@@ -452,9 +884,20 @@ Explore.
     )
     assert "Explore." in agent.system_prompt
     assert all(
-        getattr(tool, "name", None) not in {"delegate", "delegate_parallel"}
+        getattr(tool, "name", None)
+        not in {
+            "delegate",
+            "delegate_parallel",
+            "skill_manage",
+            "team_create",
+            "team_spawn_member",
+            "team_create_task",
+            "team_update_task",
+            "team_shutdown",
+        }
         for tool in agent.tools
     )
+    assert not any(isinstance(hook, SkillReviewHook) for hook in agent.hooks)
 
 
 def test_team_worker_uses_main_create_agent_factory(tmp_path: Path) -> None:
@@ -517,6 +960,7 @@ Explore.
 
     assert factory_calls == [workspace]
     assert agent.runtime_role == "team_member"
+    assert isinstance(ctx.team_runtime, TeamRuntime)
     assert agent.system_prompt is not None
     assert agent.system_prompt.index("base system prompt") < agent.system_prompt.index(
         "## Agent Team Runtime"
@@ -527,6 +971,9 @@ Explore.
     assert "Explore." in agent.system_prompt
     assert f"Team ID: {team.team_id}" in agent.system_prompt
     assert "Member ID: explorer-1" in agent.system_prompt
+    assert "Skills are read-only for teammates" in agent.system_prompt
+    assert "send a message to the team lead with the exact question" in agent.system_prompt
+    assert "clarification_request" in agent.system_prompt
     expected_session = teams_root / team.team_id / "sessions" / "explorer-1"
     assert (expected_session / "meta.json").exists()
 
@@ -556,6 +1003,39 @@ def test_team_worker_send_message_uses_shared_messenger(tmp_path: Path) -> None:
     assert messages[0].sender == "explorer-1"
     assert messages[0].recipient == "coder-1"
     assert messages[0].type == "handoff"
+
+
+def test_team_send_message_tool_preserves_metadata_and_reply_to(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = runtime.create_team(name="demo", goal="Coordinate")
+
+    result = asyncio.run(
+        team_send_message.func(
+            ctx=SimpleNamespace(team_runtime=runtime),
+            team_id=team.team_id,
+            sender="explorer-1",
+            recipient="lead",
+            type="clarification_request",
+            body="Which API shape should I use?",
+            metadata={
+                "task_id": "task_1",
+                "question": "Which API shape should I use?",
+                "options": ["REST", "GraphQL"],
+                "recommended": "REST",
+                "blocking": True,
+            },
+            reply_to="msg-parent",
+        )
+    )
+
+    payload = json.loads(result)
+    assert payload["type"] == "clarification_request"
+    assert payload["metadata"]["blocking"] is True
+    assert payload["metadata"]["recommended"] == "REST"
+    assert payload["reply_to"] == "msg-parent"
 
 
 def test_team_inbox_attachment_hook_adds_messages_before_llm_call() -> None:
@@ -631,3 +1111,66 @@ def test_team_worker_submits_pending_messages_when_idle(tmp_path: Path) -> None:
     assert "Summarize the latest handoff." in idle_agent.queries[0]
     lead_messages = Mailbox(teams_root / team.team_id).receive("lead")
     assert {message.type for message in lead_messages} == {"message_ack", "messages_processed"}
+
+
+def test_team_worker_marks_member_failed_on_unhandled_exception(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    store_runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = store_runtime.create_team(name="demo", goal="Coordinate")
+    store_runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="explorer-1",
+        agent_type="explore",
+    )
+
+    class _RuntimeFailAgent:
+        def register_hook(self, hook) -> None:
+            self.hook = hook
+
+        def bind_session_runtime(self, runtime) -> None:
+            self.runtime = runtime
+
+    def fake_create_agent(*args, **kwargs):
+        del args, kwargs
+        return _RuntimeFailAgent(), SandboxContext.create(workspace), SimpleNamespace()
+
+    worker = TeamWorker(
+        teams_root=teams_root,
+        team_id=team.team_id,
+        member_id="explorer-1",
+        agent_type="explore",
+        workspace=workspace,
+        create_agent_factory=fake_create_agent,
+    )
+
+    async def quiet_message_pump() -> None:
+        await asyncio.sleep(10)
+
+    async def failing_work_loop(agent) -> None:
+        del agent
+        raise RuntimeError("worker boom")
+
+    worker._message_pump = quiet_message_pump  # type: ignore[method-assign]  # noqa: SLF001
+    worker._work_loop = failing_work_loop  # type: ignore[method-assign]  # noqa: SLF001
+
+    try:
+        asyncio.run(worker.run())
+    except RuntimeError as exc:
+        assert str(exc) == "worker boom"
+    else:
+        raise AssertionError("expected worker failure")
+
+    members = store_runtime.store.list_members(team.team_id)
+    assert members[0].status == "failed"
+    heartbeat = store_runtime.store.read_heartbeat(team.team_id, "explorer-1")
+    assert heartbeat is not None
+    assert heartbeat["status"] == "failed"
+    assert heartbeat["error"] == "worker boom"
+    lead_messages = Mailbox(teams_root / team.team_id).receive("lead")
+    assert "worker_failed" in {message.type for message in lead_messages}

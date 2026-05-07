@@ -14,6 +14,6 @@ def is_team_experiment_enabled() -> bool:
 
 def team_experiment_disabled_message() -> str:
     return (
-        "Agent team experimental feature is disabled. "
-        f"Set {TEAM_EXPERIMENT_ENV}=1 to enable it."
+        "Agent team 实验功能未启用。"
+        f"请设置环境变量 {TEAM_EXPERIMENT_ENV}=1 后再使用。"
     )

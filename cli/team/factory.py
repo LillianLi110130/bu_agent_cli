@@ -9,7 +9,6 @@ from typing import Any
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
-from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
 from agent_core.skill.runtime_service import SkillRuntimeService
 from cli.at_commands import AtCommandRegistry
 from config.model_config import get_model_config
@@ -17,7 +16,16 @@ from tools import SandboxContext, get_sandbox_context
 from tools.sandbox import get_current_agent
 from tools.skills import get_skill_runtime_service
 
-_TEAM_MEMBER_BLOCKED_TOOL_NAMES = {"delegate", "delegate_parallel"}
+_TEAM_MEMBER_BLOCKED_TOOL_NAMES = {
+    "delegate",
+    "delegate_parallel",
+    "skill_manage",
+    "team_create",
+    "team_spawn_member",
+    "team_create_task",
+    "team_update_task",
+    "team_shutdown",
+}
 
 
 def _bootstrap_module() -> Any:
@@ -176,10 +184,5 @@ def create_team_member_agent(
     skill_runtime_service.bind_agent(agent)
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
-    agent.register_hook(
-        SkillReviewHook(
-            runner=SkillReviewRunner(service=skill_runtime_service),
-        )
-    )
     ctx.current_agent = agent
     return agent, ctx, runtime

@@ -41,6 +41,7 @@ class TaskBoard:
         with self._lock("lead"):
             tasks = self.list_tasks()
             tasks.append(task)
+            self._validate_dependencies(tasks, task.task_id, task.depends_on)
             self._write(tasks)
         return task
 
@@ -128,7 +129,9 @@ class TaskBoard:
             if assigned_to is not None:
                 task.assigned_to = assigned_to or None
             if depends_on is not None:
-                task.depends_on = list(depends_on)
+                next_depends_on = list(depends_on)
+                self._validate_dependencies(tasks, task.task_id, next_depends_on)
+                task.depends_on = next_depends_on
             if write_scope is not None:
                 task.write_scope = list(write_scope)
             if result is not None:
@@ -175,6 +178,48 @@ class TaskBoard:
             if task.task_id == task_id:
                 return task
         raise ValueError(f"Task not found: {task_id}")
+
+    def _validate_dependencies(
+        self,
+        tasks: list[TeamTask],
+        task_id: str,
+        depends_on: list[str],
+    ) -> None:
+        existing_ids = {task.task_id for task in tasks}
+        missing = [dep for dep in depends_on if dep not in existing_ids]
+        if missing:
+            missing_text = ", ".join(missing)
+            raise ValueError(
+                "Invalid task dependencies: "
+                f"{missing_text}. Create dependency tasks first and use returned task_id values."
+            )
+        if task_id in depends_on:
+            raise ValueError(f"Task '{task_id}' cannot depend on itself")
+
+        graph = {task.task_id: list(task.depends_on) for task in tasks}
+        graph[task_id] = list(depends_on)
+        if self._has_dependency_cycle(graph):
+            raise ValueError(f"Task dependencies would create a cycle involving '{task_id}'")
+
+    @staticmethod
+    def _has_dependency_cycle(graph: dict[str, list[str]]) -> bool:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(node: str) -> bool:
+            if node in visiting:
+                return True
+            if node in visited:
+                return False
+            visiting.add(node)
+            for dependency in graph.get(node, []):
+                if dependency in graph and visit(dependency):
+                    return True
+            visiting.remove(node)
+            visited.add(node)
+            return False
+
+        return any(visit(node) for node in graph)
 
     def _write(self, tasks: list[TeamTask]) -> None:
         atomic_write_json(
