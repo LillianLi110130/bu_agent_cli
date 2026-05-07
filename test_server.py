@@ -1,103 +1,85 @@
 """
-Test server for agent_core HTTP API.
+Local Python server entrypoint for manual testing.
 
-Run with: conda run -n 314 python test_server.py
+Run with:
+    conda run -n 314 python test_server.py
 
-启用调试输出（查看 LLM 原始响应）：
-export BU_AGENT_SDK_LLM_DEBUG=1  # Linux/Mac
-set BU_AGENT_SDK_LLM_DEBUG=1     # Windows CMD
-$env:BU_AGENT_SDK_LLM_DEBUG="1"  # Windows PowerShell
+Recommended env vars:
+    $env:PORT = "8000"
+    $env:HOST = "127.0.0.1"
+    $env:LLM_PROVIDER = "gateway"   # optional, when you want local agent requests to use ChatGateway
+    $env:LLM_MODEL = "coding-default"
+    $env:LLM_GATEWAY_BASE_URL = "http://127.0.0.1:8000"
+    $env:CRAB_GATEWAY_API_KEY = "test-token"
+    $env:LLM_GATEWAY_ROUTES_FILE = "config/gateway_routes.server.json"
+
+Useful routes after startup:
+    GET  /docs
+    POST /agent/query-stream
+    POST /agent/query-stream-delta
+    POST /llm/query-stream
 """
+
+from __future__ import annotations
 
 import logging
 import os
-
-# 启用调试输出
-os.environ["BU_AGENT_SDK_LLM_DEBUG"] = "1"
-
-# 配置日志显示 DEBUG 信息
-logging.basicConfig(
-    level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-
-from pydantic import BaseModel, Field
+from pathlib import Path
 
 from agent_core import Agent
-from agent_core.llm import ChatOpenAI
+from agent_core.bootstrap.agent_factory import create_agent as create_runtime_agent
 from agent_core.server import create_server
-from agent_core.tools import tool
 
 
-@tool("Add two numbers")
-async def add(a: int, b: int) -> int:
-    """Add two numbers together."""
-    return a + b
-
-
-@tool("Get current weather")
-async def get_weather(location: str) -> str:
-    """Get the current weather for a location (mock)."""
-    return f"The weather in {location} is sunny and 75°F."
-
-
-@tool("Search the web")
-async def search_web(query: str) -> str:
-    """Search the web for information (mock)."""
-    return f"Search results for '{query}': Found 5 relevant articles with helpful information."
-
-
-# Test args_schema feature
-class CustodyFeeItem(BaseModel):
-    """托管费计算项目"""
-
-    datDte: str = Field(..., description="数据日期，格式 YYYY/MM/DD")
-    bnkNam: str = Field(..., description="银行名称")
-    typNam: str = Field(..., description="类型名称")
-    sscYer: float = Field(..., description="年累计托管费收入")
-
-
-@tool("Calculate custody fee", args_schema=CustodyFeeItem)
-async def calculate_custody_fee(item: CustodyFeeItem) -> str:
-    """Calculate custody fee based on the given parameters (mock)."""
-    fee = item.sscYer * 0.01  # Simple calculation: 1% of yearly income
-    return (
-        f"托管费计算结果 - 银行: {item.bnkNam}, 类型: {item.typNam}, "
-        f"日期: {item.datDte}, 年收入: {item.sscYer}, 计算费率: {fee:.2f}"
+def _configure_logging() -> None:
+    debug_flag = (os.getenv("BU_AGENT_SDK_LLM_DEBUG") or "").strip()
+    level = logging.DEBUG if debug_flag else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
 
-# Create agent factory
-def create_agent() -> Agent:
-    """Factory function to create new Agent instances."""
-    return Agent(
-        llm=ChatOpenAI(
-            model="GLM-4.7",
-            api_key="9a7ccd2b6915401481f7caa599398658.cbmpB4oEOlQbQjKA",
-            base_url="https://open.bigmodel.cn/api/coding/paas/v4",
-        ),
-        tools=[add, get_weather, search_web, calculate_custody_fee],
-        system_prompt="You are a helpful assistant that can use tools to answer questions.",
+def create_test_agent() -> Agent:
+    """Create a full local runtime agent using the repository bootstrap flow."""
+    model = (os.getenv("TEST_SERVER_MODEL") or os.getenv("LLM_MODEL") or "").strip() or None
+    root_dir = Path(os.getenv("TEST_SERVER_ROOT_DIR", Path.cwd()))
+    agent, _ = create_runtime_agent(model=model, root_dir=root_dir)
+    return agent
+
+
+def build_app():
+    """Build the FastAPI app used for local gateway and agent testing."""
+    return create_server(
+        agent_factory=create_test_agent,
+        session_timeout_minutes=int(os.getenv("TEST_SERVER_SESSION_TIMEOUT_MINUTES", "60")),
+        max_sessions=int(os.getenv("TEST_SERVER_MAX_SESSIONS", "1000")),
+        enable_cleanup_task=True,
     )
 
 
-# Create the FastAPI app
-app = create_server(
-    agent_factory=create_agent,
-    session_timeout_minutes=60,
-    max_sessions=1000,
-    enable_cleanup_task=True,
-)
+app = build_app()
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # Run the server
-    print("Starting BU Agent SDK Server on http://localhost:8000")
-    print("API docs available at http://localhost:8000/docs")
+    _configure_logging()
+
+    host = (os.getenv("HOST") or "127.0.0.1").strip()
+    port = int((os.getenv("PORT") or "8000").strip())
+
+    print(f"Starting BU Agent test server on http://{host}:{port}")
+    print(f"API docs: http://{host}:{port}/docs")
+    print("Available test endpoints:")
+    print("  POST /agent/query-stream")
+    print("  POST /agent/query-stream-delta")
+    print("  POST /llm/query-stream")
+    print("Server-only gateway routes file: config/gateway_routes.server.json")
+
     uvicorn.run(
         app,
-        host="127.0.0.1",
-        port=8000,
-        log_level="info",
+        host=host,
+        port=port,
+        log_level="debug" if logging.getLogger().level <= logging.DEBUG else "info",
     )

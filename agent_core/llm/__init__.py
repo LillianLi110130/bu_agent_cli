@@ -37,6 +37,7 @@ from agent_core.llm.messages import (
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
 # Chat models - direct import
+from agent_core.llm.gateway.chat import ChatGateway
 from agent_core.llm.openai.chat import ChatOpenAI
 
 # Type stubs for lazy imports
@@ -68,5 +69,6 @@ __all__ = [
     "ContentRedactedThinking",
     # Chat models
     "BaseChatModel",
+    "ChatGateway",
     "ChatOpenAI",
 ]

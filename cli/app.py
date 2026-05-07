@@ -888,8 +888,6 @@ class TGAgentCLI:
         self._console.print("[bold cyan]模型预设：[/bold cyan]")
         for name, preset in self._model_presets.items():
             model = str(preset["model"])
-            base_url = str(preset.get("base_url", "(继承当前配置)"))
-            api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
             vision_marker = " 视觉" if self._preset_supports_vision(name) else ""
             marker = " [green](默认)[/green]" if name == self._default_model_preset else ""
             if name == self._auto_vision_preset:
@@ -898,8 +896,7 @@ class TGAgentCLI:
                 marker += " [blue](图像摘要)[/blue]"
             self._console.print(
                 f"  [cyan]{name}[/cyan]{marker} -> {model} "
-                f"[dim]{vision_marker}[/dim] "
-                f"[dim](base_url: {base_url}, key: {api_key_env})[/dim]"
+                f"[dim]{vision_marker}[/dim]"
             )
 
     def _resolve_current_preset_name(self) -> str | None:

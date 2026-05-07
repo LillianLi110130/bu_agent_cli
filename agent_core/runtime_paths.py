@@ -62,7 +62,7 @@ def _load_model_preset_api_key_env_names() -> list[str]:
     env_names: list[str] = []
     seen: set[str] = set()
     for preset in load_model_presets().values():
-        raw_name = preset.get("api_key_env", "OPENAI_API_KEY")
+        raw_name = preset.get("api_key_env")
         if not isinstance(raw_name, str):
             continue
         env_name = raw_name.strip()
