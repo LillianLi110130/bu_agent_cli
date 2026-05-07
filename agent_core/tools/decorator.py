@@ -154,15 +154,27 @@ def _get_param_description(func: Callable, param_name: str) -> str | None:
 
     # Simple docstring parsing for Args section
     lines = docstring.split("\n")
+    param_names = set(inspect.signature(func).parameters)
     in_args = False
-    for line in lines:
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.lower().startswith("args:"):
             in_args = True
             continue
         if in_args:
             if stripped.startswith(param_name + ":"):
-                return stripped.split(":", 1)[1].strip()
+                description_parts = [stripped.split(":", 1)[1].strip()]
+                for continuation in lines[index + 1 :]:
+                    continuation_stripped = continuation.strip()
+                    if not continuation_stripped:
+                        continue
+                    if continuation_stripped.lower().startswith(("returns:", "raises:", "example")):
+                        break
+                    potential_param = continuation_stripped.split(":", 1)[0].strip()
+                    if ":" in continuation_stripped and potential_param in param_names:
+                        break
+                    description_parts.append(continuation_stripped)
+                return " ".join(part for part in description_parts if part)
             if stripped and not stripped.startswith(" ") and ":" in stripped:
                 # Check if it's another param
                 potential_param = stripped.split(":")[0].strip()

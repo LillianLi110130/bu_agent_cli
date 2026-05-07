@@ -228,6 +228,180 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
 
 
 @pytest.mark.asyncio
+async def test_remote_bridge_image_json_is_processed_as_multimodal_input(
+    workspace_root,
+    monkeypatch,
+):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    seen_calls = []
+
+    async def fake_run_agent(user_input, has_image=False):
+        seen_calls.append((user_input, has_image))
+        return "processed:remote image"
+
+    monkeypatch.setattr(cli, "_run_agent", fake_run_agent)
+
+    payload = (
+        '{"msgType":"image","imageDataBase64":["iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC'
+        'AAAAC0lEQVR42mP8/x8AAwMCAO+a4e0AAAAASUVORK5CYII="],"userInput":"帮我看下这张图"}'
+    )
+    store.enqueue_text(
+        payload,
+        source="remote",
+        source_meta={"delivery_id": "delivery-image-1"},
+        remote_response_required=True,
+        request_id="remote-image-1",
+    )
+
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    assert len(seen_calls) == 1
+    user_input, has_image = seen_calls[0]
+    assert has_image is True
+    assert isinstance(user_input, list)
+    assert user_input[0].type == "text"
+    assert user_input[0].text == "帮我看下这张图"
+    assert user_input[1].type == "image_url"
+    assert user_input[1].image_url.media_type == "image/png"
+    assert user_input[1].image_url.url.startswith("data:image/png;base64,")
+
+    result = store.find_result("remote-image-1")
+    assert result is not None
+    assert result.final_status == "completed"
+    assert result.input_kind == "image"
+    assert result.final_content == "processed:remote image"
+
+
+@pytest.mark.asyncio
+async def test_remote_bridge_image_json_supports_multiple_images(
+    workspace_root,
+    monkeypatch,
+):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    seen_calls = []
+
+    async def fake_run_agent(user_input, has_image=False):
+        seen_calls.append((user_input, has_image))
+        return "processed:remote images"
+
+    monkeypatch.setattr(cli, "_run_agent", fake_run_agent)
+
+    png_base64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+        "AAAAC0lEQVR42mP8/x8AAwMCAO+a4e0AAAAASUVORK5CYII="
+    )
+    payload = (
+        '{"msgType":"image","imageDataBase64":["'
+        + png_base64
+        + '","data:image/png;base64,'
+        + png_base64
+        + '"],"userInput":"对比这两张图"}'
+    )
+    store.enqueue_text(
+        payload,
+        source="remote",
+        source_meta={"delivery_id": "delivery-images-1"},
+        remote_response_required=True,
+        request_id="remote-images-1",
+    )
+
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    assert len(seen_calls) == 1
+    user_input, has_image = seen_calls[0]
+    assert has_image is True
+    assert isinstance(user_input, list)
+    assert [part.type for part in user_input] == ["text", "image_url", "image_url"]
+    assert user_input[0].text == "对比这两张图"
+    assert user_input[1].image_url.media_type == "image/png"
+    assert user_input[2].image_url.media_type == "image/png"
+
+    result = store.find_result("remote-images-1")
+    assert result is not None
+    assert result.final_status == "completed"
+    assert result.input_kind == "image"
+    assert result.final_content == "processed:remote images"
+
+
+@pytest.mark.asyncio
+async def test_remote_bridge_invalid_image_json_fails_request(workspace_root, monkeypatch):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+
+    async def fail_run_agent(user_input, has_image=False):
+        del user_input, has_image
+        raise AssertionError("invalid remote image payload should not reach _run_agent")
+
+    monkeypatch.setattr(cli, "_run_agent", fail_run_agent)
+
+    store.enqueue_text(
+        '{"msgType":"image","imageDataBase64":["not-base64"],"userInput":"帮我看下"}',
+        source="remote",
+        source_meta={"delivery_id": "delivery-image-invalid-1"},
+        remote_response_required=True,
+        request_id="remote-image-invalid-1",
+    )
+
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    result = store.find_result("remote-image-invalid-1")
+    assert result is not None
+    assert result.final_status == "failed"
+    assert result.error_code == "REMOTE_IMAGE_MESSAGE_INVALID"
+    assert "base64" in (result.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_remote_bridge_image_json_skips_invalid_images_when_others_are_valid(
+    workspace_root,
+    monkeypatch,
+):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    seen_calls = []
+
+    async def fake_run_agent(user_input, has_image=False):
+        seen_calls.append((user_input, has_image))
+        return "processed:partial remote images"
+
+    monkeypatch.setattr(cli, "_run_agent", fake_run_agent)
+
+    png_base64 = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC"
+        "AAAAC0lEQVR42mP8/x8AAwMCAO+a4e0AAAAASUVORK5CYII="
+    )
+    store.enqueue_text(
+        (
+            '{"msgType":"image","imageDataBase64":["not-base64","'
+            + png_base64
+            + '"],"userInput":"只看有效图片"}'
+        ),
+        source="remote",
+        source_meta={"delivery_id": "delivery-image-partial-1"},
+        remote_response_required=True,
+        request_id="remote-image-partial-1",
+    )
+
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    assert len(seen_calls) == 1
+    user_input, has_image = seen_calls[0]
+    assert has_image is True
+    assert isinstance(user_input, list)
+    assert [part.type for part in user_input] == ["text", "image_url"]
+    assert user_input[0].text == "只看有效图片"
+    assert user_input[1].image_url.media_type == "image/png"
+
+    result = store.find_result("remote-image-partial-1")
+    assert result is not None
+    assert result.final_status == "completed"
+    assert result.input_kind == "image"
+    assert result.final_content == "processed:partial remote images"
+
+
+@pytest.mark.asyncio
 async def test_slash_command_final_content_is_captured(workspace_root, monkeypatch):
     cli, store = _create_cli(workspace_root, monkeypatch)
 

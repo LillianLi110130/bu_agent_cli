@@ -19,6 +19,7 @@ Environment Variables:
 import argparse
 import asyncio
 import inspect
+import logging
 import os
 import socket
 import sys
@@ -318,6 +319,38 @@ def _load_cli_runtime_env() -> None:
     ensure_cli_runtime_state()
     load_runtime_env()
 
+
+def _configure_llm_debug_logging() -> None:
+    """Enable OpenAI tool-call debug logs when explicitly requested."""
+    if not (os.getenv("BU_AGENT_SDK_LLM_DEBUG") or os.getenv("bu_agent_sdk_LLM_DEBUG")):
+        return
+
+    log_path_raw = os.getenv("BU_AGENT_SDK_LLM_DEBUG_FILE")
+    log_path = (
+        Path(log_path_raw).expanduser()
+        if log_path_raw
+        else ensure_cli_runtime_state() / "logs" / "llm-debug.log"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    debug_logger = logging.getLogger("agent_core.llm.openai")
+    debug_logger.setLevel(logging.INFO)
+    debug_logger.propagate = False
+
+    for handler in list(debug_logger.handlers):
+        if getattr(handler, "_bu_agent_llm_debug_handler", False):
+            debug_logger.removeHandler(handler)
+            handler.close()
+
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+    )
+    file_handler._bu_agent_llm_debug_handler = True  # type: ignore[attr-defined]
+    debug_logger.addHandler(file_handler)
 
 def _should_run_internal_worker(argv: list[str] | None = None) -> bool:
     """Return whether the current process should dispatch to the worker entrypoint."""
@@ -634,43 +667,10 @@ def create_agent(
     return agent, ctx, runtime
 
 
-def _create_subagent_factory(config: AgentConfig, parent_ctx: Any, all_tools: list) -> Agent:
-    """Factory function to create subagent instances."""
-    from config.model_config import get_model_config
-
-    model, base_url, api_key = get_model_config(config.model)
-
-    llm = ChatOpenAI(
-        model=model, api_key=api_key, base_url=base_url, temperature=config.temperature
-    )
-
-    # 为子代理添加系统信息到系统提示词
-    system_info_text = _get_system_info()
-    system_prompt = (
-        f"{config.system_prompt}\n\n## System Information\n\n"
-        f"The current environment: {system_info_text}"
-    )
-
-    dependency_overrides = {get_sandbox_context: lambda: parent_ctx}
-    skill_runtime_service = getattr(parent_ctx, "skill_runtime_service", None)
-    if skill_runtime_service is not None:
-        dependency_overrides[get_skill_runtime_service] = lambda: skill_runtime_service
-
-    agent = Agent(
-        llm=llm,
-        tools=all_tools,
-        system_prompt=system_prompt,
-        agent_config=config,
-        dependency_overrides=dependency_overrides,
-        hooks=build_agent_hooks(),
-    )
-    agent.dependency_overrides[get_current_agent] = lambda: agent
-    return agent
-
-
 async def main():
     """Main entry point."""
     _load_cli_runtime_env()
+    _configure_llm_debug_logging()
     args = parse_args()
     await _authenticate_worker_startup(args)
 

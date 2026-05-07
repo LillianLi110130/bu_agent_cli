@@ -7,9 +7,13 @@ from pathlib import Path
 
 from rich.console import Console
 
+from agent_core.agent import Agent
+from agent_core.agent.runtime_events import RunFinished
 from agent_core.llm.messages import ToolMessage
 from agent_core.skill.manager import SkillManagementError, SkillManager
 from agent_core.skill.review import (
+    SKILL_REVIEW_PROMPT,
+    SkillReviewRunner,
     SkillReviewHook,
     SkillReviewResult,
     _extract_skill_manage_changes,
@@ -18,6 +22,10 @@ from agent_core.skill.review import (
 )
 from agent_core.skill.runtime_service import SkillRuntimeService
 from cli.at_commands import AtCommandRegistry
+from cli.app import (
+    _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY,
+    _summarize_unclassified_skill_review,
+)
 from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
 from tools.skills import skill_manage
 
@@ -244,6 +252,44 @@ def test_skill_review_detects_exact_nothing_to_save_response() -> None:
     assert not _is_nothing_to_save("No skill was saved.")
 
 
+def test_skill_review_runner_builds_hidden_review_agent_with_runtime_role(tmp_path: Path) -> None:
+    registry = AtCommandRegistry(skill_dirs=[tmp_path / "skills"])
+    service = SkillRuntimeService(skill_registry=registry)
+    runner = SkillReviewRunner(service=service)
+    main_agent = Agent(llm=object(), tools=[], system_prompt="system prompt")
+    captured: dict[str, object] = {}
+
+    async def _fake_query(self, message: str) -> str:
+        captured["runtime_role"] = self.runtime_role
+        captured["message"] = message
+        return "Nothing to save."
+
+    original_query = Agent.query
+    Agent.query = _fake_query  # type: ignore[assignment]
+    try:
+        result = asyncio.run(runner.run(main_agent, []))
+    finally:
+        Agent.query = original_query  # type: ignore[assignment]
+
+    assert result.final_response == "Nothing to save."
+    assert captured["runtime_role"] == "skill_review"
+    assert captured["message"] == SKILL_REVIEW_PROMPT
+
+
+def test_skill_review_hook_only_triggers_for_primary_agents() -> None:
+    hook = SkillReviewHook(runner=object(), interval=1)  # type: ignore[arg-type]
+    hook._iters_since_skill = 1  # noqa: SLF001
+    event = RunFinished(final_response="done", iterations=1)
+
+    primary_agent = Agent(llm=object(), tools=[skill_manage], runtime_role="primary")
+    subagent = Agent(llm=object(), tools=[skill_manage], runtime_role="subagent")
+    review_agent = Agent(llm=object(), tools=[skill_manage], runtime_role="skill_review")
+
+    assert hook._should_trigger(event, primary_agent) is True  # noqa: SLF001
+    assert hook._should_trigger(event, subagent) is False  # noqa: SLF001
+    assert hook._should_trigger(event, review_agent) is False  # noqa: SLF001
+
+
 def test_skill_review_hook_reports_background_errors() -> None:
     class FailingTask:
         def __init__(self, error: Exception) -> None:
@@ -324,3 +370,17 @@ def test_skill_review_hook_reports_unclassified_no_change() -> None:
     hook._handle_background_result(CompletedTask())  # type: ignore[arg-type]  # noqa: SLF001
 
     assert captured == ["No reusable workflow was found."]
+
+
+def test_unclassified_skill_review_summary_keeps_head_and_tail() -> None:
+    head = "A" * 200
+    middle = "B" * 50
+    tail = "C" * 200
+
+    summary = _summarize_unclassified_skill_review(head + middle + tail)
+
+    assert summary == f"{head}\n...\n{tail}"
+
+
+def test_unclassified_skill_review_summary_uses_empty_fallback() -> None:
+    assert _summarize_unclassified_skill_review("   \n") == _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY

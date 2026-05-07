@@ -570,6 +570,125 @@ def test_workspace_plugin_overrides_builtin_plugin():
         shutil.rmtree(workspace, ignore_errors=True)
 
 
+def test_repo_builtin_wiki_workflow_plugin_loads():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = repo_root / "plugins"
+        manager = _create_manager(workspace, builtin_root)
+        manager.load_all()
+
+        plugin = manager.get_plugin("wiki")
+        assert plugin is not None
+        assert plugin.status == "loaded"
+        assert plugin.skills == []
+        assert plugin.commands == [
+            "wiki:ingest",
+            "wiki:init",
+            "wiki:lint",
+            "wiki:query",
+        ]
+
+        ingest_command = manager.get_command("wiki:ingest")
+        assert ingest_command is not None
+        assert ingest_command.mode == "prompt"
+        rendered = ingest_command.render_prompt("llm-wiki/raw/article.md")
+        assert "llm-wiki/WIKI_AGENT.md" in rendered
+        assert "llm-wiki/wiki/summaries/" in rendered
+        assert "llm-wiki/raw/article.md" in rendered
+        assert "编译步骤" in rendered
+        assert "概念综合页" in rendered
+        assert "二次编译" in rendered
+        assert "source_path" in rendered
+        assert "llm-wiki/state/ingest-status.md" in rendered
+        assert "逐个执行下面的编译流程" in rendered
+        assert "ingest-status.md" in rendered
+        assert "每完成一个来源就立即更新 `index.md`、更新 `ingest-status.md` 并追加一条 `log.md` 记录" in rendered
+
+        query_command = manager.get_command("wiki:query")
+        assert query_command is not None
+        assert query_command.mode == "prompt"
+        query_rendered = query_command.render_prompt("有哪些核心结论？")
+        assert "默认只回答、不改动 wiki 页面" in query_rendered
+        assert "llm-wiki/wiki/synthesis/" in query_rendered
+        assert "新建 synthesis 页" in query_rendered
+        assert "`查询` 记录" in query_rendered
+
+        lint_command = manager.get_command("wiki:lint")
+        assert lint_command is not None
+        assert lint_command.mode == "prompt"
+
+        init_command = manager.get_command("wiki:init")
+        assert init_command is not None
+        assert init_command.mode == "python"
+
+        output = asyncio.run(
+            PluginCommandExecutor().execute(
+                init_command,
+                args=[],
+                args_text="",
+                working_dir=workspace,
+            )
+        )
+        assert "LLM Wiki 已初始化。" in output
+        assert (workspace / "llm-wiki" / "WIKI_AGENT.md").exists()
+        wiki_agent_content = (workspace / "llm-wiki" / "WIKI_AGENT.md").read_text(
+            encoding="utf-8"
+        )
+        assert "默认只回答并给出沉淀建议" in wiki_agent_content
+        assert "同一来源重复编译时" in wiki_agent_content
+        assert "本次是二次编译" in wiki_agent_content
+        assert "source_path" in wiki_agent_content
+        assert "Markdown 相对链接" in wiki_agent_content
+        assert "synthesis/" in wiki_agent_content
+        assert "`查询` 记录" in wiki_agent_content
+        assert "state/ingest-status.md" in wiki_agent_content
+        assert "记录已经编译过的来源" in wiki_agent_content
+        assert "每完成一个来源，都先完成一次最小闭环，再处理下一个来源" in wiki_agent_content
+        assert not (workspace / "llm-wiki" / "schema").exists()
+        assert (workspace / "llm-wiki" / "wiki" / "index.md").exists()
+        assert (workspace / "llm-wiki" / "state" / "ingest-status.md").exists()
+        assert (workspace / "llm-wiki" / "wiki" / "Overview.md").exists()
+        assert (workspace / "llm-wiki" / "wiki" / "log.md").exists()
+        assert (workspace / "llm-wiki" / "wiki" / "synthesis").exists()
+        assert not (workspace / "llm-wiki" / "raw" / "README.md").exists()
+        assert not (workspace / "llm-wiki" / "out").exists()
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_wiki_init_fails_when_required_directory_path_is_a_file():
+    repo_root = Path(__file__).resolve().parent.parent
+    temp_root = repo_root / ".pytest_tmp"
+    temp_root.mkdir(exist_ok=True)
+    workspace = make_workspace(temp_root)
+    try:
+        builtin_root = repo_root / "plugins"
+        manager = _create_manager(workspace, builtin_root)
+        manager.load_all()
+
+        init_command = manager.get_command("wiki:init")
+        assert init_command is not None
+        assert init_command.mode == "python"
+
+        (workspace / "llm-wiki").mkdir()
+        (workspace / "llm-wiki" / "wiki").write_text("not a directory", encoding="utf-8")
+
+        with pytest.raises(PluginExecutionError, match="不是目录"):
+            asyncio.run(
+                PluginCommandExecutor().execute(
+                    init_command,
+                    args=[],
+                    args_text="",
+                    working_dir=workspace,
+                )
+            )
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
 def test_workspace_broken_plugin_overrides_builtin_without_fallback():
     repo_root = Path(__file__).resolve().parent.parent
     temp_root = repo_root / ".pytest_tmp"

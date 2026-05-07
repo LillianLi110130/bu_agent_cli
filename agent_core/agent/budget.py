@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
 import logging
-from typing import TYPE_CHECKING, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Sequence
 
 from agent_core.llm.messages import BaseMessage
 from config.model_config import get_model_limits
@@ -19,6 +20,8 @@ log = logging.getLogger(__name__)
 DEFAULT_CONTEXT_WINDOW = 128_000
 DEFAULT_WARN_THRESHOLD = 0.65
 DEFAULT_HARD_THRESHOLD = 0.92
+DEFAULT_IMAGE_TOKEN_ESTIMATE = 2_048
+IMAGE_PAYLOAD_PLACEHOLDER = "<image_data_omitted_for_token_budget>"
 
 
 @dataclass(slots=True)
@@ -146,12 +149,52 @@ class ContextBudgetEngine:
 
         total = 0
         for message in messages:
+            image_count = 0
             try:
-                serialized = message.model_dump_json()
+                dumped = message.model_dump(mode="json")
+                sanitized, image_count = self._sanitize_image_payloads_for_budget(dumped)
+                serialized = json.dumps(sanitized, ensure_ascii=False, separators=(",", ":"))
             except Exception:
                 serialized = str(message)
+                image_count = self._count_image_parts(message)
             total += max(1, len(serialized) // 4) + 4
+            total += image_count * DEFAULT_IMAGE_TOKEN_ESTIMATE
         return total
+
+    @classmethod
+    def _sanitize_image_payloads_for_budget(cls, value: Any) -> tuple[Any, int]:
+        """Replace large image data URLs with placeholders before JSON-size estimation."""
+        if isinstance(value, dict):
+            if value.get("type") == "image_url" and isinstance(value.get("image_url"), dict):
+                image_url = dict(value["image_url"])
+                image_url["url"] = IMAGE_PAYLOAD_PLACEHOLDER
+                return {**value, "image_url": image_url}, 1
+
+            sanitized: dict[Any, Any] = {}
+            image_count = 0
+            for key, item in value.items():
+                sanitized_item, item_image_count = cls._sanitize_image_payloads_for_budget(item)
+                sanitized[key] = sanitized_item
+                image_count += item_image_count
+            return sanitized, image_count
+
+        if isinstance(value, list):
+            sanitized_items = []
+            image_count = 0
+            for item in value:
+                sanitized_item, item_image_count = cls._sanitize_image_payloads_for_budget(item)
+                sanitized_items.append(sanitized_item)
+                image_count += item_image_count
+            return sanitized_items, image_count
+
+        return value, 0
+
+    @staticmethod
+    def _count_image_parts(message: BaseMessage) -> int:
+        content = getattr(message, "content", None)
+        if not isinstance(content, list):
+            return 0
+        return sum(1 for part in content if getattr(part, "type", None) == "image_url")
 
     def estimate_current_tokens(
         self,

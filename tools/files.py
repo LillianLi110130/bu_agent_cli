@@ -3,6 +3,8 @@
 import difflib
 from typing import Annotated, Optional
 
+from pydantic import BaseModel, Field
+
 from agent_core.tools import Depends, tool
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
@@ -93,6 +95,11 @@ def _build_artifact_header_hint(body_start_line: int) -> str:
     )
 
 
+class WriteArgs(BaseModel):
+    content: str = Field(..., description="Content to write.")
+    file_path: str = Field(..., description="Path to the file to write.")
+
+
 @tool("Read contents of a file", context_policy="trim", context_max_inline_chars=6400)
 async def read(
     file_path: str,
@@ -148,7 +155,7 @@ async def read(
             return _build_artifact_header_hint(artifact_body_start_line)
 
         selected = lines[start:end]
-        numbered = [f"{start + i + 1:4d}  {line}" for i, line in enumerate(selected)]
+        numbered = [f"{start + i + 1:6d}|{line}" for i, line in enumerate(selected)]
 
         result = f"[Lines {start + 1}-{end} of {total}]\n" + "\n".join(numbered)
 
@@ -164,13 +171,22 @@ async def read(
         return f"Error reading file: {e}"
 
 
-@tool("Write content to a file")
+@tool(
+    "Write content to a file by replacing the entire file. Prefer edit for localized "
+    "changes to existing files. Use write for new files or intentional full rewrites.",
+    args_schema=WriteArgs,
+)
 async def write(
     file_path: str,
     content: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
 ) -> str:
-    """Write content to a file, creating directories if needed."""
+    """Write content to a file, replacing the entire file and creating directories if needed.
+
+    Args:
+        file_path: Path to the file to write.
+        content: Content to write.
+    """
     try:
         path = ctx.resolve_path(file_path)
     except Exception as e:
@@ -179,12 +195,15 @@ async def write(
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        return f"Wrote {len(content)} bytes to {file_path}"
+        return f"Wrote {len(content)} chars to {file_path}"
     except Exception as e:
         return f"Error writing file: {e}"
 
 
-@tool("Replace text in a file")
+@tool(
+    "Edit an existing file by replacing an exact text span. Prefer this for small or "
+    "localized changes to existing code files."
+)
 async def edit(
     file_path: str,
     old_string: str,
@@ -196,7 +215,8 @@ async def edit(
 
     Args:
         file_path: Path to the file to edit.
-        old_string: The exact text to find and replace.
+        old_string: The exact file text to find and replace. Do not include read output
+            line numbers, the leading "     1|" prefix, or the "[Lines ...]" header.
         new_string: The text to replace with.
         replace_all: If False, only replaces first occurrence and warns on duplicates.
                      If True, replaces all occurrences.

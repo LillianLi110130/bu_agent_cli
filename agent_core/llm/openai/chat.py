@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -5,8 +6,6 @@ from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Literal
 
 import httpx
-
-logger = logging.getLogger("agent_core.llm.openai")
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI, RateLimitError
 from openai.types.chat.chat_completion import ChatCompletion
 from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
@@ -14,13 +13,17 @@ from openai.types.shared.chat_model import ChatModel
 from openai.types.shared.function_definition import FunctionDefinition
 from openai.types.shared_params.reasoning_effort import ReasoningEffort
 
-
-from config.model_config import get_model_limits
 from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition
 from agent_core.llm.exceptions import ModelProviderError, ModelRateLimitError
 from agent_core.llm.messages import AssistantMessage, BaseMessage, Function, ToolCall, ToolMessage
 from agent_core.llm.openai.serializer import OpenAIMessageSerializer
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
+from config.model_config import get_model_limits
+
+logger = logging.getLogger("agent_core.llm.openai")
+
+_TOOL_CALL_ARGUMENTS_PREVIEW_CHARS = 500
+_CURL_DEBUG_STRING_PREVIEW_CHARS = 2000
 
 
 @dataclass
@@ -181,32 +184,255 @@ class ChatOpenAI(BaseChatModel):
     def name(self) -> str:
         return str(self.model)
 
+    def _build_usage(self, raw_usage: Any) -> ChatInvokeUsage | None:
+        if raw_usage is None:
+            return None
+
+        completion_tokens = raw_usage.completion_tokens
+        completion_token_details = getattr(raw_usage, "completion_tokens_details", None)
+        if completion_token_details is not None:
+            reasoning_tokens = getattr(completion_token_details, "reasoning_tokens", None)
+            if reasoning_tokens is not None:
+                completion_tokens += reasoning_tokens
+
+        prompt_tokens_details = getattr(raw_usage, "prompt_tokens_details", None)
+        prompt_cached_tokens = (
+            getattr(prompt_tokens_details, "cached_tokens", None)
+            if prompt_tokens_details is not None
+            else None
+        )
+
+        return ChatInvokeUsage(
+            prompt_tokens=raw_usage.prompt_tokens,
+            prompt_cached_tokens=prompt_cached_tokens,
+            prompt_cache_creation_tokens=None,
+            prompt_image_tokens=None,
+            completion_tokens=completion_tokens,
+            total_tokens=raw_usage.total_tokens,
+        )
+
     def _get_usage(self, response: ChatCompletion) -> ChatInvokeUsage | None:
-        if response.usage is not None:
-            completion_tokens = response.usage.completion_tokens
-            completion_token_details = response.usage.completion_tokens_details
-            if completion_token_details is not None:
-                reasoning_tokens = completion_token_details.reasoning_tokens
-                if reasoning_tokens is not None:
-                    completion_tokens += reasoning_tokens
+        return self._build_usage(response.usage)
 
-            usage = ChatInvokeUsage(
-                prompt_tokens=response.usage.prompt_tokens,
-                prompt_cached_tokens=(
-                    response.usage.prompt_tokens_details.cached_tokens
-                    if response.usage.prompt_tokens_details is not None
-                    else None
-                ),
-                prompt_cache_creation_tokens=None,
-                prompt_image_tokens=None,
-                # Completion
-                completion_tokens=completion_tokens,
-                total_tokens=response.usage.total_tokens,
-            )
+    @staticmethod
+    def _debug_enabled() -> bool:
+        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG") or os.getenv("bu_agent_sdk_LLM_DEBUG"))
+
+    @staticmethod
+    def _full_curl_debug_enabled() -> bool:
+        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG_FULL_CURL"))
+
+    @staticmethod
+    def _raw_response_debug_enabled() -> bool:
+        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG_RAW_RESPONSE"))
+
+    @staticmethod
+    def _preview_tool_arguments(
+        arguments: str,
+        max_chars: int = _TOOL_CALL_ARGUMENTS_PREVIEW_CHARS,
+    ) -> tuple[str, str]:
+        if len(arguments) <= max_chars * 2:
+            return arguments, arguments
+        return arguments[:max_chars], arguments[-max_chars:]
+
+    @staticmethod
+    def _summarize_tool_arguments(arguments: str) -> dict[str, Any]:
+        head, tail = ChatOpenAI._preview_tool_arguments(arguments)
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            json_ok = False
+            json_error = str(exc)
+            parsed_keys = None
         else:
-            usage = None
+            json_ok = isinstance(parsed, dict)
+            json_error = None if json_ok else f"decoded {type(parsed).__name__}, not object"
+            parsed_keys = sorted(parsed.keys()) if isinstance(parsed, dict) else None
 
-        return usage
+        return {
+            "args_len": len(arguments),
+            "json_ok": json_ok,
+            "json_error": json_error,
+            "has_content_key_text": '"content"' in arguments,
+            "parsed_keys": parsed_keys,
+            "args_head": head,
+            "args_tail": tail,
+        }
+
+    @classmethod
+    def _log_tool_call_debug(
+        cls,
+        label: str,
+        *,
+        tool_call_id: str | None,
+        tool_name: str | None,
+        arguments: str,
+        message_index: int | None = None,
+    ) -> None:
+        if not cls._debug_enabled():
+            return
+
+        summary = cls._summarize_tool_arguments(arguments)
+        index_text = f" message_index={message_index}" if message_index is not None else ""
+        logger.info(
+            "[LLM_DEBUG] %s tool_call%s id=%r name=%r args_len=%s json_ok=%s "
+            "json_error=%r has_content_key_text=%s parsed_keys=%r args_head=%r args_tail=%r",
+            label,
+            index_text,
+            tool_call_id,
+            tool_name,
+            summary["args_len"],
+            summary["json_ok"],
+            summary["json_error"],
+            summary["has_content_key_text"],
+            summary["parsed_keys"],
+            summary["args_head"],
+            summary["args_tail"],
+        )
+
+    @classmethod
+    def _log_outbound_tool_call_debug(cls, openai_messages: list[Any]) -> None:
+        if not cls._debug_enabled():
+            return
+
+        for message_index, message in enumerate(openai_messages):
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+                continue
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list):
+                continue
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                arguments = function.get("arguments")
+                if not isinstance(arguments, str):
+                    arguments = "" if arguments is None else str(arguments)
+                cls._log_tool_call_debug(
+                    "outbound",
+                    message_index=message_index,
+                    tool_call_id=tool_call.get("id"),
+                    tool_name=function.get("name"),
+                    arguments=arguments,
+                )
+
+    def _completion_url_for_debug(self) -> str:
+        base_url = str(self.base_url or "https://api.openai.com/v1").rstrip("/")
+        if base_url.endswith("/chat/completions"):
+            return base_url
+        return f"{base_url}/chat/completions"
+
+    def _headers_for_curl_debug(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = "Bearer ***REDACTED***"
+        if self.default_headers:
+            for key, value in self.default_headers.items():
+                lowered = key.lower()
+                if lowered in {"authorization", "api-key", "x-api-key"}:
+                    headers[key] = "***REDACTED***"
+                else:
+                    headers[key] = str(value)
+        return headers
+
+    @classmethod
+    def _sanitize_curl_debug_value(cls, value: Any, *, full: bool) -> Any:
+        if isinstance(value, str):
+            if full or len(value) <= _CURL_DEBUG_STRING_PREVIEW_CHARS:
+                return value
+            omitted = len(value) - _CURL_DEBUG_STRING_PREVIEW_CHARS
+            return value[:_CURL_DEBUG_STRING_PREVIEW_CHARS] + f"...<truncated {omitted} chars>"
+        if isinstance(value, list):
+            return [cls._sanitize_curl_debug_value(item, full=full) for item in value]
+        if isinstance(value, tuple):
+            return [cls._sanitize_curl_debug_value(item, full=full) for item in value]
+        if isinstance(value, dict):
+            return {
+                str(key): cls._sanitize_curl_debug_value(item, full=full)
+                for key, item in value.items()
+            }
+        if hasattr(value, "model_dump"):
+            return cls._sanitize_curl_debug_value(value.model_dump(), full=full)
+        return value
+
+    @staticmethod
+    def _shell_single_quote(value: str) -> str:
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+
+    def _log_curl_debug(
+        self,
+        *,
+        openai_messages: list[Any],
+        model_params: dict[str, Any],
+        stream: bool,
+    ) -> None:
+        if not self._debug_enabled():
+            return
+
+        body = {
+            "model": self.model,
+            "messages": openai_messages,
+            **model_params,
+        }
+        if stream:
+            body["stream"] = True
+
+        full = self._full_curl_debug_enabled()
+        debug_body = self._sanitize_curl_debug_value(body, full=full)
+        body_json = json.dumps(debug_body, ensure_ascii=False, default=str)
+        headers = self._headers_for_curl_debug()
+        header_parts = [
+            f"  -H {self._shell_single_quote(f'{key}: {value}')} \\"
+            for key, value in headers.items()
+        ]
+        curl_lines = [
+            f"curl -X POST {self._shell_single_quote(self._completion_url_for_debug())} \\",
+            *header_parts,
+            f"  --data-raw {self._shell_single_quote(body_json)}",
+        ]
+        logger.info(
+            "[LLM_DEBUG] outbound_curl stream=%s full_body=%s command=%s",
+            stream,
+            full,
+            "\n".join(curl_lines),
+        )
+
+    @classmethod
+    def _coerce_debug_payload(cls, payload: Any) -> Any:
+        if hasattr(payload, "model_dump"):
+            try:
+                return payload.model_dump(mode="json")
+            except TypeError:
+                return payload.model_dump()
+        return payload
+
+    @classmethod
+    def _log_raw_response_debug(
+        cls,
+        label: str,
+        payload: Any,
+        *,
+        stream_chunk_index: int | None = None,
+    ) -> None:
+        if not cls._raw_response_debug_enabled():
+            return
+
+        coerced_payload = cls._coerce_debug_payload(payload)
+        full = cls._full_curl_debug_enabled()
+        debug_payload = cls._sanitize_curl_debug_value(coerced_payload, full=full)
+        payload_json = json.dumps(debug_payload, ensure_ascii=False, default=str)
+        chunk_text = (
+            f" chunk_index={stream_chunk_index}" if stream_chunk_index is not None else ""
+        )
+        logger.info(
+            "[LLM_DEBUG] %s%s full_body=%s payload=%s",
+            label,
+            chunk_text,
+            full,
+            payload_json,
+        )
 
     def _serialize_tools(self, tools: list[ToolDefinition]) -> list[ChatCompletionToolParam]:
         """Convert ToolDefinitions to OpenAI's tool format."""
@@ -480,6 +706,7 @@ class ChatOpenAI(BaseChatModel):
         """
         sanitized_messages = self._sanitize_messages_for_openai(messages)
         openai_messages = OpenAIMessageSerializer.serialize_messages(sanitized_messages)
+        self._log_outbound_tool_call_debug(openai_messages)
 
         try:
             model_params: dict[str, Any] = {}
@@ -528,12 +755,19 @@ class ChatOpenAI(BaseChatModel):
                 if openai_tool_choice is not None:
                     model_params["tool_choice"] = openai_tool_choice
 
+            self._log_curl_debug(
+                openai_messages=openai_messages,
+                model_params=model_params,
+                stream=False,
+            )
+
             # Make the API call
             response = await self.get_client().chat.completions.create(
                 model=self.model,
                 messages=openai_messages,
                 **model_params,
             )
+            self._log_raw_response_debug("inbound_raw_response", response)
 
             # Extract usage
             usage = self._get_usage(response)
@@ -551,6 +785,13 @@ class ChatOpenAI(BaseChatModel):
 
             # Extract tool calls
             tool_calls = self._extract_tool_calls(response)
+            for tool_call in tool_calls:
+                self._log_tool_call_debug(
+                    "inbound",
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.function.name,
+                    arguments=tool_call.function.arguments,
+                )
 
             return ChatInvokeCompletion(
                 content=content,
@@ -604,6 +845,7 @@ class ChatOpenAI(BaseChatModel):
 
         sanitized_messages = self._sanitize_messages_for_openai(messages)
         openai_messages = OpenAIMessageSerializer.serialize_messages(sanitized_messages)
+        self._log_outbound_tool_call_debug(openai_messages)
 
         try:
             # 准备模型参数（与 ainvoke 相同）
@@ -648,6 +890,12 @@ class ChatOpenAI(BaseChatModel):
                     model_params["tool_choice"] = openai_tool_choice
 
             # 流式调用
+            model_params["stream_options"] = {"include_usage": True}
+            self._log_curl_debug(
+                openai_messages=openai_messages,
+                model_params=model_params,
+                stream=True,
+            )
             stream = await self.get_client().chat.completions.create(
                 model=self.model,
                 messages=openai_messages,
@@ -661,9 +909,22 @@ class ChatOpenAI(BaseChatModel):
             tool_call_aliases: dict[tuple[str, str | int], str] = {}
             anonymous_tool_call_counter = 0
             tool_call_update_order: list[str] = []
+            last_usage: ChatInvokeUsage | None = None
+            usage_emitted = False
 
             # 遍历流式响应
+            stream_chunk_index = 0
             async for chunk in stream:
+                self._log_raw_response_debug(
+                    "inbound_raw_stream_chunk",
+                    chunk,
+                    stream_chunk_index=stream_chunk_index,
+                )
+                stream_chunk_index += 1
+                usage = self._build_usage(getattr(chunk, "usage", None))
+                if usage is not None:
+                    last_usage = usage
+
                 if not chunk.choices:
                     continue
 
@@ -741,31 +1002,6 @@ class ChatOpenAI(BaseChatModel):
                             tool_call_update_order.remove(canonical_key)
                         tool_call_update_order.append(canonical_key)
 
-                # 处理 usage（只在最后）
-                usage = None
-                if chunk.usage:
-                    completion_tokens = chunk.usage.completion_tokens
-                    completion_token_details = chunk.usage.completion_tokens_details
-                    if completion_token_details:
-                        reasoning_tokens = completion_token_details.reasoning_tokens
-                        if reasoning_tokens:
-                            completion_tokens += reasoning_tokens
-
-                    from agent_core.llm.views import ChatInvokeUsage
-
-                    usage = ChatInvokeUsage(
-                        prompt_tokens=chunk.usage.prompt_tokens,
-                        prompt_cached_tokens=(
-                            chunk.usage.prompt_tokens_details.cached_tokens
-                            if chunk.usage.prompt_tokens_details
-                            else None
-                        ),
-                        prompt_cache_creation_tokens=None,
-                        prompt_image_tokens=None,
-                        completion_tokens=completion_tokens,
-                        total_tokens=chunk.usage.total_tokens,
-                    )
-
                 # 在中间 chunk 中，只返回 delta 和空的 tool_calls
                 # 完整的 tool_calls 只在最后一个 chunk 返回
                 yield ChatInvokeCompletionChunk(
@@ -775,6 +1011,8 @@ class ChatOpenAI(BaseChatModel):
                     usage=usage,
                     stop_reason=choice.finish_reason,
                 )
+                if usage is not None:
+                    usage_emitted = True
 
             # 流结束后，构建完整的工具调用列表
             complete_tool_calls: list[ToolCall] = []
@@ -793,14 +1031,31 @@ class ChatOpenAI(BaseChatModel):
                         )
                     )
 
+            for tool_call in complete_tool_calls:
+                self._log_tool_call_debug(
+                    "inbound_stream_complete",
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.function.name,
+                    arguments=tool_call.function.arguments,
+                )
+
             # 最后再 yield 一次，这次包含完整的工具调用信息
             # 如果流结束时没有工具调用，这个 chunk 会被 agent 层忽略
+            final_usage = last_usage if not usage_emitted else None
             if complete_tool_calls:
                 yield ChatInvokeCompletionChunk(
                     delta="",
                     tool_calls=complete_tool_calls,
                     thinking=None,
-                    usage=None,
+                    usage=final_usage,
+                    stop_reason=None,
+                )
+            elif final_usage is not None:
+                yield ChatInvokeCompletionChunk(
+                    delta="",
+                    tool_calls=[],
+                    thinking=None,
+                    usage=final_usage,
                     stop_reason=None,
                 )
 
