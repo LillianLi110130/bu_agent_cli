@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
-import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -13,9 +11,6 @@ from pydantic import ValidationError
 from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
 from agent_core.llm.messages import ToolCall
 from agent_core.tools.decorator import Tool
-
-WRITE_CONTENT_CHUNK_MAX_CHARS = 4000
-WRITE_RECOVERY_CHUNK_MAX_CHARS = WRITE_CONTENT_CHUNK_MAX_CHARS
 
 ToolCallValidationKind = Literal[
     "unknown_tool",
@@ -37,13 +32,11 @@ class ToolCallValidationError:
 
 @dataclass
 class WriteRecoveryState:
-    chunk_required_paths: set[str]
-    next_chunk_index_by_path: dict[str, int]
-    require_chunking_for_next_write: bool = False
+    """Compatibility placeholder for older write recovery plumbing."""
 
     @classmethod
     def empty(cls) -> "WriteRecoveryState":
-        return cls(chunk_required_paths=set(), next_chunk_index_by_path={})
+        return cls()
 
 
 def validate_tool_calls(
@@ -99,15 +92,7 @@ def validate_tool_call(
     errors.extend(_validate_unknown_arguments(tool_call, tool, args))
     errors.extend(_validate_enum_arguments(tool_call, tool, args))
     errors.extend(_validate_pydantic_schema(tool_call, tool, args))
-    errors.extend(_validate_write_content_limit(tool_call, args))
-    if write_recovery_state is not None:
-        errors.extend(
-            _validate_write_recovery_constraints(
-                tool_call,
-                args,
-                write_recovery_state,
-            )
-        )
+    del write_recovery_state
     return errors
 
 
@@ -115,35 +100,14 @@ def remember_write_recovery_requirements(
     state: WriteRecoveryState,
     errors: list[ToolCallValidationError],
 ) -> None:
-    for error in errors:
-        if not _error_requires_write_chunking(error):
-            continue
-        file_path = _extract_write_file_path([error])
-        if file_path:
-            state.chunk_required_paths.add(file_path)
-            state.next_chunk_index_by_path.setdefault(file_path, 0)
-        else:
-            state.require_chunking_for_next_write = True
+    del state, errors
 
 
 def record_successful_write_recovery_chunk(
     state: WriteRecoveryState,
     tool_call: ToolCall,
 ) -> None:
-    if tool_call.function.name != "write":
-        return
-    try:
-        args = parse_tool_arguments_for_execution(tool_call.function.arguments)
-    except ToolArgumentsError:
-        return
-    file_path = args.get("file_path")
-    if not isinstance(file_path, str):
-        return
-    if file_path not in state.chunk_required_paths:
-        return
-    state.next_chunk_index_by_path[file_path] = (
-        state.next_chunk_index_by_path.get(file_path, 0) + 1
-    )
+    del state, tool_call
 
 
 def build_invalid_tool_call_recovery_prompt(
@@ -171,34 +135,6 @@ def build_invalid_tool_call_recovery_prompt(
         )
         if error.raw_arguments_preview:
             lines.append(f"  Raw arguments preview: {error.raw_arguments_preview}")
-
-    if _should_add_write_chunking_hint(errors):
-        file_path = _extract_write_file_path(errors)
-        lines.extend(
-            [
-                "",
-                (
-                    "For write tool failures, a common cause is that the content "
-                    "argument was too large and the upstream model truncated the tool call."
-                ),
-                "Retry by writing the file in smaller chunks:",
-                '- First call write with mode="overwrite".',
-                '- Then call write with mode="append" or mode="append_line" for subsequent chunks.',
-                (
-                    "Every write.content must be no longer than "
-                    f"{WRITE_CONTENT_CHUNK_MAX_CHARS} characters."
-                ),
-                (
-                    "Do not retry a single write call containing the entire file content; "
-                    "that call will be rejected before execution."
-                ),
-            ]
-        )
-        if file_path:
-            lines.append(
-                "- Preserve this file_path if it is still the intended target: "
-                f"{file_path}"
-            )
 
     return "\n".join(lines)
 
@@ -290,77 +226,6 @@ def _validate_pydantic_schema(
     return []
 
 
-def _validate_write_content_limit(
-    tool_call: ToolCall,
-    args: dict[str, Any],
-) -> list[ToolCallValidationError]:
-    if tool_call.function.name != "write":
-        return []
-
-    content = args.get("content")
-    if not isinstance(content, str) or len(content) <= WRITE_CONTENT_CHUNK_MAX_CHARS:
-        return []
-
-    return [
-        ToolCallValidationError(
-            tool_call=tool_call,
-            kind="invalid_value",
-            argument="content",
-            message=(
-                f"write.content has {len(content)} characters, exceeding the "
-                f"hard limit of {WRITE_CONTENT_CHUNK_MAX_CHARS}."
-            ),
-        )
-    ]
-
-
-def _validate_write_recovery_constraints(
-    tool_call: ToolCall,
-    args: dict[str, Any],
-    state: WriteRecoveryState,
-) -> list[ToolCallValidationError]:
-    if tool_call.function.name != "write":
-        return []
-
-    file_path = args.get("file_path")
-    if not isinstance(file_path, str):
-        return []
-
-    requires_chunking = file_path in state.chunk_required_paths
-    if not requires_chunking and state.require_chunking_for_next_write:
-        requires_chunking = True
-        state.chunk_required_paths.add(file_path)
-        state.next_chunk_index_by_path.setdefault(file_path, 0)
-        state.require_chunking_for_next_write = False
-
-    if not requires_chunking:
-        return []
-
-    errors: list[ToolCallValidationError] = []
-    chunk_index = state.next_chunk_index_by_path.get(file_path, 0)
-    mode = args.get("mode", "overwrite")
-    if chunk_index == 0 and mode != "overwrite":
-        errors.append(
-            ToolCallValidationError(
-                tool_call=tool_call,
-                kind="invalid_value",
-                argument="mode",
-                message='The first recovery write chunk must use mode="overwrite".',
-            )
-        )
-    if chunk_index > 0 and mode not in {"append", "append_line"}:
-        errors.append(
-            ToolCallValidationError(
-                tool_call=tool_call,
-                kind="invalid_value",
-                argument="mode",
-                message='Subsequent recovery write chunks must use mode="append" or "append_line".',
-            )
-        )
-
-    return errors
-
-
 def _required_argument_names(tool: Tool) -> list[str]:
     if tool.args_schema is not None:
         return [
@@ -389,45 +254,6 @@ def _allowed_argument_names(tool: Tool) -> set[str] | None:
         for name in signature.parameters
         if name != "self" and name not in tool._dependencies
     }
-
-
-def _should_add_write_chunking_hint(errors: list[ToolCallValidationError]) -> bool:
-    for error in errors:
-        if _error_requires_write_chunking(error):
-            return True
-    return False
-
-
-def _error_requires_write_chunking(error: ToolCallValidationError) -> bool:
-    if error.tool_call.function.name != "write":
-        return False
-    if error.kind == "invalid_json":
-        return True
-    if error.kind == "missing_required" and error.argument == "content":
-        return True
-    if error.kind == "invalid_value" and error.argument in {"content", "mode"}:
-        return True
-    return False
-
-
-def _extract_write_file_path(errors: list[ToolCallValidationError]) -> str | None:
-    for error in errors:
-        if error.tool_call.function.name != "write":
-            continue
-        raw_arguments = error.tool_call.function.arguments
-        try:
-            args = json.loads(raw_arguments)
-        except json.JSONDecodeError:
-            match = re.search(r'"file_path"\s*:\s*"(?P<path>(?:[^"\\]|\\.)*)"', raw_arguments)
-            if not match:
-                continue
-            try:
-                return json.loads(f'"{match.group("path")}"')
-            except json.JSONDecodeError:
-                return match.group("path")
-        if isinstance(args, dict) and isinstance(args.get("file_path"), str):
-            return args["file_path"]
-    return None
 
 
 def _preview(text: str, max_chars: int = 500) -> str:

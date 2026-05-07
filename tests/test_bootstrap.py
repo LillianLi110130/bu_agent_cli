@@ -96,20 +96,19 @@ def test_build_system_prompt_uses_packaged_skills_outside_workspace(
     assert str(tmp_path) in prompt
 
 
-def test_system_prompt_guides_chunked_writes_and_read_before_overwrite() -> None:
+def test_system_prompt_guides_write_full_replacement_and_read_before_overwrite() -> None:
     module = _load_module("agent_core.bootstrap.agent_factory")
 
     template = module._load_prompt_template("system.md")
 
-    assert "优先分段写入" in template
-    assert "4000 字符以内" in template
-    assert "执行前被拒绝" in template
-    assert "write.content" in template
+    assert "只做完整覆盖写入" in template
+    assert "不要用 `write` 表达追加写入" in template
+    assert "必须先读取目标文件相关内容" in template
     assert "默认优先使用 `edit`" in template
-    assert "不是用 `write mode=\"overwrite\"` 重写整个文件" in template
+    assert "不是用 `write` 重写整个文件" in template
     assert "创建新文件；用户明确要求整体重写" in template
     assert "先读取目标文件的相关内容" in template
-    assert 'write mode="overwrite"' in template
+    assert 'write mode="overwrite"' not in template
 
 
 def test_build_system_prompt_accepts_runtime_registries(

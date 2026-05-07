@@ -20,61 +20,26 @@ async def test_write_overwrites_by_default(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_write_appends_to_existing_file(tmp_path):
+async def test_write_replaces_entire_existing_file(tmp_path):
     ctx = SandboxContext.create(tmp_path)
     target = tmp_path / "note.txt"
     target.write_text("first\n", encoding="utf-8")
 
-    result = await write.func("note.txt", "second\n", ctx=ctx, mode="append")
+    result = await write.func("note.txt", "second\n", ctx=ctx)
 
-    assert result == "Appended 7 chars to note.txt"
-    assert target.read_text(encoding="utf-8") == "first\nsecond\n"
+    assert result == "Wrote 7 chars to note.txt"
+    assert target.read_text(encoding="utf-8") == "second\n"
 
 
 @pytest.mark.anyio
-async def test_write_append_creates_missing_file(tmp_path):
+async def test_write_creates_missing_file(tmp_path):
     ctx = SandboxContext.create(tmp_path)
     target = tmp_path / "nested" / "note.txt"
 
-    result = await write.func("nested/note.txt", "created", ctx=ctx, mode="append")
+    result = await write.func("nested/note.txt", "created", ctx=ctx)
 
-    assert result == "Appended 7 chars to nested/note.txt"
+    assert result == "Wrote 7 chars to nested/note.txt"
     assert target.read_text(encoding="utf-8") == "created"
-
-
-@pytest.mark.anyio
-async def test_write_append_line_starts_on_new_line_and_ends_with_newline(tmp_path):
-    ctx = SandboxContext.create(tmp_path)
-    target = tmp_path / "note.txt"
-    target.write_text("first", encoding="utf-8")
-
-    result = await write.func("note.txt", "second", ctx=ctx, mode="append_line")
-
-    assert result == "Appended 6 chars as lines to note.txt"
-    assert target.read_text(encoding="utf-8") == "first\nsecond\n"
-
-
-@pytest.mark.anyio
-async def test_write_append_line_does_not_duplicate_existing_newline(tmp_path):
-    ctx = SandboxContext.create(tmp_path)
-    target = tmp_path / "note.txt"
-    target.write_text("first\n", encoding="utf-8")
-
-    result = await write.func("note.txt", "second\nthird", ctx=ctx, mode="append_line")
-
-    assert result == "Appended 12 chars as lines to note.txt"
-    assert target.read_text(encoding="utf-8") == "first\nsecond\nthird\n"
-
-
-@pytest.mark.anyio
-async def test_write_append_line_creates_missing_file_with_trailing_newline(tmp_path):
-    ctx = SandboxContext.create(tmp_path)
-    target = tmp_path / "note.txt"
-
-    result = await write.func("note.txt", "created", ctx=ctx, mode="append_line")
-
-    assert result == "Appended 7 chars as lines to note.txt"
-    assert target.read_text(encoding="utf-8") == "created\n"
 
 
 @pytest.mark.anyio
@@ -90,26 +55,21 @@ async def test_read_uses_pipe_separated_line_numbers(tmp_path):
     assert "     2|    return a + b" in result
 
 
-def test_write_tool_schema_exposes_write_mode():
-    mode_schema = write.definition.parameters["properties"]["mode"]
+def test_write_tool_schema_only_exposes_content_and_file_path():
+    properties = write.definition.parameters["properties"]
 
-    assert mode_schema["enum"] == ["overwrite", "append", "append_line"]
-    assert "replaces the whole file" in mode_schema["description"]
-    assert "starts on a new line" in mode_schema["description"]
+    assert list(properties) == ["content", "file_path"]
+    assert write.definition.parameters["required"] == ["content", "file_path"]
+    assert write.definition.parameters["additionalProperties"] is False
 
 
-def test_write_tool_schema_describes_chunked_long_writes():
+def test_write_tool_schema_describes_full_replacement():
     content_schema = write.definition.parameters["properties"]["content"]
 
     assert "Prefer edit" in write.definition.description
     assert "localized changes" in write.definition.description
-    assert "intentional full rewrites" in write.definition.description
-    assert "write in chunks" in write.definition.description
-    assert "no more than 4000 characters" in write.definition.description
-    assert "rejected or truncated tool arguments" in write.definition.description
-    assert "one chunk at a time" in content_schema["description"]
-    assert "no more than 4000 characters" in content_schema["description"]
-    assert "intentional full rewrites" in content_schema["description"]
+    assert "replacing the entire file" in write.definition.description
+    assert "Content to write" in content_schema["description"]
 
 
 def test_edit_tool_schema_guides_localized_code_changes():

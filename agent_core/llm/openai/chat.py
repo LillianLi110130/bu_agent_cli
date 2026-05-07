@@ -223,6 +223,10 @@ class ChatOpenAI(BaseChatModel):
         return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG_FULL_CURL"))
 
     @staticmethod
+    def _raw_response_debug_enabled() -> bool:
+        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG_RAW_RESPONSE"))
+
+    @staticmethod
     def _preview_tool_arguments(
         arguments: str,
         max_chars: int = _TOOL_CALL_ARGUMENTS_PREVIEW_CHARS,
@@ -393,6 +397,41 @@ class ChatOpenAI(BaseChatModel):
             stream,
             full,
             "\n".join(curl_lines),
+        )
+
+    @classmethod
+    def _coerce_debug_payload(cls, payload: Any) -> Any:
+        if hasattr(payload, "model_dump"):
+            try:
+                return payload.model_dump(mode="json")
+            except TypeError:
+                return payload.model_dump()
+        return payload
+
+    @classmethod
+    def _log_raw_response_debug(
+        cls,
+        label: str,
+        payload: Any,
+        *,
+        stream_chunk_index: int | None = None,
+    ) -> None:
+        if not cls._raw_response_debug_enabled():
+            return
+
+        coerced_payload = cls._coerce_debug_payload(payload)
+        full = cls._full_curl_debug_enabled()
+        debug_payload = cls._sanitize_curl_debug_value(coerced_payload, full=full)
+        payload_json = json.dumps(debug_payload, ensure_ascii=False, default=str)
+        chunk_text = (
+            f" chunk_index={stream_chunk_index}" if stream_chunk_index is not None else ""
+        )
+        logger.info(
+            "[LLM_DEBUG] %s%s full_body=%s payload=%s",
+            label,
+            chunk_text,
+            full,
+            payload_json,
         )
 
     def _serialize_tools(self, tools: list[ToolDefinition]) -> list[ChatCompletionToolParam]:
@@ -728,6 +767,7 @@ class ChatOpenAI(BaseChatModel):
                 messages=openai_messages,
                 **model_params,
             )
+            self._log_raw_response_debug("inbound_raw_response", response)
 
             # Extract usage
             usage = self._get_usage(response)
@@ -873,7 +913,14 @@ class ChatOpenAI(BaseChatModel):
             usage_emitted = False
 
             # 遍历流式响应
+            stream_chunk_index = 0
             async for chunk in stream:
+                self._log_raw_response_debug(
+                    "inbound_raw_stream_chunk",
+                    chunk,
+                    stream_chunk_index=stream_chunk_index,
+                )
+                stream_chunk_index += 1
                 usage = self._build_usage(getattr(chunk, "usage", None))
                 if usage is not None:
                     last_usage = usage
