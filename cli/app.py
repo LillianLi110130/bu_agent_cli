@@ -46,6 +46,8 @@ from agent_core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
+from agent_core.memory.review import MemoryReviewChange, MemoryReviewHook
+from agent_core.memory.store import MemoryStore
 from agent_core.plugin import (
     PluginCommandExecutor,
     PluginExecutionError,
@@ -94,6 +96,7 @@ from cli.init_agent import build_init_agent, build_init_user_prompt, validate_in
 from cli.im_bridge import BridgeRequest, FileBridgeStore
 from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
+from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from cli.session_runtime import CLISessionRuntime
@@ -123,6 +126,20 @@ def _summarize_unclassified_skill_review(final_response: str) -> str:
     summary = final_response.strip()
     if not summary:
         return _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY
+    if len(summary) <= 400:
+        return summary
+    return f"{summary[:200]}\n...\n{summary[-200:]}"
+
+
+_UNCLASSIFIED_MEMORY_REVIEW_EMPTY_SUMMARY = (
+    "review agent 没有产生 memory 变更，也没有返回标准 Nothing to save."
+)
+
+
+def _summarize_unclassified_memory_review(final_response: str) -> str:
+    summary = final_response.strip()
+    if not summary:
+        return _UNCLASSIFIED_MEMORY_REVIEW_EMPTY_SUMMARY
     if len(summary) <= 400:
         return summary
     return f"{summary[:200]}\n...\n{summary[-200:]}"
@@ -467,6 +484,12 @@ class TGAgentCLI:
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
         self._skill_review_history: list[SkillReviewHistoryItem] = []
+        self._memory_review_history: list[MemoryReviewHistoryItem] = []
+        self._memory_store = getattr(
+            self._agent,
+            "_memory_store",
+            getattr(self._ctx, "memory_store", MemoryStore()),
+        )
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
@@ -480,6 +503,7 @@ class TGAgentCLI:
             )
         )
         self._bind_skill_review_notifications()
+        self._bind_memory_review_notifications()
         self._workspace_instruction_state = WorkspaceInstructionState()
         self._last_context_budget: _CLIContextBudgetSnapshot | None = None
         self._last_context_budget_status_line: str | None = None
@@ -497,6 +521,15 @@ class TGAgentCLI:
                 hook.on_nothing_to_save = self._on_skill_review_nothing_to_save
                 hook.on_unclassified_no_change = self._on_skill_review_unclassified_no_change
                 hook.on_error = self._on_skill_review_error
+
+    def _bind_memory_review_notifications(self) -> None:
+        for hook in getattr(self._agent, "hooks", []):
+            if isinstance(hook, MemoryReviewHook):
+                hook.on_changes = self._on_memory_review_changes
+                hook.on_manage_errors = self._on_memory_review_manage_errors
+                hook.on_nothing_to_save = self._on_memory_review_nothing_to_save
+                hook.on_unclassified_no_change = self._on_memory_review_unclassified_no_change
+                hook.on_error = self._on_memory_review_error
 
     def _on_skill_review_changes(self, changes: list[SkillReviewChange]) -> None:
         action_labels = {
@@ -576,6 +609,88 @@ class TGAgentCLI:
             return "created"
         if action in {"written", "removed"}:
             return "file_updated"
+        return "updated"
+
+    def _on_memory_review_changes(self, changes: list[MemoryReviewChange]) -> None:
+        action_labels = {
+            "added": "已新增",
+            "replaced": "已更新",
+            "removed": "已移除",
+        }
+        target_labels = {
+            "user": "用户记忆",
+            "memory": "长期记忆",
+        }
+        for change in changes:
+            label = action_labels.get(change.action, "已更新")
+            target_label = target_labels.get(change.target, change.target)
+            self._append_memory_review_history(
+                status=self._memory_review_status_for_action(change.action),
+                summary=f"{label}{target_label}",
+                target=change.target,
+            )
+            self._console.print(f"[dim]Memory review：{label}{target_label}。[/dim]")
+
+    def _on_memory_review_nothing_to_save(self) -> None:
+        self._append_memory_review_history(
+            status="nothing_to_save",
+            summary="没有发现值得保存的 memory",
+        )
+        self._console.print("[dim]Memory review：没有发现值得保存的记忆。[/dim]")
+
+    def _on_memory_review_manage_errors(self, errors: list[str]) -> None:
+        summary = "; ".join(error.strip() for error in errors if error.strip())
+        if not summary:
+            summary = "memory 写入失败，但没有返回错误详情"
+        summary = summary[:240]
+        self._append_memory_review_history(
+            status="attempt_failed",
+            summary=summary,
+        )
+        self._console.print(
+            f"[dim]Memory review：memory 写入失败：[/dim][yellow]{summary}[/yellow]"
+        )
+
+    def _on_memory_review_unclassified_no_change(self, final_response: str) -> None:
+        summary = _summarize_unclassified_memory_review(final_response)
+        self._append_memory_review_history(
+            status="no_change_unclassified",
+            summary=summary,
+        )
+        self._console.print(
+            "[dim]Memory review：没有产生 memory 变更，且结果未分类。[/dim]"
+        )
+
+    def _on_memory_review_error(self, error: Exception) -> None:
+        error_summary = f"{type(error).__name__}: {error}"
+        self._append_memory_review_history(
+            status="failed",
+            summary=error_summary[:240],
+        )
+
+    def _append_memory_review_history(
+        self,
+        *,
+        status: str,
+        summary: str,
+        target: str | None = None,
+    ) -> None:
+        self._memory_review_history.append(
+            MemoryReviewHistoryItem(
+                created_at=datetime.now(),
+                status=status,
+                summary=summary,
+                target=target,
+            )
+        )
+        self._memory_review_history = self._memory_review_history[-50:]
+
+    @staticmethod
+    def _memory_review_status_for_action(action: str) -> str:
+        if action == "added":
+            return "added"
+        if action == "removed":
+            return "removed"
         return "updated"
 
     def _load_model_presets(self) -> dict[str, ModelPreset]:
@@ -1436,6 +1551,15 @@ class TGAgentCLI:
                 service=self._skill_runtime_service,
                 console=self._console,
                 review_history=self._skill_review_history,
+            )
+            result = await handler.handle(args)
+            return result.handled
+
+        if command_name == "memory":
+            handler = MemorySlashHandler(
+                store=self._memory_store,
+                console=self._console,
+                review_history=self._memory_review_history,
             )
             result = await handler.handle(args)
             return result.handled

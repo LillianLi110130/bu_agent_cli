@@ -242,7 +242,7 @@ def test_build_system_prompt_prefers_tg_agent_home_project_context_files(
     identity_path = _write_project_context_file(
         home_dir / ".tg_agent", "IDENTITY.md", "# home identity"
     )
-    user_path = _write_project_context_file(home_dir / ".tg_agent", "USER.md", "# home user")
+    _write_project_context_file(home_dir / ".tg_agent", "USER.md", "# home user")
     _write_project_context_file(prompt_dir, "SOUL.md", "# fallback soul")
     _write_project_context_file(prompt_dir, "IDENTITY.md", "# fallback identity")
     _write_project_context_file(prompt_dir, "USER.md", "# fallback user")
@@ -259,8 +259,8 @@ def test_build_system_prompt_prefers_tg_agent_home_project_context_files(
     assert "# home soul" in prompt
     assert f"### {identity_path}" in prompt
     assert "# home identity" in prompt
-    assert f"### {user_path}" in prompt
-    assert "# home user" in prompt
+    assert "# home user" not in prompt
+    assert "# fallback user" not in prompt
     assert "# fallback soul" not in prompt
 
 
@@ -280,7 +280,7 @@ def test_build_system_prompt_falls_back_to_prompt_context_files(
 
     soul_path = _write_project_context_file(prompt_dir, "SOUL.md", "# prompt soul")
     identity_path = _write_project_context_file(prompt_dir, "IDENTITY.md", "# prompt identity")
-    user_path = _write_project_context_file(prompt_dir, "USER.md", "# prompt user")
+    _write_project_context_file(prompt_dir, "USER.md", "# prompt user")
 
     prompt = module.build_system_prompt(workspace)
 
@@ -288,8 +288,7 @@ def test_build_system_prompt_falls_back_to_prompt_context_files(
     assert "# prompt soul" in prompt
     assert f"### {identity_path}" in prompt
     assert "# prompt identity" in prompt
-    assert f"### {user_path}" in prompt
-    assert "# prompt user" in prompt
+    assert "# prompt user" not in prompt
 
 
 def test_build_system_prompt_keeps_empty_project_context_section_when_files_missing(
