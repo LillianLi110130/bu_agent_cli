@@ -22,7 +22,7 @@ _APP_ROOT = application_root()
 _PACKAGE_ROOT = _APP_ROOT / "agent_core"
 _PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
 _SKILLS_DIR = _APP_ROOT / "skills"
-_PROJECT_CONTEXT_FILENAMES = ("SOUL.md", "IDENTITY.md", "USER.md")
+_PROJECT_CONTEXT_FILENAMES = ("SOUL.md", "IDENTITY.md")
 
 
 def _format_skills(skills: list[Any]) -> str:
