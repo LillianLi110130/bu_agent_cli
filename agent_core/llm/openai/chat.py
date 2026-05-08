@@ -933,6 +933,7 @@ class ChatOpenAI(BaseChatModel):
 
                 # 处理增量文本
                 content_delta = delta.content or ""
+                thinking_delta = getattr(delta, "reasoning", None) or None
 
                 # 累积工具调用参数
                 if delta.tool_calls:
@@ -1007,7 +1008,7 @@ class ChatOpenAI(BaseChatModel):
                 yield ChatInvokeCompletionChunk(
                     delta=content_delta,
                     tool_calls=[],  # 中间 chunk 不返回工具调用
-                    thinking=None,
+                    thinking=thinking_delta,
                     usage=usage,
                     stop_reason=choice.finish_reason,
                 )
@@ -1099,6 +1100,7 @@ class ChatOpenAI(BaseChatModel):
         # 收集所有内容
         content_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        thinking_parts: list[str] = []
         usage: ChatInvokeUsage | None = None
         stop_reason: str | None = None
 
@@ -1106,6 +1108,8 @@ class ChatOpenAI(BaseChatModel):
             # 累积文本内容
             if chunk.delta:
                 content_parts.append(chunk.delta)
+            if chunk.thinking:
+                thinking_parts.append(chunk.thinking)
 
             # 累积工具调用（只在最后的chunk中）
             if chunk.tool_calls:
@@ -1120,6 +1124,7 @@ class ChatOpenAI(BaseChatModel):
         return ChatInvokeCompletion(
             content="".join(content_parts) if content_parts else None,
             tool_calls=tool_calls,
+            thinking="".join(thinking_parts) if thinking_parts else None,
             usage=usage,
             stop_reason=stop_reason,
         )

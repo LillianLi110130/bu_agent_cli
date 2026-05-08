@@ -31,6 +31,12 @@ from agent_core.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from agent_core.agent.events import (
+    TextDeltaEvent,
+    ThinkingDeltaEvent,
+    ThinkingEndEvent,
+    ThinkingStartEvent,
+)
 from agent_core.agent.hooks import BaseAgentHook
 from agent_core.agent.registry import AgentRegistry
 from agent_core.agent.runtime_events import (
@@ -486,6 +492,7 @@ class TGAgentCLI:
         self._context_budget_hook_agents: set[int] = set()
         self._subagent_progress_signatures: dict[str, tuple[str, int, str]] = {}
         self._foreground_delegate_depth = 0
+        self._active_thinking_id: str | None = None
         if self._bridge_store is not None:
             self._bridge_store.initialize()
 
@@ -1766,6 +1773,32 @@ class TGAgentCLI:
                     self._stop_loading(self._loading)
                     self._loading = None
                     self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
+
+                elif isinstance(event, ThinkingStartEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    self._active_thinking_id = event.think_id
+                    self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+
+                elif isinstance(event, ThinkingDeltaEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    if self._active_thinking_id != event.think_id:
+                        self._active_thinking_id = event.think_id
+                        self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+                    self._console.print(f"[{self.COLOR_THINKING}]{event.delta}[/]", end="")
+
+                elif isinstance(event, ThinkingEndEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    if self._active_thinking_id == event.think_id:
+                        self._active_thinking_id = None
+                    self._console.print()
+
+                elif isinstance(event, TextDeltaEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    self._console.print(event.delta, end="")
 
                 elif isinstance(event, TextEvent):
                     self._stop_loading(self._loading)
