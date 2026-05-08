@@ -41,9 +41,11 @@ from agent_core.agent import (
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources
-from agent_core.task import SubagentTaskManager
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
+from agent_core.memory.review import MemoryReviewHook, MemoryReviewRunner
+from agent_core.memory.store import MemoryStore
+from agent_core.memory.tools import get_memory_store, memory
 from agent_core.plugin import PluginManager
 from agent_core.runtime_paths import (
     application_root,
@@ -54,6 +56,7 @@ from agent_core.runtime_paths import (
 from agent_core.skill.discovery import default_skill_dirs
 from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
 from agent_core.skill.runtime_service import SkillRuntimeService
+from agent_core.task import SubagentTaskManager
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
@@ -68,7 +71,12 @@ from cli.worker.auth import (
 from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 from tools.sandbox import get_current_agent
-from tools.skills import get_skill_runtime_service, skill_list, skill_manage, skill_view
+from tools.skills import (
+    get_skill_runtime_service,
+    skill_list,
+    skill_manage,
+    skill_view,
+)
 
 # =============================================================================
 # Prompt & Skills Loading
@@ -86,6 +94,7 @@ CLI_TOOLS = [
     skill_list,
     skill_view,
     skill_manage,
+    memory,
 ]
 
 _SKILL_MANAGEMENT_GUIDANCE = """
@@ -102,11 +111,31 @@ never delete skills and do not create draft skills.
 
 When the user asks to create, update, optimize, refine, or fix a skill, inspect
 visible skills with `skill_list`/`skill_view` and write changes with `skill_manage`. Do not
-use generic `read`, `write`, or `edit` tools to modify skills under `~/.tg_agent/skills`, 
+use generic `read`, `write`, or `edit` tools to modify skills under `~/.tg_agent/skills`,
 because that bypasses skill validation and skill index refresh.
 
 Only use generic file editing tools for skills when the user explicitly asks to modify a
 repository/workspace skill file, or when `skill_manage` cannot write that skill source.
+"""
+
+_MEMORY_GUIDANCE = """
+## Persistent Memory
+
+User profile is stored in persistent memory under ~/.tg_agent/memories, not USER.md.
+Memory is loaded as a frozen snapshot at CLI session start.
+New memory written during this session applies in future sessions.
+
+You have persistent memory across sessions. Save durable facts using the memory tool:
+user preferences, environment details, tool quirks, and stable conventions. Memory is injected
+into future turns, so keep it compact and focused on facts that will still matter later.
+
+Prioritize what reduces future user steering: the most valuable memory is one that prevents the
+user from having to correct or remind you again. User preferences and recurring corrections matter
+more than procedural task details.
+
+Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO state to
+memory. If you've discovered a new way to do something, solved a problem that could be necessary
+later, or found a reusable tool/API pitfall, save it as a skill with skill_manage instead of memory.
 """
 
 
@@ -258,6 +287,7 @@ def _build_system_prompt(
     working_dir: Path,
     skill_registry: AtCommandRegistry,
     agent_registry: AgentRegistry,
+    memory_context: str | None = None,
 ) -> str:
     """Build the system prompt by loading template and injecting skills."""
     from string import Template
@@ -283,6 +313,7 @@ def _build_system_prompt(
 
     # Get system information
     system_info_text = _get_system_info()
+    project_context_text = build_project_context()
 
     template_str = _load_prompt_template("system.md")
 
@@ -292,10 +323,21 @@ def _build_system_prompt(
         WORKING_DIR=str(working_dir),
         SUBAGENTS=agents_text,
         SYSTEM_INFO=system_info_text,
-        PROJECT_CONTEXT=build_project_context(),
+        PROJECT_CONTEXT=project_context_text,
     )
 
-    return f"{prompt.rstrip()}\n\n{_SKILL_MANAGEMENT_GUIDANCE.strip()}\n"
+    sections = [prompt.rstrip()]
+    if "PROJECT_CONTEXT" not in template_str and project_context_text.strip():
+        sections.append(project_context_text.strip())
+    sections.extend(
+        [
+            _SKILL_MANAGEMENT_GUIDANCE.strip(),
+            _MEMORY_GUIDANCE.strip(),
+        ]
+    )
+    if memory_context and memory_context.strip():
+        sections.append(memory_context.strip())
+    return "\n\n".join(sections) + "\n"
 
 
 console = Console()
@@ -614,18 +656,24 @@ def create_agent(
     runtime = runtime_registries or create_runtime_registries(
         workspace_root=ctx.working_dir,
     )
+    memory_store = MemoryStore()
+    frozen_memory_context = memory_store.render_context(memory_store.load_from_disk())
 
     system_prompt = _build_system_prompt(
         ctx.working_dir,
         skill_registry=runtime.skill_registry,
         agent_registry=runtime.agent_registry,
+        memory_context=frozen_memory_context,
     )
+
     def system_prompt_builder() -> str:
         return _build_system_prompt(
             ctx.working_dir,
             skill_registry=runtime.skill_registry,
             agent_registry=runtime.agent_registry,
+            memory_context=frozen_memory_context,
         )
+
     skill_runtime_service = SkillRuntimeService(
         skill_registry=runtime.skill_registry,
         plugin_manager=runtime.plugin_manager,
@@ -648,16 +696,25 @@ def create_agent(
             get_sandbox_context: lambda: ctx,
             get_current_agent: lambda: agent,
             get_skill_runtime_service: lambda: skill_runtime_service,
+            get_memory_store: lambda: memory_store,
         },
         agent_config=agent_config,
         hooks=build_agent_hooks(),
     )
     skill_runtime_service.bind_agent(agent)
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
+    setattr(agent, "_memory_store", memory_store)
+    setattr(agent, "_memory_context_snapshot", frozen_memory_context)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
+    setattr(ctx, "memory_store", memory_store)
     agent.register_hook(
         SkillReviewHook(
             runner=SkillReviewRunner(service=skill_runtime_service),
+        )
+    )
+    agent.register_hook(
+        MemoryReviewHook(
+            runner=MemoryReviewRunner(store=memory_store),
         )
     )
 
@@ -706,6 +763,7 @@ async def main():
             ctx.working_dir,
             skill_registry=runtime.skill_registry,
             agent_registry=runtime.agent_registry,
+            memory_context=getattr(agent, "_memory_context_snapshot", None),
         ),
         skill_runtime_service=getattr(agent, "_skill_runtime_service", None),
         bridge_store=bridge_store,
