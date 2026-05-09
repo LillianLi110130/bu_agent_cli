@@ -59,6 +59,7 @@ from agent_core.runtime_paths import application_root
 from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
+from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -387,12 +388,7 @@ class TGAgentCLI:
     IMAGE_MEMORY_MAX_CHARS = 600
     BRIDGE_POLL_INTERVAL_SECONDS = 0.1
     TEAM_INBOX_POLL_INTERVAL_SECONDS = 1.0
-    TEAM_AUTO_TRIGGER_TYPES = {
-        "clarification_request",
-        "task_completed",
-        "task_blocked",
-        "worker_failed",
-    }
+    TEAM_AUTO_TRIGGER_TYPES = LEAD_AUTO_TRIGGER_MESSAGE_TYPES
 
     def __init__(
         self,
@@ -2141,20 +2137,24 @@ class TGAgentCLI:
 
     @staticmethod
     def _build_team_inbox_auto_trigger_prompt(*, team_id: str, messages: list[Any]) -> str:
+        from cli.team.auto_prompt import TEAM_LANGUAGE_RULES
+
         payload = [message.to_dict() for message in messages]
         return (
             "[Team Inbox Auto Trigger]\n\n"
             f"Active team: {team_id}\n\n"
+            f"{TEAM_LANGUAGE_RULES}\n\n"
             "New lead inbox messages:\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
             "Instructions:\n"
             "- Treat `clarification_request` messages as coordination blockers.\n"
-            "- Treat `task_completed` as a signal to inspect team_snapshot and decide whether to assign follow-up work, verify, or finish.\n"
-            "- Treat `task_blocked` as a signal to inspect the blocked task, send guidance, or reassign/fix the task.\n"
+            "- Treat `task_done_notification` as a signal to inspect team_snapshot and decide whether to assign follow-up work, verify, or finish.\n"
+            "- Treat `task_blocked_notification` as a signal to inspect the blocked task, reply with `message` or `clarification_response`, or reassign/fix the task.\n"
             "- Treat `worker_failed` as a signal to inspect member state and decide whether to reassign work or spawn a replacement.\n"
+            "- Treat `idle_notification` as a signal to inspect pending tasks and either assign more work or start completion/shutdown when the team is done.\n"
             "- Answer from available context when safe.\n"
             "- If the user must decide, ask the user one concise question before unblocking the teammate.\n"
-            "- Reply to the teammate with `team_send_message`, using `reply_to` with the original message_id.\n"
+            "- Reply to the teammate with `team_send_message`, using type `message` for coordination or `clarification_response` for answers to blocker questions, and include `reply_to` with the original message_id.\n"
             "- Do not create a new team while handling this inbox trigger.\n"
         )
 

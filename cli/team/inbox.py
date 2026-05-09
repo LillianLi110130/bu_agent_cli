@@ -9,6 +9,7 @@ from agent_core.agent.hooks import BaseAgentHook, HookAction, HookDecision
 from agent_core.agent.runtime_events import LLMCallRequested
 from agent_core.llm.messages import UserMessage
 from agent_core.team.models import TeamMessage
+from agent_core.team.protocol import normalize_message_type
 
 
 class TeamInboxBuffer:
@@ -59,7 +60,7 @@ def format_team_messages_for_context(
     for message in messages:
         lines.extend(
             [
-                f"- From {message.sender} [{message.type}] {message.message_id}:",
+                f"- From {message.sender} [{normalize_message_type(message.type)}] {message.message_id}:",
                 f"  {message.body}",
             ]
         )

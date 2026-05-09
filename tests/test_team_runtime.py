@@ -6,8 +6,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from agent_core.agent import Agent
+from agent_core.agent.events import FinalResponseEvent
 from agent_core.agent.registry import AgentRegistry
+from agent_core.agent.runtime_events import (
+    LLMCallRequested,
+    LLMResponseReceived,
+    RunFinished,
+    ToolCallRequested,
+    ToolResultReceived,
+)
 from agent_core.skill.review import SkillReviewHook
+from agent_core.llm.messages import Function, ToolCall, ToolMessage
 from agent_core.llm.views import ChatInvokeCompletion
 from agent_core.team import Mailbox, TaskBoard, TeamMessage, TeamRuntime
 from agent_core.team.experiment import TEAM_EXPERIMENT_ENV
@@ -20,6 +29,8 @@ from cli.team.auto_prompt import (
 )
 from cli.team.factory import create_team_member_agent
 from cli.team.handler import TeamSlashHandler
+from cli.team.event_log import TeamAgentEventLogHook
+from cli.team.heartbeat import TeamHeartbeatHook
 from cli.team.inbox import TeamInboxAttachmentHook, TeamInboxBuffer
 from cli.team.worker import TeamWorker
 from rich.console import Console
@@ -98,12 +109,13 @@ def test_team_runtime_create_spawn_task_and_mailbox(tmp_path: Path) -> None:
     assert "tg_crab_main.py" in command[1]
 
     inbox_messages = Mailbox(teams_root / team.team_id).receive("explorer-1")
-    assert [message.type for message in inbox_messages] == ["task_assigned"]
+    assert [message.type for message in inbox_messages] == ["task_assignment"]
     assert inbox_messages[0].metadata["task_id"] == task.task_id
 
     runtime.send_message(team_id=team.team_id, recipient="lead", body="done", type="task_completed")
     lead_messages = runtime.read_lead_inbox(team.team_id)
     assert len(lead_messages) == 1
+    assert lead_messages[0].type == "task_done_notification"
     assert lead_messages[0].body == "done"
 
 
@@ -149,6 +161,9 @@ def test_team_runtime_allows_new_team_after_active_shutdown(tmp_path: Path) -> N
 
     first = runtime.start_team(goal="First team")
     runtime.shutdown_team(first.team_id)
+
+    assert runtime.get_active_team() is None
+
     second = runtime.start_team(goal="Second team")
 
     assert runtime.get_active_team() == second.team_id
@@ -165,6 +180,8 @@ def test_team_auto_prompt_parses_goal_and_keeps_orchestration_model_driven() -> 
     prompt = build_team_auto_prompt(request)
     assert "Team goal:\nRefactor auth module" in prompt
     assert "Requested team name:\nauth-refactor" in prompt
+    assert "Language rules:" in prompt
+    assert "prefer Chinese" in prompt
     assert "Do not use a hardcoded fixed team shape" in prompt
     assert "team_snapshot" in prompt
 
@@ -251,7 +268,7 @@ def test_team_runtime_send_message_accepts_any_sender(tmp_path: Path) -> None:
     assert message.recipient == "coder-1"
     inbox_messages = Mailbox(teams_root / team.team_id).receive("coder-1")
     assert [item.message_id for item in inbox_messages] == [message.message_id]
-    assert inbox_messages[0].type == "handoff"
+    assert inbox_messages[0].type == "message"
 
 
 def test_team_snapshot_groups_tasks_members_and_peeks_inbox(tmp_path: Path) -> None:
@@ -290,7 +307,7 @@ def test_team_snapshot_groups_tasks_members_and_peeks_inbox(tmp_path: Path) -> N
         sender="explorer-1",
         recipient="lead",
         body="Need more context.",
-        type="note",
+        type="message",
     )
 
     snapshot = runtime.snapshot(team.team_id)
@@ -803,7 +820,7 @@ def test_team_update_task_tool_updates_existing_task(tmp_path: Path) -> None:
     assert payload["write_scope"] == ["new.py"]
     assert payload["error"] == "Waiting for dependency"
     messages = Mailbox(teams_root / team.team_id).receive("coder-1")
-    assert [message.type for message in messages] == ["task_updated"]
+    assert [message.type for message in messages] == ["task_update"]
 
 
 def test_team_update_task_tool_rejects_invalid_status(tmp_path: Path) -> None:
@@ -971,6 +988,8 @@ Explore.
     assert "Explore." in agent.system_prompt
     assert f"Team ID: {team.team_id}" in agent.system_prompt
     assert "Member ID: explorer-1" in agent.system_prompt
+    assert "Language rules:" in agent.system_prompt
+    assert "prefer Chinese" in agent.system_prompt
     assert "Skills are read-only for teammates" in agent.system_prompt
     assert "send a message to the team lead with the exact question" in agent.system_prompt
     assert "clarification_request" in agent.system_prompt
@@ -995,14 +1014,14 @@ def test_team_worker_send_message_uses_shared_messenger(tmp_path: Path) -> None:
     worker.send_message(
         recipient="coder-1",
         body="Can you take the implementation task?",
-        type="handoff",
+        type="message",
     )
 
     messages = Mailbox(teams_root / team.team_id).receive("coder-1")
     assert len(messages) == 1
     assert messages[0].sender == "explorer-1"
     assert messages[0].recipient == "coder-1"
-    assert messages[0].type == "handoff"
+    assert messages[0].type == "message"
 
 
 def test_team_send_message_tool_preserves_metadata_and_reply_to(tmp_path: Path) -> None:
@@ -1057,7 +1076,7 @@ def test_team_inbox_attachment_hook_adds_messages_before_llm_call() -> None:
                 team_id="team-1",
                 sender="lead",
                 recipient="explorer-1",
-                type="note",
+                type="message",
                 body="Please incorporate this before the next model call.",
             )
         )
@@ -1070,6 +1089,141 @@ def test_team_inbox_attachment_hook_adds_messages_before_llm_call() -> None:
     contents = [getattr(message, "content", "") for message in llm.calls[0]]
     assert any("## Team Messages" in str(content) for content in contents)
     assert any("Please incorporate this before the next model call." in str(content) for content in contents)
+
+
+def test_team_agent_event_log_hook_writes_compact_jsonl(tmp_path: Path) -> None:
+    event_log = tmp_path / "events.jsonl"
+    hook = TeamAgentEventLogHook(
+        team_id="team-1",
+        member_id="explorer-1",
+        event_log_path=event_log,
+    )
+    tool_call = ToolCall(
+        id="call_1",
+        function=Function(name="bash", arguments='{"cmd":"pytest tests/test_team_runtime.py"}'),
+    )
+
+    async def run_case() -> None:
+        await hook.before_event(
+            LLMCallRequested(messages=[], tools=[], tool_choice=None, iteration=1),
+            SimpleNamespace(),
+        )
+        await hook.before_event(
+            LLMResponseReceived(
+                response=ChatInvokeCompletion(content="I will run tests.", tool_calls=[tool_call]),
+                iteration=1,
+            ),
+            SimpleNamespace(),
+        )
+        await hook.before_event(
+            ToolCallRequested(tool_call=tool_call, iteration=1),
+            SimpleNamespace(),
+        )
+        await hook.before_event(
+            ToolResultReceived(
+                tool_call=tool_call,
+                tool_result=ToolMessage(
+                    tool_call_id="call_1",
+                    tool_name="bash",
+                    content="38 passed",
+                    is_error=False,
+                ),
+                iteration=1,
+            ),
+            SimpleNamespace(),
+        )
+        await hook.before_event(
+            RunFinished(final_response="done", iterations=1),
+            SimpleNamespace(),
+        )
+
+    asyncio.run(run_case())
+
+    records = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
+    assert [record["type"] for record in records] == [
+        "llm_call_requested",
+        "llm_response_received",
+        "tool_call_requested",
+        "tool_result_received",
+        "run_finished",
+    ]
+    assert all(record["team_id"] == "team-1" for record in records)
+    assert all(record["member_id"] == "explorer-1" for record in records)
+    assert records[0]["payload"]["message_count"] == 0
+    assert records[1]["payload"]["tool_calls"] == [{"id": "call_1", "name": "bash"}]
+    assert records[2]["payload"]["args_preview"] == '{"cmd":"pytest tests/test_team_runtime.py"}'
+    assert records[3]["payload"]["result_preview"] == "38 passed"
+
+
+def test_team_heartbeat_hook_refreshes_at_agent_loop_boundaries() -> None:
+    writes: list[tuple[str, dict]] = []
+    state = {"status": "working", "extra": {"task_id": "task-1"}}
+    hook = TeamHeartbeatHook(
+        write_heartbeat=lambda status, **extra: writes.append((status, extra)),
+        get_state=lambda: (state["status"], dict(state["extra"])),
+    )
+    tool_call = ToolCall(
+        id="call_1",
+        function=Function(name="bash", arguments='{"cmd":"pytest"}'),
+    )
+
+    async def run_case() -> None:
+        await hook.before_event(
+            LLMCallRequested(messages=[], tools=[], tool_choice=None, iteration=1),
+            SimpleNamespace(),
+        )
+        await hook.before_event(
+            ToolCallRequested(tool_call=tool_call, iteration=1),
+            SimpleNamespace(),
+        )
+        await hook.after_event(
+            ToolResultReceived(
+                tool_call=tool_call,
+                tool_result=ToolMessage(
+                    tool_call_id="call_1",
+                    tool_name="bash",
+                    content="ok",
+                    is_error=False,
+                ),
+                iteration=1,
+            ),
+            SimpleNamespace(),
+            [],
+        )
+
+    asyncio.run(run_case())
+
+    assert writes == [
+        (
+            "working",
+            {
+                "task_id": "task-1",
+                "heartbeat_reason": "llm_call_requested",
+                "iteration": 1,
+            },
+        ),
+        (
+            "working",
+            {
+                "task_id": "task-1",
+                "heartbeat_reason": "tool_call_requested",
+                "iteration": 1,
+                "current_tool": "bash",
+                "current_tool_call_id": "call_1",
+            },
+        ),
+        (
+            "working",
+            {
+                "task_id": "task-1",
+                "heartbeat_reason": "tool_result_received",
+                "iteration": 1,
+                "last_tool": "bash",
+                "last_tool_call_id": "call_1",
+                "last_tool_error": False,
+            },
+        ),
+    ]
 
 
 def test_team_worker_submits_pending_messages_when_idle(tmp_path: Path) -> None:
@@ -1090,16 +1244,16 @@ def test_team_worker_submits_pending_messages_when_idle(tmp_path: Path) -> None:
         sender="lead",
         recipient="explorer-1",
         body="Summarize the latest handoff.",
-        type="note",
+        type="message",
     )
 
     class _IdleAgent:
         def __init__(self) -> None:
             self.queries: list[str] = []
 
-        async def query(self, prompt: str) -> str:
+        async def query_stream(self, prompt: str):
             self.queries.append(prompt)
-            return "message processed"
+            yield FinalResponseEvent(content="message processed")
 
     idle_agent = _IdleAgent()
 
@@ -1110,7 +1264,83 @@ def test_team_worker_submits_pending_messages_when_idle(tmp_path: Path) -> None:
     assert "## Team Messages" in idle_agent.queries[0]
     assert "Summarize the latest handoff." in idle_agent.queries[0]
     lead_messages = Mailbox(teams_root / team.team_id).receive("lead")
-    assert {message.type for message in lead_messages} == {"message_ack", "messages_processed"}
+    assert {message.type for message in lead_messages} == {"message_ack", "message"}
+
+
+def test_team_worker_sends_idle_notification_once_per_idle_stretch(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    store_runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = store_runtime.create_team(name="demo", goal="Coordinate")
+    worker = TeamWorker(
+        teams_root=teams_root,
+        team_id=team.team_id,
+        member_id="explorer-1",
+        agent_type="explore",
+        workspace=workspace,
+    )
+
+    worker._mark_idle(reason="no_claimable_task")  # noqa: SLF001
+    worker._mark_idle(reason="no_claimable_task")  # noqa: SLF001
+
+    messages = Mailbox(teams_root / team.team_id).receive("lead")
+    idle_messages = [message for message in messages if message.type == "idle_notification"]
+    assert len(idle_messages) == 1
+    assert idle_messages[0].metadata["reason"] == "no_claimable_task"
+    assert idle_messages[0].metadata["previous_status"] == "started"
+
+    worker._set_heartbeat_state("working", task_id="task-1")  # noqa: SLF001
+    worker._clear_heartbeat_state()  # noqa: SLF001
+    worker._reset_idle_notification()  # noqa: SLF001
+    worker._mark_idle(reason="no_claimable_task")  # noqa: SLF001
+
+    messages = Mailbox(teams_root / team.team_id).receive("lead")
+    idle_messages = [message for message in messages if message.type == "idle_notification"]
+    assert len(idle_messages) == 1
+    assert idle_messages[0].metadata["previous_status"] == "working"
+
+
+def test_team_worker_completes_task_from_query_stream_final_response(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    store_runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = store_runtime.create_team(name="demo", goal="Coordinate")
+    store_runtime.create_task(
+        team_id=team.team_id,
+        title="Implement feature",
+        description="Do the work",
+        assigned_to="explorer-1",
+    )
+    worker = TeamWorker(
+        teams_root=teams_root,
+        team_id=team.team_id,
+        member_id="explorer-1",
+        agent_type="explore",
+        workspace=workspace,
+    )
+
+    class _StreamAgent:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def query_stream(self, prompt: str):
+            self.prompts.append(prompt)
+            yield FinalResponseEvent(content="streamed task result")
+
+    agent = _StreamAgent()
+    claimed_task = worker.task_board.claim_next("explorer-1")
+    assert claimed_task is not None
+
+    asyncio.run(worker._run_task(agent, claimed_task))  # noqa: SLF001
+
+    assert agent.prompts
+    tasks = store_runtime.list_tasks(team.team_id)
+    assert tasks[0].status == "completed"
+    assert tasks[0].result == "streamed task result"
+    lead_messages = Mailbox(teams_root / team.team_id).receive("lead")
+    assert "task_done_notification" in {message.type for message in lead_messages}
 
 
 def test_team_worker_marks_member_failed_on_unhandled_exception(tmp_path: Path) -> None:

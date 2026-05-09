@@ -1,5 +1,6 @@
 import shutil
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from prompt_toolkit.completion import CompleteEvent
@@ -211,6 +212,29 @@ def test_default_skill_dirs_syncs_packaged_skills_to_user_builtin_root(tmp_path:
     assert resolved_dirs[2] == workspace / ".tg_agent" / "skills"
     assert resolved_dirs[3] == workspace / "skills"
     assert (builtin_root / "builtin-only" / "SKILL.md").exists()
+
+
+def test_default_skill_dirs_syncs_builtin_skills_concurrently(tmp_path: Path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    packaged_skills = tmp_path / "packaged_skills"
+    home_dir = tmp_path / "home"
+
+    for index in range(8):
+        write_skill(packaged_skills, f"builtin-{index}", description=f"builtin skill {index}")
+
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    def sync_once() -> Path:
+        return default_skill_dirs(workspace, packaged_skills)[0]
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        roots = list(executor.map(lambda _: sync_once(), range(12)))
+
+    builtin_root = home_dir / ".tg_agent" / "skills" / ".builtin"
+    assert roots == [builtin_root] * 12
+    for index in range(8):
+        assert (builtin_root / f"builtin-{index}" / "SKILL.md").exists()
 
 
 def test_create_runtime_registries_loads_workspace_and_user_skills(

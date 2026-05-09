@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from agent_core.team.protocol import normalize_message_type
+
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -165,7 +167,7 @@ class TeamMessage:
             team_id=str(payload["team_id"]),
             sender=str(payload.get("sender") or "unknown"),
             recipient=str(payload.get("recipient") or "lead"),
-            type=str(payload.get("type") or "note"),
+            type=normalize_message_type(str(payload.get("type") or "message")),
             body=str(payload.get("body") or ""),
             metadata=metadata if isinstance(metadata, dict) else {},
             reply_to=payload.get("reply_to"),
@@ -174,4 +176,6 @@ class TeamMessage:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["type"] = normalize_message_type(str(payload.get("type") or "message"))
+        return payload

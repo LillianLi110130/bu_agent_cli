@@ -8,6 +8,7 @@ from pathlib import Path
 
 from agent_core.team.atomic_io import atomic_write_json, read_json
 from agent_core.team.models import TeamMessage, utc_now_iso
+from agent_core.team.protocol import normalize_message_type
 
 
 class Mailbox:
@@ -37,7 +38,7 @@ class Mailbox:
             team_id=team_id,
             sender=sender,
             recipient=recipient,
-            type=type,
+            type=normalize_message_type(type),
             body=body,
             metadata=dict(metadata or {}),
             reply_to=reply_to,

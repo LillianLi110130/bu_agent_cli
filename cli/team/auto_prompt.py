@@ -15,6 +15,12 @@ class TeamAutoParseError(ValueError):
     """Raised when /team auto arguments are invalid."""
 
 
+TEAM_LANGUAGE_RULES = """Language rules:
+- Use the user's language for natural-language replies, task summaries, teammate reports, and user-visible explanations.
+- The current user is using Chinese, so prefer Chinese for visible text unless the user asks otherwise.
+- Keep protocol fields, tool names, message types, task IDs, file paths, commands, code identifiers, and JSON keys unchanged."""
+
+
 def parse_team_auto_request(args: list[str]) -> TeamAutoRequest:
     """Parse `/team auto` args without choosing an orchestration strategy."""
     name: str | None = None
@@ -50,6 +56,8 @@ Team goal:
 Requested team name:
 {requested_name}
 
+{TEAM_LANGUAGE_RULES}
+
 Use the experimental TgAgent team tools to orchestrate this goal flexibly. The runtime provides primitives; you own the orchestration policy.
 
 Available team primitives:
@@ -57,7 +65,7 @@ Available team primitives:
 - team_spawn_member: start teammate processes with chosen member_id and agent_type.
 - team_create_task: create shared tasks with owner, dependencies, and write scope.
 - team_update_task: update task status, owner, dependency, result, error, title, or write scope.
-- team_send_message: coordinate lead-to-teammate or teammate-to-teammate messages. Supports `type`, `metadata`, and `reply_to`.
+- team_send_message: coordinate lead-to-teammate or teammate-to-teammate messages. Use `message` for ordinary coordination and `clarification_response` to answer teammate blocker questions. Supports `type`, `metadata`, and `reply_to`.
 - team_snapshot: read an orchestration-friendly team snapshot. It peeks lead inbox by default.
 - team_read_inbox: consume lead inbox messages when you are ready to act on them.
 - team_status: inspect lower-level team status when raw details are needed.
@@ -70,10 +78,10 @@ Lead protocol:
 4. Choose the smallest useful team. Pick clear teammate responsibilities and agent types from the task shape, such as explore, planner, general-purpose, debugger, designer, test-engineer, code-reviewer, or security-reviewer.
 5. Build a task graph with concrete success criteria. Prefer file-scoped or module-scoped tasks. Add dependencies only for real ordering constraints. Use write_scope for tasks likely to edit files.
 6. Spawn teammates and assign work. Pre-assign owners when that prevents races.
-7. Coordinate by reading team_snapshot, consuming inbox messages when ready, updating tasks, and sending guidance.
+7. Coordinate by reading team_snapshot, consuming inbox messages when ready, updating tasks, and sending messages.
    - Teammates may send `clarification_request` messages when a skill or task requires user interaction, approval, validation, or clarification.
    - Treat `clarification_request` as a coordination blocker. Answer from available context when safe, choose a recommended default when low risk, or ask the user before unblocking the teammate.
-   - Reply with `team_send_message` to the requesting teammate. Include the original message id in `reply_to` when available.
+   - Reply with `team_send_message` to the requesting teammate. Use type `clarification_response` when answering a blocker question; use type `message` for ordinary coordination. Include the original message id in `reply_to` when available.
 8. Verify according to risk. If verification fails, create or update fix tasks instead of following a fixed loop. Bound repeated fix attempts.
 9. Finish only after the requested outcome has evidence. Summarize changes, checks, teammate outcomes, blocked work, and residual risks. Shut down teammates when the team is no longer needed.
 

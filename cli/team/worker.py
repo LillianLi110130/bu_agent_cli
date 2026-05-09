@@ -9,18 +9,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from agent_core.agent.events import FinalResponseEvent
 from agent_core.team.messaging import TeamMessenger
 from agent_core.team.models import TeamMessage
 from agent_core.team.models import TeamTask, utc_now_iso
+from agent_core.team.protocol import (
+    MODEL_CONTEXT_MESSAGE_TYPES,
+    normalize_message_type,
+)
 from agent_core.team.runtime import TeamRuntime
 from agent_core.team.store import TeamStore
 from agent_core.team.task_board import TaskBoard
 from cli.team.factory import create_team_member_agent
+from cli.team.heartbeat import TeamHeartbeatHook
 from cli.team.inbox import (
     TeamInboxAttachmentHook,
     TeamInboxBuffer,
     format_team_messages_for_context,
 )
+from cli.team.auto_prompt import TEAM_LANGUAGE_RULES
+from cli.team.event_log import TeamAgentEventLogHook
 from cli.session_runtime import CLISessionRuntime
 
 CreateAgentFactory = Callable[..., tuple[Any, Any, Any]]
@@ -59,9 +67,16 @@ class TeamWorker:
             ),
         )
         self.task_board = TaskBoard(self.team_dir)
+        self._heartbeat_status: str | None = None
+        self._heartbeat_extra: dict[str, Any] = {}
+        self._last_non_idle_status: str | None = None
+        self._idle_notification_sent = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._runtime_tasks: set[asyncio.Task] = set()
 
     async def run(self) -> None:
         try:
+            self._loop = asyncio.get_running_loop()
             agent, ctx = self._build_member_agent()
             agent.register_hook(
                 TeamInboxAttachmentHook(
@@ -69,15 +84,31 @@ class TeamWorker:
                     member_id=self.member_id,
                 )
             )
+            agent.register_hook(
+                TeamHeartbeatHook(
+                    write_heartbeat=self._write_heartbeat,
+                    get_state=self._get_heartbeat_state,
+                )
+            )
+            agent.register_hook(
+                TeamAgentEventLogHook(
+                    team_id=self.team_id,
+                    member_id=self.member_id,
+                    event_log_path=self.team_dir / "sessions" / self.member_id / "events.jsonl",
+                )
+            )
             agent.bind_session_runtime(self._create_member_session_runtime(ctx))
             self.store.ensure_mailbox(self.team_id, self.member_id)
             self._install_signal_handlers()
             self._send_to_lead("started", f"{self.member_id} started as {self.agent_type}")
 
-            await asyncio.gather(
-                self._message_pump(),
-                self._work_loop(agent),
-            )
+            self._runtime_tasks = {
+                asyncio.create_task(self._message_pump(), name=f"{self.member_id}:message_pump"),
+                asyncio.create_task(self._work_loop(agent), name=f"{self.member_id}:work_loop"),
+            }
+            await asyncio.gather(*self._runtime_tasks)
+        except asyncio.CancelledError:
+            self._stopping = True
         except Exception as exc:
             self._write_heartbeat("failed", error=str(exc))
             self.store.mark_member_status(self.team_id, self.member_id, "failed")
@@ -87,6 +118,8 @@ class TeamWorker:
                 metadata={"error": str(exc)},
             )
             raise
+        finally:
+            self._cancel_runtime_tasks()
 
         self._write_heartbeat("stopped")
         self.store.mark_member_status(self.team_id, self.member_id, "stopped")
@@ -113,16 +146,21 @@ class TeamWorker:
             f"- Team ID: {self.team_id}\n"
             f"- Member ID: {self.member_id}\n"
             f"- Workspace: {self.workspace}\n\n"
+            f"{TEAM_LANGUAGE_RULES}\n\n"
             "Team rules:\n"
             "- Work on tasks claimed from the shared team task board.\n"
-            "- Treat mailbox messages from the lead as coordination instructions.\n"
+            "- Treat `message` and `clarification_response` mailbox messages as coordination "
+            "instructions that enter your model context.\n"
+            "- `task_assignment`, `task_update`, `message_ack`, `status_check`, and "
+            "`shutdown_request` are runtime protocol messages handled outside normal task context.\n"
             "- Do not call delegate or delegate_parallel, and do not spawn other agents.\n"
             "- Skills are read-only for teammates: you may list or view skills, but you must "
             "not create, edit, patch, manage, or persist skills.\n"
             "- Do not run skill review or attempt to save lessons learned as skills. Report "
             "reusable lessons to the team lead instead.\n"
             "- If a skill asks for user interaction, validation, approval, or clarification, "
-            "send a message to the team lead with the exact question and wait for guidance; "
+            "send a message to the team lead with the exact question using type "
+            "`clarification_request` and wait; "
             "do not ask the end user directly.\n"
             "- Use message type `clarification_request` for these blocker questions. Include "
             "metadata with `question`, `options` when useful, `recommended` when you have a "
@@ -141,18 +179,63 @@ class TeamWorker:
     async def _receive_messages_once(self) -> bool:
         handled = False
         for message in self.messenger.receive(self.member_id):
-            if message.type == "shutdown":
+            message_type = normalize_message_type(message.type)
+            if message_type == "shutdown_request":
+                self._ack_message(message)
                 self._stopping = True
+                self._cancel_runtime_tasks()
                 return True
-            await self.inbox_buffer.push(message)
+            if message_type == "message_ack":
+                handled = True
+                continue
+            if message_type == "task_assignment":
+                self._ack_message(message)
+                self._reset_idle_notification()
+                self._write_heartbeat(
+                    "idle",
+                    heartbeat_reason="task_assignment",
+                    task_id=message.metadata.get("task_id"),
+                )
+                handled = True
+                continue
+            if message_type == "task_update":
+                self._ack_message(message)
+                self._reset_idle_notification()
+                self._write_heartbeat(
+                    "idle",
+                    heartbeat_reason="task_update",
+                    task_id=message.metadata.get("task_id"),
+                )
+                handled = True
+                continue
+            if message_type == "status_check":
+                self._ack_message(message)
+                self._send_to_lead(
+                    "status_response",
+                    "status",
+                    metadata={
+                        "heartbeat": self.store.read_heartbeat(self.team_id, self.member_id),
+                    },
+                )
+                handled = True
+                continue
+
+            if message_type in MODEL_CONTEXT_MESSAGE_TYPES:
+                self._reset_idle_notification()
+                await self.inbox_buffer.push(message)
+            else:
+                self._reset_idle_notification()
+                await self.inbox_buffer.push(message)
             handled = True
             self._ack_message(message)
-        if handled:
-            self._write_heartbeat("message_pending", pending=await self.inbox_buffer.count())
+        pending = await self.inbox_buffer.count()
+        if pending:
+            self._last_non_idle_status = "message_pending"
+            self._write_heartbeat("message_pending", pending=pending)
         return handled
 
     def _ack_message(self, message: TeamMessage) -> None:
-        if message.type in {"message_ack", "note_ack"}:
+        if normalize_message_type(message.type) == "message_ack":
             return
         if message.sender == self.member_id:
             return
@@ -171,54 +254,66 @@ class TeamWorker:
 
             task = self.task_board.claim_next(self.member_id)
             if task is not None:
+                self._reset_idle_notification()
                 await self._run_task(agent, task)
                 continue
 
-            self._write_heartbeat("idle")
+            self._mark_idle(reason="no_claimable_task")
             await asyncio.sleep(self.poll_interval)
 
     async def _submit_pending_messages(self, agent) -> None:
         messages = await self.inbox_buffer.drain()
         if not messages:
             return
-        self._write_heartbeat("processing_messages", pending=0)
+        self._set_heartbeat_state("processing_messages", pending=0)
         prompt = format_team_messages_for_context(
             messages,
             member_id=self.member_id,
             idle=True,
         )
         try:
-            result = await agent.query(prompt)
+            result = await self._query_agent_stream(agent, prompt)
             self._send_to_lead(
-                "messages_processed",
+                "message",
                 result,
-                metadata={"message_ids": [message.message_id for message in messages]},
+                metadata={
+                    "message_ids": [message.message_id for message in messages],
+                    "status": "processed",
+                },
             )
         except Exception as exc:
             self._send_to_lead(
-                "messages_blocked",
+                "message",
                 str(exc),
-                metadata={"message_ids": [message.message_id for message in messages]},
+                metadata={
+                    "message_ids": [message.message_id for message in messages],
+                    "status": "blocked",
+                    "error": str(exc),
+                },
             )
+        finally:
+            self._clear_heartbeat_state()
 
     async def _run_task(self, agent, task: TeamTask) -> None:
-        self._write_heartbeat("working", task_id=task.task_id)
+        self._set_heartbeat_state("working", task_id=task.task_id)
         prompt = self._build_task_prompt(task)
         try:
-            result = await agent.query(prompt)
+            result = await self._query_agent_stream(agent, prompt)
             self.task_board.complete_task(task.task_id, self.member_id, result)
             self._send_to_lead(
-                "task_completed",
+                "task_done_notification",
                 result,
                 metadata={"task_id": task.task_id, "title": task.title},
             )
         except Exception as exc:
             self.task_board.block_task(task.task_id, self.member_id, str(exc))
             self._send_to_lead(
-                "task_blocked",
+                "task_blocked_notification",
                 str(exc),
                 metadata={"task_id": task.task_id, "title": task.title},
             )
+        finally:
+            self._clear_heartbeat_state()
 
     def _build_task_prompt(self, task: TeamTask) -> str:
         scope = "\n".join(f"- {item}" for item in task.write_scope) or "(none)"
@@ -231,11 +326,19 @@ class TeamWorker:
             f"{task.description}\n\n"
             "Write scope:\n"
             f"{scope}\n\n"
+            f"{TEAM_LANGUAGE_RULES}\n\n"
             "Complete the task directly. If you need user interaction, approval, validation, "
             "or clarification, send a `clarification_request` message to the team lead with "
             "the exact question, options, recommendation, blocking=true, and this task_id. "
             "Do not ask the end user directly. Return a concise result for the team lead."
         )
+
+    async def _query_agent_stream(self, agent, prompt: str) -> str:
+        final_response = ""
+        async for event in agent.query_stream(prompt):
+            if isinstance(event, FinalResponseEvent):
+                final_response = event.content
+        return final_response
 
     def _send_to_lead(
         self,
@@ -256,7 +359,7 @@ class TeamWorker:
         *,
         recipient: str,
         body: str,
-        type: str = "note",
+        type: str = "message",
         metadata: dict | None = None,
         reply_to: str | None = None,
     ) -> None:
@@ -279,12 +382,56 @@ class TeamWorker:
         }
         self.store.write_heartbeat(self.team_id, self.member_id, payload)
 
+    def _set_heartbeat_state(self, status: str, **extra: Any) -> None:
+        if status != "idle":
+            self._last_non_idle_status = status
+        self._heartbeat_status = status
+        self._heartbeat_extra = dict(extra)
+        self._write_heartbeat(status, heartbeat_reason="state_entered", **self._heartbeat_extra)
+
+    def _clear_heartbeat_state(self) -> None:
+        self._heartbeat_status = None
+        self._heartbeat_extra = {}
+
+    def _get_heartbeat_state(self) -> tuple[str | None, dict[str, Any]]:
+        return self._heartbeat_status, dict(self._heartbeat_extra)
+
+    def _reset_idle_notification(self) -> None:
+        self._idle_notification_sent = False
+
+    def _mark_idle(self, *, reason: str) -> None:
+        previous_status = self._last_non_idle_status or "started"
+        self._write_heartbeat("idle", heartbeat_reason=reason)
+        if self._idle_notification_sent:
+            return
+        self._idle_notification_sent = True
+        self._send_to_lead(
+            "idle_notification",
+            f"{self.member_id} is idle and standing by.",
+            metadata={
+                "reason": reason,
+                "previous_status": previous_status,
+            },
+        )
+
     def _install_signal_handlers(self) -> None:
         def stop(_signum, _frame) -> None:
             self._stopping = True
+            self._cancel_runtime_tasks()
 
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
+
+    def _cancel_runtime_tasks(self) -> None:
+        tasks = [task for task in self._runtime_tasks if not task.done()]
+        if not tasks:
+            return
+        loop = self._loop
+        for task in tasks:
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(task.cancel)
+            else:
+                task.cancel()
 
     def _create_member_session_runtime(self, ctx) -> CLISessionRuntime:
         now = datetime.now().astimezone()

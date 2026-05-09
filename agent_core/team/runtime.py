@@ -100,6 +100,9 @@ class TeamRuntime:
     def set_active_team(self, team_id: str) -> None:
         self.store.set_active_team(workspace_root=self.workspace_root, team_id=team_id)
 
+    def clear_active_team(self, team_id: str | None = None) -> None:
+        self.store.clear_active_team(workspace_root=self.workspace_root, team_id=team_id)
+
     def get_active_team(self) -> str | None:
         return self.store.get_active_team(workspace_root=self.workspace_root)
 
@@ -177,8 +180,8 @@ class TeamRuntime:
         message = self.send_message(
             team_id=team_id,
             recipient=member_id,
-            body="shutdown",
-            type="shutdown",
+            body="shutdown requested",
+            type="shutdown_request",
         )
         for member in self.store.list_members(team_id):
             if member.member_id == member_id and member.pid:
@@ -196,6 +199,7 @@ class TeamRuntime:
                 self.stop_member(team_id, member.member_id)
         self.store.update_config_status(team_id, "shutdown")
         self.store.write_state(team_id, active=False, phase="shutdown")
+        self.clear_active_team(team_id)
 
     def create_task(
         self,
@@ -219,7 +223,7 @@ class TeamRuntime:
             self.send_message(
                 team_id=team_id,
                 recipient=assigned_to,
-                type="task_assigned",
+                type="task_assignment",
                 body=f"Task assigned: {task.title}",
                 metadata={"task_id": task.task_id},
             )
@@ -254,12 +258,12 @@ class TeamRuntime:
             result=result,
             error=error,
         )
-        self.store.append_event(team_id, "task_updated", actor="lead", payload=task.to_dict())
+        self.store.append_event(team_id, "task_update", actor="lead", payload=task.to_dict())
         if assigned_to:
             self.send_message(
                 team_id=team_id,
                 recipient=assigned_to,
-                type="task_updated",
+                type="task_update",
                 body=f"Task updated: {task.title}",
                 metadata={"task_id": task.task_id},
             )
@@ -272,7 +276,7 @@ class TeamRuntime:
         recipient: str,
         body: str,
         sender: str = "lead",
-        type: str = "note",
+        type: str = "message",
         metadata: dict[str, Any] | None = None,
         reply_to: str | None = None,
     ) -> TeamMessage:
@@ -423,7 +427,7 @@ class TeamRuntime:
         if terminal:
             return ["summarize results", "shutdown team when appropriate"]
         if task_counts.get("blocked", 0):
-            return ["inspect blocked tasks", "update task or send guidance"]
+            return ["inspect blocked tasks", "update task or send a message"]
         if warnings:
             return ["inspect warnings", "send status check if needed"]
         if task_counts.get("in_progress", 0):

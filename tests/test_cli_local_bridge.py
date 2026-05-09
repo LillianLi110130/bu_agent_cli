@@ -138,6 +138,8 @@ def test_team_inbox_watcher_enqueues_clarification_request_via_bridge(
         assert request.source_meta["kind"] == "team_inbox_auto_trigger"
         assert request.source_meta["team_id"] == team.team_id
         assert "Team Inbox Auto Trigger" in request.content
+        assert "Language rules:" in request.content
+        assert "prefer Chinese" in request.content
         assert "clarification_request" in request.content
         assert "Which database should I use?" in request.content
         assert runtime.read_lead_inbox(team.team_id, ack=False) == []
@@ -155,7 +157,12 @@ def test_team_inbox_watcher_enqueues_lifecycle_triggers_via_bridge(
         runtime = TeamRuntime(teams_root=workspace_root / "teams", workspace_root=workspace_root)
         team = runtime.start_team(goal="Coordinate")
         cli._ctx.team_runtime = runtime
-        for message_type in ("task_completed", "task_blocked", "worker_failed"):
+        for message_type in (
+            "task_done_notification",
+            "task_blocked_notification",
+            "worker_failed",
+            "idle_notification",
+        ):
             runtime.send_message(
                 team_id=team.team_id,
                 sender="backend-1",
@@ -181,9 +188,10 @@ def test_team_inbox_watcher_enqueues_lifecycle_triggers_via_bridge(
         assert request.source_meta["kind"] == "team_inbox_auto_trigger"
         assert request.source_meta["team_id"] == team.team_id
         assert set(request.source_meta["message_ids"])
-        assert "task_completed" in request.content
-        assert "task_blocked" in request.content
+        assert "task_done_notification" in request.content
+        assert "task_blocked_notification" in request.content
         assert "worker_failed" in request.content
+        assert "idle_notification" in request.content
         assert runtime.read_lead_inbox(team.team_id, ack=False) == []
 
     asyncio.run(run_case())
@@ -215,7 +223,7 @@ def test_team_inbox_watcher_ignores_non_trigger_messages(workspace_root, monkeyp
         assert store.pending_count() == 0
         unread = runtime.read_lead_inbox(team.team_id, ack=False)
         assert len(unread) == 1
-        assert unread[0].type == "progress_update"
+        assert unread[0].type == "message"
 
     asyncio.run(run_case())
 

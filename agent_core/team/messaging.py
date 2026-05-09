@@ -32,7 +32,7 @@ class TeamMessenger:
         sender: str,
         recipient: str,
         body: str,
-        type: str = "note",
+        type: str = "message",
         metadata: dict[str, Any] | None = None,
         reply_to: str | None = None,
     ) -> TeamMessage:

@@ -121,6 +121,21 @@ class TeamStore:
         active_by_workspace[str(workspace_root.resolve())] = team_id
         atomic_write_json(path, {"active_by_workspace": active_by_workspace})
 
+    def clear_active_team(self, *, workspace_root: Path, team_id: str | None = None) -> None:
+        path = self.teams_root / "active.json"
+        payload = read_json(path, {"active_by_workspace": {}})
+        active_by_workspace = payload.get("active_by_workspace")
+        if not isinstance(active_by_workspace, dict):
+            return
+        workspace_key = str(workspace_root.resolve())
+        current = active_by_workspace.get(workspace_key)
+        if current is None:
+            return
+        if team_id is not None and str(current) != team_id:
+            return
+        active_by_workspace.pop(workspace_key, None)
+        atomic_write_json(path, {"active_by_workspace": active_by_workspace})
+
     def get_active_team(self, *, workspace_root: Path) -> str | None:
         payload = read_json(self.teams_root / "active.json", {"active_by_workspace": {}})
         active_by_workspace = payload.get("active_by_workspace")

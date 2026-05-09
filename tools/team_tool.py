@@ -156,7 +156,7 @@ async def team_send_message(
     recipient: str,
     body: str,
     sender: str = "lead",
-    type: str = "note",
+    type: str = "message",
     metadata: dict | None = None,
     reply_to: str | None = None,
 ) -> str:
