@@ -173,6 +173,52 @@ def test_build_system_prompt_explains_background_bash_output_flow(
     assert "不要用 `bash` 执行 `cat`/`type` 去读 `persistedOutputPath`" in prompt
 
 
+def test_build_system_prompt_accepts_runtime_registries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    prompt_dir = tmp_path / "prompts"
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(module, "_PROMPTS_DIR", prompt_dir)
+    _write_prompt_template(prompt_dir)
+
+    class FakeSkill:
+        def __init__(self, name: str, description: str) -> None:
+            self.name = name
+            self.description = description
+            self.path = f"/skills/{name}"
+
+    class FakeSkillRegistry:
+        def get_all(self):
+            return [FakeSkill("runtime-skill", "runtime description")]
+
+    class FakeAgentConfig:
+        description = "runtime agent description"
+
+    class FakeAgentRegistry:
+        def list_callable_agents(self):
+            return ["runtime-agent"]
+
+        def get_config(self, name):
+            assert name == "runtime-agent"
+            return FakeAgentConfig()
+
+    prompt = module.build_system_prompt(
+        workspace,
+        skill_registry=FakeSkillRegistry(),
+        agent_registry=FakeAgentRegistry(),
+    )
+
+    assert "runtime-skill" in prompt
+    assert "runtime description" in prompt
+    assert "runtime-agent: runtime agent description" in prompt
+    assert str(workspace) in prompt
+
+
 def test_build_system_prompt_includes_user_and_workspace_skills(
     tmp_path: Path,
     monkeypatch,
@@ -222,6 +268,120 @@ def test_build_system_prompt_prefers_project_skill_metadata(
 
     assert "project override" in prompt
     assert "builtin override" not in prompt
+
+
+def test_build_system_prompt_prefers_tg_agent_home_project_context_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home_dir = tmp_path / "home"
+    prompt_dir = tmp_path / "prompts"
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setattr(module, "_PROMPTS_DIR", prompt_dir)
+    _write_prompt_template(prompt_dir)
+
+    soul_path = _write_project_context_file(home_dir / ".tg_agent", "SOUL.md", "# home soul")
+    identity_path = _write_project_context_file(
+        home_dir / ".tg_agent", "IDENTITY.md", "# home identity"
+    )
+    user_path = _write_project_context_file(home_dir / ".tg_agent", "USER.md", "# home user")
+    _write_project_context_file(prompt_dir, "SOUL.md", "# fallback soul")
+    _write_project_context_file(prompt_dir, "IDENTITY.md", "# fallback identity")
+    _write_project_context_file(prompt_dir, "USER.md", "# fallback user")
+
+    prompt = module.build_system_prompt(workspace)
+
+    assert "# Project Context" in prompt
+    assert "The following project context files have been loaded:" in prompt
+    assert (
+        "If SOUL.md is present, embody its persona and tone. Avoid stiff, generic replies; "
+        "follow its guidance unless higher-priority instructions override it."
+    ) in prompt
+    assert f"### {soul_path}" in prompt
+    assert "# home soul" in prompt
+    assert f"### {identity_path}" in prompt
+    assert "# home identity" in prompt
+    assert f"### {user_path}" in prompt
+    assert "# home user" in prompt
+    assert "# fallback soul" not in prompt
+
+
+def test_build_system_prompt_falls_back_to_prompt_context_files(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home_dir = tmp_path / "home"
+    prompt_dir = tmp_path / "prompts"
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setattr(module, "_PROMPTS_DIR", prompt_dir)
+    _write_prompt_template(prompt_dir)
+
+    soul_path = _write_project_context_file(prompt_dir, "SOUL.md", "# prompt soul")
+    identity_path = _write_project_context_file(prompt_dir, "IDENTITY.md", "# prompt identity")
+    user_path = _write_project_context_file(prompt_dir, "USER.md", "# prompt user")
+
+    prompt = module.build_system_prompt(workspace)
+
+    assert f"### {soul_path}" in prompt
+    assert "# prompt soul" in prompt
+    assert f"### {identity_path}" in prompt
+    assert "# prompt identity" in prompt
+    assert f"### {user_path}" in prompt
+    assert "# prompt user" in prompt
+
+
+def test_build_system_prompt_keeps_empty_project_context_section_when_files_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(module, "_PROMPTS_DIR", tmp_path / "prompts")
+    _write_prompt_template(tmp_path / "prompts")
+
+    prompt = module.build_system_prompt(workspace)
+
+    assert "# Project Context" in prompt
+    assert "The following project context files have been loaded:" in prompt
+    assert "If SOUL.md is present, embody its persona and tone." not in prompt
+    assert "### " not in prompt
+
+
+def test_create_subagent_factory_excludes_project_context(monkeypatch) -> None:
+    module = _load_module("agent_core.bootstrap.agent_factory")
+    config_module = _load_module("agent_core.agent.config")
+
+    monkeypatch.setattr(
+        "config.model_config.get_model_config",
+        lambda _model: ("dummy-model", "https://example.invalid", "test-key"),
+    )
+
+    config = config_module.AgentConfig(
+        name="reviewer",
+        description="test subagent",
+        system_prompt="You are a subagent.",
+        tools=[],
+        model="dummy-model",
+        mode="subagent",
+    )
+
+    agent = module._create_subagent_factory(config=config, parent_ctx=object(), all_tools=[])
+
+    assert "You are a subagent." in agent.system_prompt
+    assert "## System Information" in agent.system_prompt
+    assert "# Project Context" not in agent.system_prompt
+    assert "The following project context files have been loaded:" not in agent.system_prompt
 
 
 def test_build_system_prompt_prefers_tg_agent_home_project_context_files(

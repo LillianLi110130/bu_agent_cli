@@ -11,6 +11,8 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -29,6 +31,8 @@ class MockGatewayState:
 
     queued_messages: list[MockWorkerMessage] = field(default_factory=list)
     completions: list[dict[str, Any]] = field(default_factory=list)
+    sent_texts: list[dict[str, Any]] = field(default_factory=list)
+    uploaded_attachments: list[dict[str, Any]] = field(default_factory=list)
     online_workers: dict[str, dict[str, Any]] = field(default_factory=dict)
     worker_ttl_seconds: float = 30.0
     stream_heartbeat_interval_seconds: float = 0.1
@@ -126,6 +130,11 @@ class EnqueueRequest(BaseModel):
     content: str
 
 
+class SendTextRequest(BaseModel):
+    worker_id: str
+    text: str
+
+
 def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     """Create a FastAPI app that mimics the worker gateway contract."""
     state = state or MockGatewayState()
@@ -196,6 +205,28 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
                 "worker_id": request.worker_id,
                 "final_content": request.final_content,
                 "completed_at": time.time(),
+            }
+        )
+        return {"ok": True}
+
+    @app.post("/api/worker/send_text")
+    async def send_text(request: SendTextRequest) -> dict[str, bool]:
+        state.sent_texts.append(
+            {
+                "worker_id": request.worker_id,
+                "text": request.text,
+            }
+        )
+        return {"ok": True}
+
+    @app.post("/api/worker/upload_attachment")
+    async def upload_attachment(request: Request) -> dict[str, bool]:
+        content_type = request.headers.get("content-type", "")
+        body = await request.body()
+        state.uploaded_attachments.append(
+            {
+                "content_type": content_type,
+                "body": body,
             }
         )
         return {"ok": True}

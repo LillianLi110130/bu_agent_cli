@@ -17,9 +17,14 @@ __pycache__/
 .bu_agent/
 .pytest_tmp/
 .DS_Store
+AGENTS.md
 .tg_agent
 .tg_agent_verify/
 .tmp_pyinstaller_runtime/
 tests/conftest.py
 AGENTS.md
+.env
+node_modules/
+.m2/
+gateway/target/
 blank/

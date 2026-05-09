@@ -59,7 +59,7 @@ from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.task import SubagentTaskManager
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.im_bridge import FileBridgeStore, resolve_session_binding_id, get_bridge_store
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.auth import (
@@ -697,7 +697,9 @@ def create_agent(
             get_current_agent: lambda: agent,
             get_skill_runtime_service: lambda: skill_runtime_service,
             get_memory_store: lambda: memory_store,
+            get_bridge_store: lambda: ctx.bridge_store,
         },
+        mode=mode,
         agent_config=agent_config,
         hooks=build_agent_hooks(),
     )
@@ -737,6 +739,7 @@ async def main():
     )
     session_runtime = CLISessionRuntime.create_for_context(ctx)
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
+    ctx.bridge_store = bridge_store
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
     if bridge_store is not None:
         console.print(
