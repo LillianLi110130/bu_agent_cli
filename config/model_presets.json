@@ -1,16 +1,32 @@
 {
   "default": "GLM-5.1",
-  "auto_vision_preset": "GLM-4.6V",
-  "image_summary_preset": "GLM-4.6V",
+  "auto_vision_preset": "vision-default",
+  "image_summary_preset": "vision-default",
   "presets": 
   {
+    "coding-default": {
+      "provider": "gateway",
+      "model": "coding-default",
+      "base_url": "http://127.0.0.1:8000",
+      "vision": false,
+      "max_input_tokens": 200000,
+      "max_output_tokens": 128000
+    },
+    "vision-default": {
+      "provider": "gateway",
+      "model": "vision-default",
+      "base_url": "http://127.0.0.1:8000",
+      "vision": true,
+      "max_input_tokens": 128000,
+      "max_output_tokens": 4096
+    },
     "GLM-5.1": {
       "model": "GLM-5.1",
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
       "api_key_env": "OPENAI_API_KEY",
       "vision": false,
       "max_input_tokens": 200000,
-      "max_output_tokens": 128000
+      "max_output_tokens": 64000
     },
     "GLM-4.7": {
       "model": "GLM-4.7",
@@ -18,15 +34,7 @@
       "api_key_env": "OPENAI_API_KEY",
       "vision": false,
       "max_input_tokens": 200000,
-      "max_output_tokens": 128000
-    },
-    "GLM-4.6": {
-      "model": "GLM-4.6",
-      "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
-      "api_key_env": "OPENAI_API_KEY",
-      "vision": false,
-      "max_input_tokens": 200000,
-      "max_output_tokens": 128000
+      "max_output_tokens": 64000
     },
     "GLM-4.6V": {
       "model": "GLM-4.6V",
@@ -34,7 +42,7 @@
       "api_key_env": "OPENAI_API_KEY",
       "vision": true,
       "max_input_tokens": 128000,
-      "max_output_tokens": 4096
+      "max_output_tokens": 64000
     }
   }
 }

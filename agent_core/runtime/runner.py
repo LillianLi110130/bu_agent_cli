@@ -5,11 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from agent_core.agent import Agent
-from agent_core.llm import ChatOpenAI
 from agent_core.llm.base import BaseChatModel
+from agent_core.llm.factory import create_chat_model
 from agent_core.llm.messages import AssistantMessage, BaseMessage, ToolMessage
-
-from config.model_config import get_model_config
 
 if TYPE_CHECKING:
     from agent_core.task.local_agent_task import SubagentCallRequest
@@ -204,28 +202,7 @@ class AgentCallRunner:
     ) -> BaseChatModel:
         if not override_model:
             return parent_llm
-
-        model, base_url, api_key = get_model_config(override_model)
-        if isinstance(parent_llm, ChatOpenAI):
-            return ChatOpenAI(
-                model=model,
-                api_key=api_key or parent_llm.api_key,
-                base_url=base_url or parent_llm.base_url,
-                temperature=parent_llm.temperature,
-                frequency_penalty=parent_llm.frequency_penalty,
-                reasoning_effort=parent_llm.reasoning_effort,
-                seed=parent_llm.seed,
-                service_tier=parent_llm.service_tier,
-                top_p=parent_llm.top_p,
-                parallel_tool_calls=parent_llm.parallel_tool_calls,
-                prompt_cache_key=parent_llm.prompt_cache_key,
-                prompt_cache_retention=parent_llm.prompt_cache_retention,
-                max_retries=parent_llm.max_retries,
-                timeout=parent_llm.timeout,
-                default_headers=parent_llm.default_headers,
-                default_query=parent_llm.default_query,
-            )
-        return parent_llm
+        return create_chat_model(override_model, fallback_llm=parent_llm)
 
     def _load_skill_text(self, skill_names: list[str]) -> str:
         if not skill_names or self._skill_registry is None:

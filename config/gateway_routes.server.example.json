@@ -1,0 +1,16 @@
+{
+  "routes": {
+    "coding-default": {
+      "provider": "openai",
+      "upstream_model": "GLM-5.1",
+      "base_url": "https://your-upstream-provider.example.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    },
+    "vision-default": {
+      "provider": "openai",
+      "upstream_model": "GLM-4.6V",
+      "base_url": "https://your-upstream-provider.example.com/v1",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}

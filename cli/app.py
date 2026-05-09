@@ -9,6 +9,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -31,6 +32,12 @@ from agent_core.agent import (
     ToolCallEvent,
     ToolResultEvent,
 )
+from agent_core.agent.events import (
+    TextDeltaEvent,
+    ThinkingDeltaEvent,
+    ThinkingEndEvent,
+    ThinkingStartEvent,
+)
 from agent_core.agent.hooks import BaseAgentHook
 from agent_core.agent.registry import AgentRegistry
 from agent_core.agent.runtime_events import (
@@ -46,6 +53,8 @@ from agent_core.llm.messages import (
     SystemMessage,
     UserMessage,
 )
+from agent_core.memory.review import MemoryReviewChange, MemoryReviewHook
+from agent_core.memory.store import MemoryStore
 from agent_core.plugin import (
     PluginCommandExecutor,
     PluginExecutionError,
@@ -95,6 +104,7 @@ from cli.init_agent import build_init_agent, build_init_user_prompt, validate_in
 from cli.im_bridge import BridgeRequest, FileBridgeStore
 from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
+from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from cli.session_runtime import CLISessionRuntime
@@ -115,6 +125,7 @@ logger = logging.getLogger("cli.app")
 _REMOTE_RESET_STARTUP_PROMPT_PATH = (
     application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
 )
+_SERVER_PROGRESS_EXCLUDED_BLOCKS = ("think", "tool_call")
 _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY = (
     "review agent 没有产生变更，也没有返回标准 Nothing to save."
 )
@@ -124,6 +135,42 @@ def _summarize_unclassified_skill_review(final_response: str) -> str:
     summary = final_response.strip()
     if not summary:
         return _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY
+    if len(summary) <= 400:
+        return summary
+    return f"{summary[:200]}\n...\n{summary[-200:]}"
+
+
+def _extract_plain_server_progress_text(content: str) -> str:
+    """Return text outside think/tool_call XML-style blocks for server progress."""
+    filtered = content
+    for tag in _SERVER_PROGRESS_EXCLUDED_BLOCKS:
+        filtered = re.sub(
+            rf"<{tag}\b[^>]*>.*?</{tag}>",
+            "",
+            filtered,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        filtered = re.sub(
+            rf"<{tag}\b[^>]*>.*$",
+            "",
+            filtered,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    return filtered.strip()
+
+
+_REMOTE_RESET_RESPONSE = "当前上下文已重置"
+
+
+_UNCLASSIFIED_MEMORY_REVIEW_EMPTY_SUMMARY = (
+    "review agent 没有产生 memory 变更，也没有返回标准 Nothing to save."
+)
+
+
+def _summarize_unclassified_memory_review(final_response: str) -> str:
+    summary = final_response.strip()
+    if not summary:
+        return _UNCLASSIFIED_MEMORY_REVIEW_EMPTY_SUMMARY
     if len(summary) <= 400:
         return summary
     return f"{summary[:200]}\n...\n{summary[-200:]}"
@@ -470,6 +517,12 @@ class TGAgentCLI:
         self._model_pick_active = False
         self._model_pick_order: list[str] = []
         self._skill_review_history: list[SkillReviewHistoryItem] = []
+        self._memory_review_history: list[MemoryReviewHistoryItem] = []
+        self._memory_store = getattr(
+            self._agent,
+            "_memory_store",
+            getattr(self._ctx, "memory_store", MemoryStore()),
+        )
         self._seen_team_inbox_message_ids: set[str] = set()
         self._team_auto_trigger_queue: asyncio.Queue[str] = asyncio.Queue()
         self._agents_md_hash: str | None = None
@@ -485,12 +538,14 @@ class TGAgentCLI:
             )
         )
         self._bind_skill_review_notifications()
+        self._bind_memory_review_notifications()
         self._workspace_instruction_state = WorkspaceInstructionState()
         self._last_context_budget: _CLIContextBudgetSnapshot | None = None
         self._last_context_budget_status_line: str | None = None
         self._context_budget_hook_agents: set[int] = set()
         self._subagent_progress_signatures: dict[str, tuple[str, int, str]] = {}
         self._foreground_delegate_depth = 0
+        self._active_thinking_id: str | None = None
         if self._bridge_store is not None:
             self._bridge_store.initialize()
 
@@ -502,6 +557,15 @@ class TGAgentCLI:
                 hook.on_nothing_to_save = self._on_skill_review_nothing_to_save
                 hook.on_unclassified_no_change = self._on_skill_review_unclassified_no_change
                 hook.on_error = self._on_skill_review_error
+
+    def _bind_memory_review_notifications(self) -> None:
+        for hook in getattr(self._agent, "hooks", []):
+            if isinstance(hook, MemoryReviewHook):
+                hook.on_changes = self._on_memory_review_changes
+                hook.on_manage_errors = self._on_memory_review_manage_errors
+                hook.on_nothing_to_save = self._on_memory_review_nothing_to_save
+                hook.on_unclassified_no_change = self._on_memory_review_unclassified_no_change
+                hook.on_error = self._on_memory_review_error
 
     def _on_skill_review_changes(self, changes: list[SkillReviewChange]) -> None:
         action_labels = {
@@ -583,6 +647,88 @@ class TGAgentCLI:
             return "file_updated"
         return "updated"
 
+    def _on_memory_review_changes(self, changes: list[MemoryReviewChange]) -> None:
+        action_labels = {
+            "added": "已新增",
+            "replaced": "已更新",
+            "removed": "已移除",
+        }
+        target_labels = {
+            "user": "用户记忆",
+            "memory": "长期记忆",
+        }
+        for change in changes:
+            label = action_labels.get(change.action, "已更新")
+            target_label = target_labels.get(change.target, change.target)
+            self._append_memory_review_history(
+                status=self._memory_review_status_for_action(change.action),
+                summary=f"{label}{target_label}",
+                target=change.target,
+            )
+            self._console.print(f"[dim]Memory review：{label}{target_label}。[/dim]")
+
+    def _on_memory_review_nothing_to_save(self) -> None:
+        self._append_memory_review_history(
+            status="nothing_to_save",
+            summary="没有发现值得保存的 memory",
+        )
+        self._console.print("[dim]Memory review：没有发现值得保存的记忆。[/dim]")
+
+    def _on_memory_review_manage_errors(self, errors: list[str]) -> None:
+        summary = "; ".join(error.strip() for error in errors if error.strip())
+        if not summary:
+            summary = "memory 写入失败，但没有返回错误详情"
+        summary = summary[:240]
+        self._append_memory_review_history(
+            status="attempt_failed",
+            summary=summary,
+        )
+        self._console.print(
+            f"[dim]Memory review：memory 写入失败：[/dim][yellow]{summary}[/yellow]"
+        )
+
+    def _on_memory_review_unclassified_no_change(self, final_response: str) -> None:
+        summary = _summarize_unclassified_memory_review(final_response)
+        self._append_memory_review_history(
+            status="no_change_unclassified",
+            summary=summary,
+        )
+        self._console.print(
+            "[dim]Memory review：没有产生 memory 变更，且结果未分类。[/dim]"
+        )
+
+    def _on_memory_review_error(self, error: Exception) -> None:
+        error_summary = f"{type(error).__name__}: {error}"
+        self._append_memory_review_history(
+            status="failed",
+            summary=error_summary[:240],
+        )
+
+    def _append_memory_review_history(
+        self,
+        *,
+        status: str,
+        summary: str,
+        target: str | None = None,
+    ) -> None:
+        self._memory_review_history.append(
+            MemoryReviewHistoryItem(
+                created_at=datetime.now(),
+                status=status,
+                summary=summary,
+                target=target,
+            )
+        )
+        self._memory_review_history = self._memory_review_history[-50:]
+
+    @staticmethod
+    def _memory_review_status_for_action(action: str) -> str:
+        if action == "added":
+            return "added"
+        if action == "removed":
+            return "removed"
+        return "updated"
+
     def _load_model_presets(self) -> dict[str, ModelPreset]:
         """Load model presets from config/model_presets.json."""
         if not self._model_presets_path.exists():
@@ -654,34 +800,12 @@ class TGAgentCLI:
             state=self._workspace_instruction_state,
         )
 
-    def _build_remote_reset_startup_prompt(self) -> str:
-        """Build the hidden startup prompt used after a remote `/reset`."""
-        startup_prompt = _REMOTE_RESET_STARTUP_PROMPT_PATH.read_text(encoding="utf-8").strip()
-        return f"{startup_prompt}\n\n当前运行模型：{self._agent.llm.model}"
-
     async def _handle_reset_command(self, *, source: str = "local") -> str:
-        """Reset conversation state, with remote bootstrap support."""
+        """Reset conversation state."""
         self._agent.clear_history()
         await self._refresh_empty_context_budget_display()
-
-        if source != "remote":
-            self._console.print("[yellow]会话上下文已重置。[/yellow]")
-            return "会话上下文已重置。"
-
-        self._maybe_inject_agents_md()
-        fallback_message = "会话已重置，但启动问候生成失败，请直接发送你的需求。"
-
-        try:
-            startup_prompt = self._build_remote_reset_startup_prompt()
-            final_content = (await self._agent.query(startup_prompt)).strip()
-        except Exception:
-            logger.exception("Failed to bootstrap remote session after /reset")
-            self._agent.clear_history()
-            await self._refresh_empty_context_budget_display()
-            self._maybe_inject_agents_md()
-            return fallback_message
-
-        return final_content or fallback_message
+        self._console.print("[yellow]会话上下文已重置。[/yellow]")
+        return _REMOTE_RESET_RESPONSE
 
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
@@ -914,8 +1038,6 @@ class TGAgentCLI:
         self._console.print("[bold cyan]模型预设：[/bold cyan]")
         for name, preset in self._model_presets.items():
             model = str(preset["model"])
-            base_url = str(preset.get("base_url", "(继承当前配置)"))
-            api_key_env = str(preset.get("api_key_env", "OPENAI_API_KEY"))
             vision_marker = " 视觉" if self._preset_supports_vision(name) else ""
             marker = " [green](默认)[/green]" if name == self._default_model_preset else ""
             if name == self._auto_vision_preset:
@@ -924,8 +1046,7 @@ class TGAgentCLI:
                 marker += " [blue](图像摘要)[/blue]"
             self._console.print(
                 f"  [cyan]{name}[/cyan]{marker} -> {model} "
-                f"[dim]{vision_marker}[/dim] "
-                f"[dim](base_url: {base_url}, key: {api_key_env})[/dim]"
+                f"[dim]{vision_marker}[/dim]"
             )
 
     def _resolve_current_preset_name(self) -> str | None:
@@ -1448,6 +1569,15 @@ class TGAgentCLI:
             result = await handler.handle(args)
             return result.handled
 
+        if command_name == "memory":
+            handler = MemorySlashHandler(
+                store=self._memory_store,
+                console=self._console,
+                review_history=self._memory_review_history,
+            )
+            result = await handler.handle(args)
+            return result.handled
+
         # Handle allow command - add directory to sandbox
         if command_name == "allow":
             if not args:
@@ -1666,6 +1796,7 @@ class TGAgentCLI:
         user_input: UserInputPayload,
         has_image: bool = False,
         agent: Agent | None = None,
+        intermediate_text_callback: Callable[[str], None] | None = None,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
@@ -1689,6 +1820,16 @@ class TGAgentCLI:
         import asyncio
 
         cancel_event = asyncio.Event()
+        pending_intermediate_text: list[str] = []
+
+        def flush_intermediate_text() -> None:
+            if intermediate_text_callback is None or not pending_intermediate_text:
+                pending_intermediate_text.clear()
+                return
+            content = _extract_plain_server_progress_text("".join(pending_intermediate_text))
+            pending_intermediate_text.clear()
+            if content:
+                intermediate_text_callback(content)
 
         # Background task to listen for 'q' key
         async def listen_for_cancel():
@@ -1762,6 +1903,7 @@ class TGAgentCLI:
                     continue
 
                 if isinstance(event, ToolCallEvent):
+                    flush_intermediate_text()
                     self._stop_loading(self._loading)
                     self._loading = None
 
@@ -1814,12 +1956,41 @@ class TGAgentCLI:
                     self._loading = None
                     self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
+                elif isinstance(event, ThinkingStartEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    self._active_thinking_id = event.think_id
+                    self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+
+                elif isinstance(event, ThinkingDeltaEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    if self._active_thinking_id != event.think_id:
+                        self._active_thinking_id = event.think_id
+                        self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+                    self._console.print(f"[{self.COLOR_THINKING}]{event.delta}[/]", end="")
+
+                elif isinstance(event, ThinkingEndEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    if self._active_thinking_id == event.think_id:
+                        self._active_thinking_id = None
+                    self._console.print()
+
+                elif isinstance(event, TextDeltaEvent):
+                    self._stop_loading(self._loading)
+                    self._loading = None
+                    self._console.print(event.delta, end="")
+
                 elif isinstance(event, TextEvent):
+                    if intermediate_text_callback is not None:
+                        pending_intermediate_text.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
                     self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
+                    pending_intermediate_text.clear()
                     self._stop_loading(self._loading)
                     self._loading = None
                     final_response = event.content
@@ -1909,12 +2080,28 @@ class TGAgentCLI:
         normalized = user_input.strip().lower()
         return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
 
+    def _build_bridge_progress_callback(
+        self,
+        *,
+        source: str,
+        bridge_request: BridgeRequest | None,
+    ) -> Callable[[str], None] | None:
+        """Build a callback that records intermediate remote agent text."""
+        if source != "remote" or bridge_request is None or self._bridge_store is None:
+            return None
+
+        def record_progress(content: str) -> None:
+            self._bridge_store.record_progress(bridge_request, content)
+
+        return record_progress
+
     async def _execute_input_text(
         self,
         user_input: str,
         *,
         source: str = "local",
         parsed_remote_image=None,
+        bridge_request: BridgeRequest | None = None,
     ) -> _ExecutionOutcome:
         """Execute one normalized line of user input."""
         user_input = user_input.strip()
@@ -1923,6 +2110,11 @@ class TGAgentCLI:
 
         if self._session_runtime is not None:
             self._session_runtime.touch()
+
+        intermediate_text_callback = self._build_bridge_progress_callback(
+            source=source,
+            bridge_request=bridge_request,
+        )
 
         # Handle numbered model picker mode
         if self._model_pick_active:
@@ -1937,11 +2129,19 @@ class TGAgentCLI:
                 self._console.print(f"[red]{e}[/red]")
                 self._console.print(f"[dim]{IMAGE_USAGE}[/dim]")
                 return _ExecutionOutcome()
-            final_content = await self._run_agent(parsed.content_parts, has_image=True)
+            final_content = await self._run_agent(
+                parsed.content_parts,
+                has_image=True,
+                intermediate_text_callback=intermediate_text_callback,
+            )
             return _ExecutionOutcome(final_content=final_content or "")
 
         if parsed_remote_image is not None:
-            final_content = await self._run_agent(parsed_remote_image.content_parts, has_image=True)
+            final_content = await self._run_agent(
+                parsed_remote_image.content_parts,
+                has_image=True,
+                intermediate_text_callback=intermediate_text_callback,
+            )
             return _ExecutionOutcome(final_content=final_content or "")
 
         # Handle @ commands (skill invocation)
@@ -1982,7 +2182,11 @@ class TGAgentCLI:
             return _ExecutionOutcome(final_content=current_dir)
 
         # Run agent
-        final_content = await self._run_agent(user_input, has_image=False)
+        final_content = await self._run_agent(
+            user_input,
+            has_image=False,
+            intermediate_text_callback=intermediate_text_callback,
+        )
         return _ExecutionOutcome(final_content=final_content or "")
 
     async def _drain_bridge_queue(self) -> bool:
@@ -2036,6 +2240,7 @@ class TGAgentCLI:
                     request.content,
                     source=request.source,
                     parsed_remote_image=parsed_remote_image,
+                    bridge_request=request,
                 )
             except Exception as exc:
                 self._bridge_store.fail_request(

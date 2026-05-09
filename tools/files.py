@@ -1,7 +1,9 @@
 """File operation tools: read, write, edit."""
 
 import difflib
-from typing import Annotated, Literal, Optional
+from typing import Annotated, Optional
+
+from pydantic import BaseModel, Field
 
 from agent_core.tools import Depends, tool
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
@@ -93,6 +95,11 @@ def _build_artifact_header_hint(body_start_line: int) -> str:
     )
 
 
+class WriteArgs(BaseModel):
+    content: str = Field(..., description="Content to write.")
+    file_path: str = Field(..., description="Path to the file to write.")
+
+
 @tool("Read contents of a file", context_policy="trim", context_max_inline_chars=6400)
 async def read(
     file_path: str,
@@ -165,28 +172,20 @@ async def read(
 
 
 @tool(
-    "Write content to a file. Supports overwrite, append, and append_line modes; "
-    "use append_line when adding lines without rewriting the whole file. Prefer edit "
-    "for localized changes to existing files. Use overwrite for new files or intentional "
-    "full rewrites; for long full writes, write in chunks: first overwrite, then append "
-    "or append_line. Keep every content chunk no more than 4000 characters to avoid "
-    "rejected or truncated tool arguments."
+    "Write content to a file by replacing the entire file. Prefer edit for localized "
+    "changes to existing files. Use write for new files or intentional full rewrites.",
+    args_schema=WriteArgs,
 )
 async def write(
     file_path: str,
     content: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
-    mode: Literal["overwrite", "append", "append_line"] = "overwrite",
 ) -> str:
-    """Write content to a file, creating directories if needed.
+    """Write content to a file, replacing the entire file and creating directories if needed.
 
     Args:
         file_path: Path to the file to write.
-        content: Content to write. For long new files or intentional full rewrites,
-            pass only one chunk at a time, no more than 4000 characters.
-        mode: "overwrite" replaces the whole file. "append" appends content exactly to
-            the end. "append_line" appends content as complete line content, ensuring
-            it starts on a new line when needed and ends with a newline.
+        content: Content to write.
     """
     try:
         path = ctx.resolve_path(file_path)
@@ -195,28 +194,8 @@ async def write(
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if mode == "append":
-            with path.open("a", encoding="utf-8") as file:
-                file.write(content)
-            return f"Appended {len(content)} chars to {file_path}"
-        if mode == "append_line":
-            needs_leading_newline = False
-            if path.exists() and path.stat().st_size > 0:
-                with path.open("rb") as file:
-                    file.seek(-1, 2)
-                    needs_leading_newline = file.read(1) != b"\n"
-
-            with path.open("a", encoding="utf-8") as file:
-                if needs_leading_newline:
-                    file.write("\n")
-                file.write(content)
-                if not content.endswith(("\n", "\r")):
-                    file.write("\n")
-            return f"Appended {len(content)} chars as lines to {file_path}"
-        if mode == "overwrite":
-            path.write_text(content, encoding="utf-8")
-            return f"Wrote {len(content)} chars to {file_path}"
-        return f"Error writing file: unsupported mode {mode!r}"
+        path.write_text(content, encoding="utf-8")
+        return f"Wrote {len(content)} chars to {file_path}"
     except Exception as e:
         return f"Error writing file: {e}"
 

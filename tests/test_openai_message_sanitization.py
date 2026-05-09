@@ -85,7 +85,7 @@ def test_tool_call_debug_summary_reports_invalid_json_without_full_content():
 
 
 def test_curl_debug_log_redacts_api_key_and_truncates_body(monkeypatch, caplog):
-    monkeypatch.setenv("BU_AGENT_SDK_LLM_DEBUG", "1")
+    monkeypatch.setenv("CRAB_LLM_DEBUG", "1")
     caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
     llm = ChatOpenAI(
         model="debug-model",
@@ -108,6 +108,51 @@ def test_curl_debug_log_redacts_api_key_and_truncates_body(monkeypatch, caplog):
     assert "real-secret" not in log_text
     assert "another-secret" not in log_text
     assert "<truncated 100 chars>" in log_text
+
+
+def test_raw_response_debug_log_is_opt_in(monkeypatch, caplog):
+    monkeypatch.delenv("CRAB_LLM_DEBUG_RAW_RESPONSE", raising=False)
+    caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
+
+    ChatOpenAI._log_raw_response_debug(
+        "inbound_raw_response",
+        {"choices": [{"message": {"content": "hello"}}]},
+    )
+
+    assert "[LLM_DEBUG] inbound_raw_response" not in caplog.text
+
+
+def test_raw_response_debug_log_truncates_payload_by_default(monkeypatch, caplog):
+    monkeypatch.setenv("CRAB_LLM_DEBUG_RAW_RESPONSE", "1")
+    monkeypatch.delenv("CRAB_LLM_DEBUG_FULL_CURL", raising=False)
+    caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
+
+    ChatOpenAI._log_raw_response_debug(
+        "inbound_raw_stream_chunk",
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "arguments": '{"file_path": "story.md", "content": "'
+                                    + ("x" * 2100)
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        stream_chunk_index=3,
+    )
+
+    log_text = caplog.text
+    assert "[LLM_DEBUG] inbound_raw_stream_chunk chunk_index=3" in log_text
+    assert "full_body=False" in log_text
+    assert '\\"file_path\\": \\"story.md\\"' in log_text
+    assert "<truncated" in log_text
 
 
 @pytest.mark.asyncio

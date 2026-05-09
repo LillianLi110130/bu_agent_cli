@@ -131,3 +131,35 @@ class BridgeResult:
             ),
             finished_at=from_iso8601(str(payload["finished_at"])),
         )
+
+
+@dataclass
+class BridgeProgress:
+    """One intermediate text response for a running bridge request."""
+
+    version: int
+    request_id: str
+    seq: int
+    source: Literal["local", "remote"]
+    progress_id: str
+    content: str
+    created_at: datetime = field(default_factory=utc_now)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the progress item for JSON storage."""
+        payload = asdict(self)
+        payload["created_at"] = to_iso8601(self.created_at)
+        return payload
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "BridgeProgress":
+        """Deserialize a progress item from JSON payload."""
+        return cls(
+            version=int(payload["version"]),
+            request_id=str(payload["request_id"]),
+            seq=int(payload["seq"]),
+            source=str(payload["source"]),
+            progress_id=str(payload["progress_id"]),
+            content=str(payload.get("content", "")),
+            created_at=from_iso8601(str(payload["created_at"])),
+        )

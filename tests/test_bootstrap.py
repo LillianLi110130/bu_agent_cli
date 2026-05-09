@@ -96,20 +96,19 @@ def test_build_system_prompt_uses_packaged_skills_outside_workspace(
     assert str(tmp_path) in prompt
 
 
-def test_system_prompt_guides_chunked_writes_and_read_before_overwrite() -> None:
+def test_system_prompt_guides_write_full_replacement_and_read_before_overwrite() -> None:
     module = _load_module("agent_core.bootstrap.agent_factory")
 
     template = module._load_prompt_template("system.md")
 
-    assert "优先分段写入" in template
-    assert "4000 字符以内" in template
-    assert "执行前被拒绝" in template
-    assert "write.content" in template
+    assert "只做完整覆盖写入" in template
+    assert "不要用 `write` 表达追加写入" in template
+    assert "必须先读取目标文件相关内容" in template
     assert "默认优先使用 `edit`" in template
-    assert "不是用 `write mode=\"overwrite\"` 重写整个文件" in template
+    assert "不是用 `write` 重写整个文件" in template
     assert "创建新文件；用户明确要求整体重写" in template
     assert "先读取目标文件的相关内容" in template
-    assert 'write mode="overwrite"' in template
+    assert 'write mode="overwrite"' not in template
 
 
 def test_build_system_prompt_accepts_runtime_registries(
@@ -243,7 +242,7 @@ def test_build_system_prompt_prefers_tg_agent_home_project_context_files(
     identity_path = _write_project_context_file(
         home_dir / ".tg_agent", "IDENTITY.md", "# home identity"
     )
-    user_path = _write_project_context_file(home_dir / ".tg_agent", "USER.md", "# home user")
+    _write_project_context_file(home_dir / ".tg_agent", "USER.md", "# home user")
     _write_project_context_file(prompt_dir, "SOUL.md", "# fallback soul")
     _write_project_context_file(prompt_dir, "IDENTITY.md", "# fallback identity")
     _write_project_context_file(prompt_dir, "USER.md", "# fallback user")
@@ -260,8 +259,8 @@ def test_build_system_prompt_prefers_tg_agent_home_project_context_files(
     assert "# home soul" in prompt
     assert f"### {identity_path}" in prompt
     assert "# home identity" in prompt
-    assert f"### {user_path}" in prompt
-    assert "# home user" in prompt
+    assert "# home user" not in prompt
+    assert "# fallback user" not in prompt
     assert "# fallback soul" not in prompt
 
 
@@ -281,7 +280,7 @@ def test_build_system_prompt_falls_back_to_prompt_context_files(
 
     soul_path = _write_project_context_file(prompt_dir, "SOUL.md", "# prompt soul")
     identity_path = _write_project_context_file(prompt_dir, "IDENTITY.md", "# prompt identity")
-    user_path = _write_project_context_file(prompt_dir, "USER.md", "# prompt user")
+    _write_project_context_file(prompt_dir, "USER.md", "# prompt user")
 
     prompt = module.build_system_prompt(workspace)
 
@@ -289,8 +288,7 @@ def test_build_system_prompt_falls_back_to_prompt_context_files(
     assert "# prompt soul" in prompt
     assert f"### {identity_path}" in prompt
     assert "# prompt identity" in prompt
-    assert f"### {user_path}" in prompt
-    assert "# prompt user" in prompt
+    assert "# prompt user" not in prompt
 
 
 def test_build_system_prompt_keeps_empty_project_context_section_when_files_missing(

@@ -7,6 +7,10 @@ These Pydantic models define the API contract for the server.
 from datetime import UTC, datetime
 from typing import Any, Literal
 from pydantic import BaseModel, Field
+
+from agent_core.llm.base import ToolDefinition
+from agent_core.llm.messages import BaseMessage
+from agent_core.llm.views import ChatInvokeUsage
 from agent_core.tokens.views import UsageSummary, ModelUsageStats
 
 
@@ -35,6 +39,25 @@ class QueryRequest(BaseModel):
         default=None,
         description="Optional skill name to invoke. "
         "If provided, the skill content will be prepended to the message.",
+    )
+
+
+class LLMQueryRequest(BaseModel):
+    """Request model for the pure LLM gateway streaming endpoint."""
+
+    model: str = Field(..., description="Target gateway model or alias")
+    messages: list[BaseMessage] = Field(..., description="Serialized local runtime messages")
+    tools: list[ToolDefinition] | None = Field(
+        default=None,
+        description="Optional tool definitions available to the model",
+    )
+    tool_choice: str | None = Field(
+        default=None,
+        description="Tool choice hint such as auto/required/none or a tool name",
+    )
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional opaque metadata for observability and routing",
     )
 
 
@@ -216,6 +239,20 @@ class HiddenMessageEvent(StreamEventType):
     content: str = Field(..., description="The content of the hidden message")
 
 
+class LLMUsageEvent(StreamEventType):
+    """Emitted when the gateway has invocation usage available."""
+
+    type: Literal["usage"] = "usage"
+    usage: ChatInvokeUsage = Field(..., description="Per-invocation usage information")
+
+
+class LLMDoneEvent(StreamEventType):
+    """Emitted when the pure LLM gateway stream completes."""
+
+    type: Literal["done"] = "done"
+    stop_reason: str | None = Field(default=None, description="Provider stop reason if known")
+
+
 # Union type for all stream events (for type checking)
 StreamEvent = (
     TextEvent
@@ -230,6 +267,8 @@ StreamEvent = (
     | StepCompleteEvent
     | FinalResponseEvent
     | HiddenMessageEvent
+    | LLMUsageEvent
+    | LLMDoneEvent
 )
 
 

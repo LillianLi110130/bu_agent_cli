@@ -10,7 +10,8 @@ from typing import Any
 
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
-from agent_core.llm import ChatOpenAI
+from agent_core.llm.base import BaseChatModel
+from agent_core.llm.factory import create_chat_model
 from agent_core.task import SubagentTaskManager
 from agent_core.team import TeamRuntime, is_team_experiment_enabled
 from agent_core.runtime_paths import application_root, tg_agent_home
@@ -22,7 +23,7 @@ _APP_ROOT = application_root()
 _PACKAGE_ROOT = _APP_ROOT / "agent_core"
 _PROMPTS_DIR = _PACKAGE_ROOT / "prompts"
 _SKILLS_DIR = _APP_ROOT / "skills"
-_PROJECT_CONTEXT_FILENAMES = ("SOUL.md", "IDENTITY.md", "USER.md")
+_PROJECT_CONTEXT_FILENAMES = ("SOUL.md", "IDENTITY.md")
 
 
 def _format_skills(skills: list[Any]) -> str:
@@ -174,17 +175,10 @@ def build_system_prompt(
     )
 
 
-def create_llm(model: str | None = None) -> ChatOpenAI:
-    """Create an LLM instance from a preset or environment variables."""
+def create_llm(model: str | None = None) -> BaseChatModel:
+    """Create a provider-aware LLM instance from presets or environment variables."""
     resolved_model = model or (os.getenv("LLM_MODEL") or "").strip() or "GLM-4.7"
-    base_url = (os.getenv("LLM_BASE_URL") or "").strip() or "https://open.bigmodel.cn/api/coding/paas/v4"
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or "OPENAI_API_KEY"
-
-    return ChatOpenAI(
-        model=resolved_model,
-        api_key=api_key,
-        base_url=base_url,
-    )
+    return create_chat_model(resolved_model)
 
 
 def create_agent(

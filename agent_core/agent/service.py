@@ -112,7 +112,7 @@ from agent_core.llm.messages import (
     ToolMessage,
     UserMessage,
 )
-from agent_core.llm.views import ChatInvokeCompletion
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 from agent_core.observability import Laminar, observe
 from agent_core.tokens import TokenCost, UsageSummary
 from agent_core.tools.decorator import Tool
@@ -1468,6 +1468,104 @@ class Agent:
         if last_error is not None:
             raise last_error
         raise RuntimeError("Retry loop completed without return or exception")
+
+    async def _astream_llm(
+        self,
+        messages: list[BaseMessage],
+        tools: list[ToolDefinition] | None = None,
+        tool_choice: ToolChoice | None = None,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        """Stream LLM chunks with the same retry/cancellation semantics as _invoke_llm().
+
+        This method is intended for the main query_stream() path where the CLI wants true
+        incremental text rendering. It preserves retries before any chunks are emitted, but
+        once output has started streaming it will surface errors immediately to avoid
+        duplicating already-rendered text on retry.
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(self.llm_max_retries):
+            if self._cancel_event and self._cancel_event.is_set():
+                raise asyncio.CancelledError("LLM invocation cancelled by user")
+
+            emitted_any_chunks = False
+
+            try:
+                async for chunk in self.llm.astream(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                ):
+                    emitted_any_chunks = True
+                    yield chunk
+                return
+
+            except ModelRateLimitError as e:
+                last_error = e
+                if emitted_any_chunks or attempt >= self.llm_max_retries - 1:
+                    raise
+                delay = min(
+                    self.llm_retry_base_delay * (2**attempt),
+                    self.llm_retry_max_delay,
+                )
+                jitter = random.uniform(0, delay * 0.1)
+                total_delay = delay + jitter
+                logger.warning(
+                    f"⚠️ Got rate limit error before stream output, retrying in {total_delay:.1f}s... "
+                    f"(attempt {attempt + 1}/{self.llm_max_retries})"
+                )
+                await self._sleep_with_cancel(total_delay)
+                continue
+
+            except ModelProviderError as e:
+                last_error = e
+                is_retryable = (
+                    hasattr(e, "status_code") and e.status_code in self.llm_retryable_status_codes
+                )
+                if emitted_any_chunks or not is_retryable or attempt >= self.llm_max_retries - 1:
+                    raise
+                delay = min(
+                    self.llm_retry_base_delay * (2**attempt),
+                    self.llm_retry_max_delay,
+                )
+                jitter = random.uniform(0, delay * 0.1)
+                total_delay = delay + jitter
+                logger.warning(
+                    f"⚠️ Got {e.status_code} error before stream output, retrying in {total_delay:.1f}s... "
+                    f"(attempt {attempt + 1}/{self.llm_max_retries})"
+                )
+                await self._sleep_with_cancel(total_delay)
+                continue
+
+            except Exception as e:
+                last_error = e
+                error_message = str(e).lower()
+                is_timeout = "timeout" in error_message or "cancelled" in error_message
+                is_connection_error = "connection" in error_message or "connect" in error_message
+
+                if (
+                    emitted_any_chunks
+                    or not (is_timeout or is_connection_error)
+                    or attempt >= self.llm_max_retries - 1
+                ):
+                    raise
+                delay = min(
+                    self.llm_retry_base_delay * (2**attempt),
+                    self.llm_retry_max_delay,
+                )
+                jitter = random.uniform(0, delay * 0.1)
+                total_delay = delay + jitter
+                error_type = "timeout" if is_timeout else "connection error"
+                logger.warning(
+                    f"⚠️ Got {error_type} before stream output, retrying in {total_delay:.1f}s... "
+                    f"(attempt {attempt + 1}/{self.llm_max_retries})"
+                )
+                await self._sleep_with_cancel(total_delay)
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Streaming retry loop completed without return or exception")
 
     async def _generate_max_iterations_summary(self) -> str:
         """Generate a summary of what was accomplished when max iterations is reached.

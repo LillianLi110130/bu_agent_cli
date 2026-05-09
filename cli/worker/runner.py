@@ -178,9 +178,31 @@ class WorkerRunner:
 
     async def _wait_for_result(self, request_id: str):
         """Wait until the local CLI writes a result for *request_id*."""
+        sent_progress_ids: set[str] = set()
         while not self._stop_event.is_set():
+            await self._forward_pending_progress(request_id, sent_progress_ids)
             result = self.bridge_store.find_result(request_id)
             if result is not None:
+                await self._forward_pending_progress(request_id, sent_progress_ids)
                 return result
             await asyncio.sleep(self.result_poll_interval_seconds)
         raise RuntimeError(f"Worker stopped while waiting for bridge result: {request_id}")
+
+    async def _forward_pending_progress(
+        self,
+        request_id: str,
+        sent_progress_ids: set[str],
+    ) -> None:
+        """Forward unsent intermediate text responses for *request_id*."""
+        for progress in self.bridge_store.list_progress(request_id):
+            if progress.progress_id in sent_progress_ids:
+                continue
+            sent_progress_ids.add(progress.progress_id)
+            ok = await self.gateway_client.complete(
+                worker_id=self.worker_id,
+                final_content=progress.content,
+            )
+            if not ok:
+                logger.warning(
+                    f"Worker progress complete returned ok=false for worker_id={self.worker_id}"
+                )

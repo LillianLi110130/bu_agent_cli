@@ -114,6 +114,17 @@ class SlashCommandRegistry:
                 category="技能",
             ),
             SlashCommand(
+                name="memory",
+                description="查看持久记忆和 memory review 记录",
+                usage="/memory [list|review]",
+                examples=[
+                    "/memory",
+                    "/memory list",
+                    "/memory review",
+                ],
+                category="记忆",
+            ),
+            SlashCommand(
                 name="reset",
                 description="重置会话上下文",
                 usage="/reset",
