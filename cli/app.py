@@ -65,6 +65,7 @@ from agent_core.bootstrap.session_bootstrap import (
 )
 from agent_core.runtime_paths import application_root
 from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
+from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -582,9 +583,7 @@ class TGAgentCLI:
             status="no_change_unclassified",
             summary=summary,
         )
-        self._console.print(
-            "[dim]Skill review：没有产生 skill 变更，且结果未分类。[/dim]"
-        )
+        self._console.print("[dim]Skill review：没有产生 skill 变更，且结果未分类。[/dim]")
 
     def _on_skill_review_error(self, error: Exception) -> None:
         error_summary = f"{type(error).__name__}: {error}"
@@ -664,9 +663,7 @@ class TGAgentCLI:
             status="no_change_unclassified",
             summary=summary,
         )
-        self._console.print(
-            "[dim]Memory review：没有产生 memory 变更，且结果未分类。[/dim]"
-        )
+        self._console.print("[dim]Memory review：没有产生 memory 变更，且结果未分类。[/dim]")
 
     def _on_memory_review_error(self, error: Exception) -> None:
         error_summary = f"{type(error).__name__}: {error}"
@@ -1038,8 +1035,7 @@ class TGAgentCLI:
             if name == self._image_summary_preset:
                 marker += " [blue](图像摘要)[/blue]"
             self._console.print(
-                f"  [cyan]{name}[/cyan]{marker} -> {model} "
-                f"[dim]{vision_marker}[/dim]"
+                f"  [cyan]{name}[/cyan]{marker} -> {model} " f"[dim]{vision_marker}[/dim]"
             )
 
     def _resolve_current_preset_name(self) -> str | None:
@@ -1233,7 +1229,9 @@ class TGAgentCLI:
                     tools_text = f"tools={int(task.get('steps_completed', 0) or 0)}"
                 total_tokens = int(task.get("total_tokens", 0) or 0)
                 tokens_text = (
-                    f"tokens={self._format_token_count(total_tokens)}" if total_tokens > 0 else "tokens=-"
+                    f"tokens={self._format_token_count(total_tokens)}"
+                    if total_tokens > 0
+                    else "tokens=-"
                 )
                 self._console.print(
                     f"  {task_id} | {self._task_status_label(status)} | {name} | "
@@ -1300,7 +1298,9 @@ class TGAgentCLI:
         self._console.print("\n".join(lines))
 
         if isinstance(tools_used, list):
-            self._console.print(f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}")
+            self._console.print(
+                f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}"
+            )
         if isinstance(recent_logs, list) and recent_logs:
             self._console.print("[bold]最近日志：[/]")
             for line in recent_logs:
@@ -2364,6 +2364,8 @@ class TGAgentCLI:
             justify="center",
         )
 
+        version_text = Text(f"v{get_cli_version()}", style="dim #8ecae6", justify="center")
+
         tips = Text()
         tips.append("Enter", style="bold white")
         tips.append(" 发送消息，", style="white")
@@ -2378,7 +2380,7 @@ class TGAgentCLI:
         tips.append("/exit", style="bold cyan")
         tips.append(" 退出，准备好了就直接开工。", style="dim")
 
-        banner = Group(title, subtitle, Text(""), tips)
+        banner = Group(title, subtitle, version_text, Text(""), tips)
 
         self._console.print(
             Panel(
