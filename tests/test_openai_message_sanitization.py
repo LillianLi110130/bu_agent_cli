@@ -85,7 +85,7 @@ def test_tool_call_debug_summary_reports_invalid_json_without_full_content():
 
 
 def test_curl_debug_log_redacts_api_key_and_truncates_body(monkeypatch, caplog):
-    monkeypatch.setenv("BU_AGENT_SDK_LLM_DEBUG", "1")
+    monkeypatch.setenv("CRAB_LLM_DEBUG", "1")
     caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
     llm = ChatOpenAI(
         model="debug-model",
@@ -111,7 +111,7 @@ def test_curl_debug_log_redacts_api_key_and_truncates_body(monkeypatch, caplog):
 
 
 def test_raw_response_debug_log_is_opt_in(monkeypatch, caplog):
-    monkeypatch.delenv("BU_AGENT_SDK_LLM_DEBUG_RAW_RESPONSE", raising=False)
+    monkeypatch.delenv("CRAB_LLM_DEBUG_RAW_RESPONSE", raising=False)
     caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
 
     ChatOpenAI._log_raw_response_debug(
@@ -123,8 +123,8 @@ def test_raw_response_debug_log_is_opt_in(monkeypatch, caplog):
 
 
 def test_raw_response_debug_log_truncates_payload_by_default(monkeypatch, caplog):
-    monkeypatch.setenv("BU_AGENT_SDK_LLM_DEBUG_RAW_RESPONSE", "1")
-    monkeypatch.delenv("BU_AGENT_SDK_LLM_DEBUG_FULL_CURL", raising=False)
+    monkeypatch.setenv("CRAB_LLM_DEBUG_RAW_RESPONSE", "1")
+    monkeypatch.delenv("CRAB_LLM_DEBUG_FULL_CURL", raising=False)
     caplog.set_level(logging.INFO, logger="agent_core.llm.openai")
 
     ChatOpenAI._log_raw_response_debug(

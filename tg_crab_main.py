@@ -364,10 +364,10 @@ def _load_cli_runtime_env() -> None:
 
 def _configure_llm_debug_logging() -> None:
     """Enable OpenAI tool-call debug logs when explicitly requested."""
-    if not (os.getenv("BU_AGENT_SDK_LLM_DEBUG") or os.getenv("bu_agent_sdk_LLM_DEBUG")):
+    if not (os.getenv("CRAB_LLM_DEBUG") or os.getenv("crab_LLM_DEBUG")):
         return
 
-    log_path_raw = os.getenv("BU_AGENT_SDK_LLM_DEBUG_FILE")
+    log_path_raw = os.getenv("CRAB_LLM_DEBUG_FILE")
     log_path = (
         Path(log_path_raw).expanduser()
         if log_path_raw
