@@ -18,6 +18,8 @@ class GatewayRoute:
     upstream_model: str
     base_url: str | None
     api_key_env: str
+    max_input_tokens: int | None = None
+    max_output_tokens: int | None = None
 
 
 def _read_non_empty_string(value: Any) -> str | None:
@@ -34,6 +36,14 @@ def _resolve_routes_path(explicit_path: str | Path | None = None) -> Path:
     if configured:
         return Path(configured)
     return _DEFAULT_ROUTES_PATH
+
+
+def _read_positive_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value <= 0:
+        return None
+    return value
 
 
 def load_gateway_routes(path: str | Path | None = None) -> dict[str, GatewayRoute]:
@@ -68,6 +78,8 @@ def load_gateway_routes(path: str | Path | None = None) -> dict[str, GatewayRout
         provider = _read_non_empty_string(config.get("provider")) or "openai"
         base_url = _read_non_empty_string(config.get("base_url"))
         api_key_env = _read_non_empty_string(config.get("api_key_env")) or "OPENAI_API_KEY"
+        max_input_tokens = _read_positive_int(config.get("max_input_tokens"))
+        max_output_tokens = _read_positive_int(config.get("max_output_tokens"))
 
         routes[alias_name] = GatewayRoute(
             alias=alias_name,
@@ -75,6 +87,8 @@ def load_gateway_routes(path: str | Path | None = None) -> dict[str, GatewayRout
             upstream_model=upstream_model,
             base_url=base_url,
             api_key_env=api_key_env,
+            max_input_tokens=max_input_tokens,
+            max_output_tokens=max_output_tokens,
         )
 
     return routes
