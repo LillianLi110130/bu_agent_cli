@@ -9,6 +9,7 @@ import asyncio
 import io
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -123,6 +124,7 @@ logger = logging.getLogger("cli.app")
 _REMOTE_RESET_STARTUP_PROMPT_PATH = (
     application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
 )
+_SERVER_PROGRESS_EXCLUDED_BLOCKS = ("think", "tool_call")
 _UNCLASSIFIED_SKILL_REVIEW_EMPTY_SUMMARY = (
     "review agent 没有产生变更，也没有返回标准 Nothing to save."
 )
@@ -135,6 +137,27 @@ def _summarize_unclassified_skill_review(final_response: str) -> str:
     if len(summary) <= 400:
         return summary
     return f"{summary[:200]}\n...\n{summary[-200:]}"
+
+
+def _extract_plain_server_progress_text(content: str) -> str:
+    """Return text outside think/tool_call XML-style blocks for server progress."""
+    filtered = content
+    for tag in _SERVER_PROGRESS_EXCLUDED_BLOCKS:
+        filtered = re.sub(
+            rf"<{tag}\b[^>]*>.*?</{tag}>",
+            "",
+            filtered,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        filtered = re.sub(
+            rf"<{tag}\b[^>]*>.*$",
+            "",
+            filtered,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    return filtered.strip()
+
+
 _REMOTE_RESET_RESPONSE = "当前上下文已重置"
 
 
@@ -1729,6 +1752,7 @@ class TGAgentCLI:
         user_input: UserInputPayload,
         has_image: bool = False,
         agent: Agent | None = None,
+        intermediate_text_callback: Callable[[str], None] | None = None,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
@@ -1752,6 +1776,16 @@ class TGAgentCLI:
         import asyncio
 
         cancel_event = asyncio.Event()
+        pending_intermediate_text: list[str] = []
+
+        def flush_intermediate_text() -> None:
+            if intermediate_text_callback is None or not pending_intermediate_text:
+                pending_intermediate_text.clear()
+                return
+            content = _extract_plain_server_progress_text("".join(pending_intermediate_text))
+            pending_intermediate_text.clear()
+            if content:
+                intermediate_text_callback(content)
 
         # Background task to listen for 'q' key
         async def listen_for_cancel():
@@ -1825,6 +1859,7 @@ class TGAgentCLI:
                     continue
 
                 if isinstance(event, ToolCallEvent):
+                    flush_intermediate_text()
                     self._stop_loading(self._loading)
                     self._loading = None
 
@@ -1904,11 +1939,14 @@ class TGAgentCLI:
                     self._console.print(event.delta, end="")
 
                 elif isinstance(event, TextEvent):
+                    if intermediate_text_callback is not None:
+                        pending_intermediate_text.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
                     self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
+                    pending_intermediate_text.clear()
                     self._stop_loading(self._loading)
                     self._loading = None
                     final_response = event.content
@@ -1998,12 +2036,28 @@ class TGAgentCLI:
         normalized = user_input.strip().lower()
         return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
 
+    def _build_bridge_progress_callback(
+        self,
+        *,
+        source: str,
+        bridge_request: BridgeRequest | None,
+    ) -> Callable[[str], None] | None:
+        """Build a callback that records intermediate remote agent text."""
+        if source != "remote" or bridge_request is None or self._bridge_store is None:
+            return None
+
+        def record_progress(content: str) -> None:
+            self._bridge_store.record_progress(bridge_request, content)
+
+        return record_progress
+
     async def _execute_input_text(
         self,
         user_input: str,
         *,
         source: str = "local",
         parsed_remote_image=None,
+        bridge_request: BridgeRequest | None = None,
     ) -> _ExecutionOutcome:
         """Execute one normalized line of user input."""
         user_input = user_input.strip()
@@ -2012,6 +2066,11 @@ class TGAgentCLI:
 
         if self._session_runtime is not None:
             self._session_runtime.touch()
+
+        intermediate_text_callback = self._build_bridge_progress_callback(
+            source=source,
+            bridge_request=bridge_request,
+        )
 
         # Handle numbered model picker mode
         if self._model_pick_active:
@@ -2026,11 +2085,19 @@ class TGAgentCLI:
                 self._console.print(f"[red]{e}[/red]")
                 self._console.print(f"[dim]{IMAGE_USAGE}[/dim]")
                 return _ExecutionOutcome()
-            final_content = await self._run_agent(parsed.content_parts, has_image=True)
+            final_content = await self._run_agent(
+                parsed.content_parts,
+                has_image=True,
+                intermediate_text_callback=intermediate_text_callback,
+            )
             return _ExecutionOutcome(final_content=final_content or "")
 
         if parsed_remote_image is not None:
-            final_content = await self._run_agent(parsed_remote_image.content_parts, has_image=True)
+            final_content = await self._run_agent(
+                parsed_remote_image.content_parts,
+                has_image=True,
+                intermediate_text_callback=intermediate_text_callback,
+            )
             return _ExecutionOutcome(final_content=final_content or "")
 
         # Handle @ commands (skill invocation)
@@ -2071,7 +2138,11 @@ class TGAgentCLI:
             return _ExecutionOutcome(final_content=current_dir)
 
         # Run agent
-        final_content = await self._run_agent(user_input, has_image=False)
+        final_content = await self._run_agent(
+            user_input,
+            has_image=False,
+            intermediate_text_callback=intermediate_text_callback,
+        )
         return _ExecutionOutcome(final_content=final_content or "")
 
     async def _drain_bridge_queue(self) -> bool:
@@ -2125,6 +2196,7 @@ class TGAgentCLI:
                     request.content,
                     source=request.source,
                     parsed_remote_image=parsed_remote_image,
+                    bridge_request=request,
                 )
             except Exception as exc:
                 self._bridge_store.fail_request(

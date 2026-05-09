@@ -250,7 +250,7 @@ def parse_args() -> argparse.Namespace:
     """Parse command line arguments for the mock gateway server."""
     parser = argparse.ArgumentParser(description="Mock worker gateway server")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8888)
     return parser.parse_args()
 
 
