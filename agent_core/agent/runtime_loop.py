@@ -14,8 +14,12 @@ from agent_core.agent.events import (
     HiddenUserMessageEvent,
     StepCompleteEvent,
     StepStartEvent,
+    TextDeltaEvent,
     TextEvent,
+    ThinkingDeltaEvent,
+    ThinkingEndEvent,
     ThinkingEvent,
+    ThinkingStartEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
@@ -38,6 +42,7 @@ from agent_core.agent.runtime_state import AgentRunState
 from agent_core.agent.tool_args import parse_tool_arguments_for_display
 from agent_core.agent.tool_call_validation import build_invalid_tool_call_recovery_prompt
 from agent_core.llm.messages import AssistantMessage, SystemMessage, ToolMessage, UserMessage
+from agent_core.llm.views import ChatInvokeCompletion
 
 if TYPE_CHECKING:
     from agent_core.agent.service import Agent
@@ -97,6 +102,92 @@ class AgentRuntimeLoop:
                     emit_ui_events,
                 ):
                     yield ui_event
+
+            if isinstance(event, LLMCallRequested) and self.state.query_mode == "stream":
+                if self._is_cancelled():
+                    emitted_events = [self._cancelled_run_finished()]
+                    ui_events = []
+                else:
+                    if event.messages != self.agent._context.get_messages():
+                        self.agent._context.replace_messages(event.messages)
+
+                    content_parts: list[str] = []
+                    thinking_parts: list[str] = []
+                    tool_calls = []
+                    usage = None
+                    stop_reason = None
+                    think_id = f"think-{event.iteration}"
+                    thinking_started = False
+
+                    try:
+                        async for chunk in self.agent._astream_llm(
+                            messages=event.messages,
+                            tools=event.tools,
+                            tool_choice=event.tool_choice,
+                        ):
+                            if chunk.delta:
+                                content_parts.append(chunk.delta)
+                                if emit_ui_events:
+                                    yield TextDeltaEvent(delta=chunk.delta)
+                            if chunk.thinking:
+                                thinking_parts.append(chunk.thinking)
+                                if emit_ui_events:
+                                    if not thinking_started:
+                                        thinking_started = True
+                                        yield ThinkingStartEvent(think_id=think_id)
+                                    yield ThinkingDeltaEvent(
+                                        delta=chunk.thinking,
+                                        think_id=think_id,
+                                    )
+                            if chunk.tool_calls:
+                                tool_calls.extend(chunk.tool_calls)
+                            if chunk.usage is not None:
+                                usage = chunk.usage
+                            if chunk.stop_reason is not None:
+                                stop_reason = chunk.stop_reason
+                        if emit_ui_events and thinking_started:
+                            yield ThinkingEndEvent(think_id=think_id)
+                    except asyncio.CancelledError:
+                        emitted_events = [self._cancelled_run_finished()]
+                        ui_events = []
+                    except Exception as error:
+                        emitted_events, ui_events = await self._handle_llm_call_error(
+                            event, error
+                        )
+                    else:
+                        response = ChatInvokeCompletion(
+                            content="".join(content_parts) if content_parts else None,
+                            tool_calls=tool_calls,
+                            thinking="".join(thinking_parts) if thinking_parts else None,
+                            usage=usage,
+                            stop_reason=stop_reason,
+                        )
+                        if response.usage:
+                            self.agent._token_cost.add_usage(self.agent.llm.model, response.usage)
+                            self.agent._context.record_prompt_usage(
+                                model=self.agent.llm.model,
+                                messages=event.messages,
+                                usage=response.usage,
+                            )
+                        self.state.last_response = response
+                        self.state.last_usage = response.usage
+                        emitted_events = [
+                            LLMResponseReceived(response=response, iteration=event.iteration)
+                        ]
+                        ui_events = []
+
+                after = await self.agent._hook_manager.after_event(event, hook_ctx, emitted_events)
+                if after.aborted:
+                    self._prepend_events(queue, after.emitted_events)
+                    for ui_event in self._merge_ui_events(hook_ctx, ui_events, emit_ui_events):
+                        yield ui_event
+                    continue
+
+                emitted_events = after.emitted_events
+                self._prepend_events(queue, emitted_events)
+                for ui_event in self._merge_ui_events(hook_ctx, ui_events, emit_ui_events):
+                    yield ui_event
+                continue
 
             emitted_events, ui_events = await self._handle_event(event, before.override_result)
             after = await self.agent._hook_manager.after_event(event, hook_ctx, emitted_events)
@@ -364,9 +455,9 @@ class AgentRuntimeLoop:
 
     def _build_llm_response_ui_events(self, response) -> list[AgentEvent]:
         ui_events: list[AgentEvent] = []
-        if response.thinking:
+        if response.thinking and self.state.query_mode != "stream":
             ui_events.append(ThinkingEvent(content=response.thinking))
-        if response.content:
+        if response.content and self.state.query_mode != "stream":
             ui_events.append(TextEvent(content=response.content))
         return ui_events
 
