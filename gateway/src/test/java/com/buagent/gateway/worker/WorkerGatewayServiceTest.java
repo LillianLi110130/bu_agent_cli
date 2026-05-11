@@ -6,6 +6,8 @@ import com.buagent.gateway.app.dto.PollRequest;
 import com.buagent.gateway.app.dto.PollResponse;
 import com.buagent.gateway.app.dto.RenewRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
+import com.buagent.gateway.app.dto.SendTextRequest;
+import com.buagent.gateway.app.dto.UploadAttachmentRequest;
 import com.buagent.gateway.channel.ChannelRouter;
 import com.buagent.gateway.session.SessionMailbox;
 import com.buagent.gateway.session.SessionRegistry;
@@ -151,6 +153,93 @@ class WorkerGatewayServiceTest {
         verify(channelRouter).send(sessionKey, "done");
         SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, 1L);
         assertNull(mailbox.getInFlightDelivery());
+    }
+
+    @Test
+    void shouldPollAndCompleteUsingWorkerMinimalProtocol() {
+        String workerId = "worker-1";
+        when(sessionStateMapper.findBySessionKey(workerId)).thenReturn(null);
+        doAnswer(invocation -> {
+            InboundMessageEntity entity = invocation.getArgument(0);
+            entity.setId(101L);
+            return 1;
+        }).when(inboundMessageMapper).insert(any(InboundMessageEntity.class));
+        when(inboundMessageMapper.markDelivering(eq(101L), anyString(), anyLong())).thenReturn(1);
+        when(inboundMessageMapper.markConsumed(eq(101L), anyString())).thenReturn(1);
+        doAnswer(invocation -> {
+            OutboundMessageEntity entity = invocation.getArgument(0);
+            entity.setId(201L);
+            return 1;
+        }).when(outboundMessageMapper).insert(any(OutboundMessageEntity.class));
+        when(outboundMessageMapper.updateStatus(eq(201L), eq("SENT"))).thenReturn(1);
+        when(channelRouter.send(workerId, "done")).thenReturn(true);
+
+        workerGatewayService.acceptDebugInbound(new DebugInboundRequest(workerId, "hello"));
+
+        DeferredResult<PollResponse> deferredResult = workerGatewayService.poll(
+            new PollRequest(null, workerId)
+        );
+        PollResponse pollResponse = (PollResponse) deferredResult.getResult();
+
+        assertNotNull(pollResponse);
+        assertEquals(1, pollResponse.getMessages().size());
+        assertEquals("hello", pollResponse.getMessages().get(0).getContent());
+
+        SimpleOkResponse completeResponse = workerGatewayService.complete(
+            new CompleteRequest(null, workerId, null, "done")
+        );
+
+        assertTrue(completeResponse.getOk());
+        verify(channelRouter).send(workerId, "done");
+    }
+
+    @Test
+    void shouldAcknowledgeWorkerOnlineAndOfflineCalls() {
+        assertTrue(workerGatewayService.online("worker-1").getOk());
+        assertTrue(workerGatewayService.offline("worker-1").getOk());
+    }
+
+    @Test
+    void shouldSendProactiveTextUsingDedicatedEndpoint() {
+        when(channelRouter.send("telegram:123", "hello proactive")).thenReturn(true);
+
+        SimpleOkResponse response = workerGatewayService.sendText(
+            new SendTextRequest("telegram:123", "worker-1", "hello proactive")
+        );
+
+        assertTrue(response.getOk());
+        verify(channelRouter).send("telegram:123", "hello proactive");
+    }
+
+    @Test
+    void shouldUploadAttachmentUsingDedicatedEndpoint() {
+        when(channelRouter.sendAttachment(
+            "telegram:123",
+            "report.pdf",
+            "application/pdf",
+            123L,
+            "cGRm"
+        )).thenReturn(true);
+
+        SimpleOkResponse response = workerGatewayService.uploadAttachment(
+            new UploadAttachmentRequest(
+                "telegram:123",
+                "worker-1",
+                "report.pdf",
+                "application/pdf",
+                123L,
+                "cGRm"
+            )
+        );
+
+        assertTrue(response.getOk());
+        verify(channelRouter).sendAttachment(
+            "telegram:123",
+            "report.pdf",
+            "application/pdf",
+            123L,
+            "cGRm"
+        );
     }
 
     @Test

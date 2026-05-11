@@ -16,6 +16,7 @@ from agent_core.task import SubagentTaskManager
 from agent_core.team import TeamRuntime, is_team_experiment_enabled
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
+from cli.im_bridge import get_bridge_store
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
 from tools.sandbox import get_current_agent
 

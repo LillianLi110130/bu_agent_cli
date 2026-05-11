@@ -97,6 +97,7 @@ class WorkerRunner:
                         stream_iter=stream_iter,
                         deadline=stream_session_deadline,
                     )
+                    await self._drain_outbound_events()
                     if self._stop_event.is_set():
                         break
                     if event.event != "message" or event.message is None:
@@ -206,3 +207,31 @@ class WorkerRunner:
                 logger.warning(
                     f"Worker progress complete returned ok=false for worker_id={self.worker_id}"
                 )
+
+    async def _drain_outbound_events(self) -> None:
+        """Deliver queued outbound events through the gateway."""
+        while not self._stop_event.is_set():
+            event = self.bridge_store.claim_next_pending_outbound()
+            if event is None:
+                return
+
+            if event.action == "text":
+                ok = await self.gateway_client.send_text(
+                    worker_id=self.worker_id,
+                    text=event.text,
+                )
+            elif event.action == "attachment":
+                file_bytes = Path(event.file_path).read_bytes()
+                ok = await self.gateway_client.upload_attachment(
+                    worker_id=self.worker_id,
+                    file_name=event.file_name,
+                    mime_type=event.mime_type,
+                    file_size=event.file_size,
+                    file_bytes=file_bytes,
+                )
+            else:
+                logger.warning(f"Unsupported outbound action={event.action}, event_id={event.event_id}")
+                ok = False
+
+            if ok:
+                self.bridge_store.complete_outbound_event(event)
