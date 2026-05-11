@@ -1934,6 +1934,8 @@ class TGAgentCLI:
                     self._console.print()
 
                 elif isinstance(event, TextDeltaEvent):
+                    if intermediate_text_callback is not None:
+                        pending_intermediate_text.append(event.delta)
                     self._stop_loading(self._loading)
                     self._loading = None
                     self._console.print(event.delta, end="")
