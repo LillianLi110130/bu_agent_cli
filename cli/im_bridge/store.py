@@ -9,7 +9,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from cli.im_bridge.models import BridgeRequest, BridgeResult, classify_input_kind, utc_now
+from cli.im_bridge.models import (
+    BridgeProgress,
+    BridgeRequest,
+    BridgeResult,
+    classify_input_kind,
+    utc_now,
+)
 
 
 class FileBridgeStore:
@@ -30,6 +36,7 @@ class FileBridgeStore:
         self.results_dir = self.bridge_dir / "results"
         self.results_completed_dir = self.bridge_dir / "results" / "completed"
         self.results_failed_dir = self.bridge_dir / "results" / "failed"
+        self.results_progress_dir = self.bridge_dir / "results" / "progress"
         self.results_index_path = self.results_dir / "results.json"
         self.sequence_path = self.state_dir / "sequence.json"
         self.enqueue_lock_dir = self.locks_dir / "enqueue.lock"
@@ -45,6 +52,7 @@ class FileBridgeStore:
             self.results_dir,
             self.results_completed_dir,
             self.results_failed_dir,
+            self.results_progress_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -143,6 +151,32 @@ class FileBridgeStore:
         )
         self._finalize_request(request, result, success=False)
         return result
+
+    def record_progress(self, request: BridgeRequest, content: str) -> BridgeProgress:
+        """Persist one intermediate plain-text response for a running request."""
+        progress_id = f"progress_{time.time_ns()}_{uuid.uuid4().hex}"
+        progress = BridgeProgress(
+            version=self.VERSION,
+            request_id=request.request_id,
+            seq=request.seq,
+            source=request.source,
+            progress_id=progress_id,
+            content=content,
+        )
+        progress_dir = self.results_progress_dir / request.request_id
+        self._write_json_atomic(progress_dir / f"{progress_id}.json", progress.to_dict())
+        return progress
+
+    def list_progress(self, request_id: str) -> list[BridgeProgress]:
+        """Return intermediate progress items for *request_id* in creation order."""
+        self.initialize()
+        progress_dir = self.results_progress_dir / request_id
+        if not progress_dir.exists():
+            return []
+        return [
+            BridgeProgress.from_dict(self._read_json(path))
+            for path in sorted(progress_dir.glob("*.json"))
+        ]
 
     def find_result(self, request_id: str) -> BridgeResult | None:
         """Return a completed or failed result by request id."""

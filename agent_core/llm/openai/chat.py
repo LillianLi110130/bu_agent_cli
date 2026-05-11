@@ -57,9 +57,9 @@ class ChatOpenAI(BaseChatModel):
     model: ChatModel | str
 
     # Model params
-    temperature: float | None = 0.2
+    temperature: float | None = 0.1
     frequency_penalty: float | None = (
-        0.3  # this avoids infinite generation of \t for models like 4.1-mini
+        0  # this avoids infinite generation of \t for models like 4.1-mini
     )
     reasoning_effort: ReasoningEffort = "low"
     seed: int | None = None
@@ -216,15 +216,15 @@ class ChatOpenAI(BaseChatModel):
 
     @staticmethod
     def _debug_enabled() -> bool:
-        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG") or os.getenv("bu_agent_sdk_LLM_DEBUG"))
+        return bool(os.getenv("CRAB_LLM_DEBUG") or os.getenv("crab_LLM_DEBUG"))
 
     @staticmethod
     def _full_curl_debug_enabled() -> bool:
-        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG_FULL_CURL"))
+        return bool(os.getenv("CRAB_LLM_DEBUG_FULL_CURL"))
 
     @staticmethod
     def _raw_response_debug_enabled() -> bool:
-        return bool(os.getenv("BU_AGENT_SDK_LLM_DEBUG_RAW_RESPONSE"))
+        return bool(os.getenv("CRAB_LLM_DEBUG_RAW_RESPONSE"))
 
     @staticmethod
     def _preview_tool_arguments(
@@ -529,7 +529,7 @@ class ChatOpenAI(BaseChatModel):
         message = response.choices[0].message
 
         # 调试：打印原始 tool_calls
-        debug_enabled = os.getenv("BU_AGENT_SDK_LLM_DEBUG")
+        debug_enabled = os.getenv("CRAB_LLM_DEBUG")
         if debug_enabled and message.tool_calls:
             logger.info(f"[DEBUG] 原始 message.tool_calls:")
             for tc in message.tool_calls:
@@ -772,8 +772,8 @@ class ChatOpenAI(BaseChatModel):
             # Extract usage
             usage = self._get_usage(response)
 
-            # Log token usage if bu_agent_sdk_LLM_DEBUG is set
-            if usage and os.getenv("bu_agent_sdk_LLM_DEBUG"):
+            # Log token usage if crab_LLM_DEBUG is set
+            if usage and os.getenv("crab_LLM_DEBUG"):
                 cached = usage.prompt_cached_tokens or 0
                 input_tokens = usage.prompt_tokens - cached
                 logger.info(

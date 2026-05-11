@@ -209,8 +209,13 @@ class CompactionService:
         # Add the summary prompt
         prepared_messages.append(UserMessage(content=self.config.summary_prompt))
 
-        # Generate the summary
-        response = await model.ainvoke(messages=prepared_messages)
+        # Generate the summary through the streaming aggregation path. Compaction
+        # prompts can be large, so do not fall back to the non-streaming API.
+        response = await model.ainvoke_streaming(
+            messages=prepared_messages,
+            tools=None,
+            tool_choice=None,
+        )
 
         summary_text = response.content or ""
 

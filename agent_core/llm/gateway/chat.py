@@ -27,6 +27,7 @@ class ChatGateway(BaseChatModel):
     default_headers: Mapping[str, str] | None = None
     http_client: httpx.AsyncClient | None = None
     base_dir: str | Path | None = None
+    stream_line_log_file: str | Path | None = "llm.log"
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
     _owns_client: bool = field(default=False, init=False, repr=False)
     _authorization: str | None = field(default=None, init=False, repr=False)
@@ -98,6 +99,14 @@ class ChatGateway(BaseChatModel):
             headers["Authorization"] = resolved_authorization
         headers.setdefault("Accept", "text/event-stream")
         return headers
+
+    @staticmethod
+    async def _read_stream_error_message(response: httpx.Response) -> str:
+        body = await response.aread()
+        message = body.decode("utf-8", errors="replace").strip()
+        if message:
+            return message
+        return f"Gateway request failed with HTTP {response.status_code}"
 
     def _refresh_authorization_from_response(
         self,
@@ -195,7 +204,11 @@ class ChatGateway(BaseChatModel):
                         if attempt == 0 and authorization_changed:
                             request_authorization = self._authorization
                             continue
-                        response.raise_for_status()
+                        raise ModelProviderError(
+                            message=await self._read_stream_error_message(response),
+                            status_code=response.status_code,
+                            model=self.name,
+                        )
 
                     async for line in response.aiter_lines():
                         if not line:

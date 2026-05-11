@@ -32,7 +32,7 @@ from agent_core.server import create_server
 
 
 def _configure_logging() -> None:
-    debug_flag = (os.getenv("BU_AGENT_SDK_LLM_DEBUG") or "").strip()
+    debug_flag = (os.getenv("CRAB_LLM_DEBUG") or "").strip()
     level = logging.DEBUG if debug_flag else logging.INFO
     logging.basicConfig(
         level=level,
