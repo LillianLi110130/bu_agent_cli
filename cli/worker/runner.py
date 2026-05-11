@@ -207,6 +207,8 @@ class WorkerRunner:
                 logger.warning(
                     f"Worker progress complete returned ok=false for worker_id={self.worker_id}"
                 )
+                continue
+            self.bridge_store.complete_progress(progress)
 
     async def _drain_outbound_events(self) -> None:
         """Deliver queued outbound events through the gateway."""
