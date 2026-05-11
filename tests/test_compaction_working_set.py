@@ -64,6 +64,15 @@ class FakeCompactionLLM:
         tool_choice=None,
         **kwargs,
     ) -> ChatInvokeCompletion:
+        raise AssertionError("Compaction must use ainvoke_streaming, not ainvoke")
+
+    async def ainvoke_streaming(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
         self.invocations.append(list(messages))
         if not self.responses:
             raise AssertionError("No scripted compaction response left")
