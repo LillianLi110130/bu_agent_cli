@@ -67,6 +67,7 @@ from agent_core.bootstrap.session_bootstrap import (
 )
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
+from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -466,6 +467,7 @@ class TGAgentCLI:
         self._ctx = context
         self._step_number = 0
         self._loading: _SafeLoadingIndicator | None = None
+        self._interactive_terminal_ui_enabled = True
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
@@ -654,9 +656,7 @@ class TGAgentCLI:
             status="no_change_unclassified",
             summary=summary,
         )
-        self._console.print(
-            "[dim]Skill review：没有产生 skill 变更，且结果未分类。[/dim]"
-        )
+        self._console.print("[dim]Skill review：没有产生 skill 变更，且结果未分类。[/dim]")
 
     def _on_skill_review_error(self, error: Exception) -> None:
         error_summary = f"{type(error).__name__}: {error}"
@@ -736,9 +736,7 @@ class TGAgentCLI:
             status="no_change_unclassified",
             summary=summary,
         )
-        self._console.print(
-            "[dim]Memory review：没有产生 memory 变更，且结果未分类。[/dim]"
-        )
+        self._console.print("[dim]Memory review：没有产生 memory 变更，且结果未分类。[/dim]")
 
     def _on_memory_review_error(self, error: Exception) -> None:
         error_summary = f"{type(error).__name__}: {error}"
@@ -1112,8 +1110,7 @@ class TGAgentCLI:
             if name == self._image_summary_preset:
                 marker += " [blue](图像摘要)[/blue]"
             self._console.print(
-                f"  [cyan]{name}[/cyan]{marker} -> {model} "
-                f"[dim]{vision_marker}[/dim]"
+                f"  [cyan]{name}[/cyan]{marker} -> {model} " f"[dim]{vision_marker}[/dim]"
             )
 
     def _resolve_current_preset_name(self) -> str | None:
@@ -1408,7 +1405,9 @@ class TGAgentCLI:
                     tools_text = f"tools={int(task.get('steps_completed', 0) or 0)}"
                 total_tokens = int(task.get("total_tokens", 0) or 0)
                 tokens_text = (
-                    f"tokens={self._format_token_count(total_tokens)}" if total_tokens > 0 else "tokens=-"
+                    f"tokens={self._format_token_count(total_tokens)}"
+                    if total_tokens > 0
+                    else "tokens=-"
                 )
                 self._console.print(
                     f"  {task_id} | {self._task_status_label(status)} | {name} | "
@@ -1475,7 +1474,9 @@ class TGAgentCLI:
         self._console.print("\n".join(lines))
 
         if isinstance(tools_used, list):
-            self._console.print(f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}")
+            self._console.print(
+                f"[bold]使用工具：[/] {', '.join(tools_used) if tools_used else '(none)'}"
+            )
         if isinstance(recent_logs, list) and recent_logs:
             self._console.print("[bold]最近日志：[/]")
             for line in recent_logs:
@@ -1513,6 +1514,8 @@ class TGAgentCLI:
 
     def _start_loading(self, message: str = "思考中") -> _SafeLoadingIndicator:
         """Start a loading animation."""
+        if not self._interactive_terminal_ui_enabled:
+            return None
         loading = _SafeLoadingIndicator(message)
         loading.start()
         time.sleep(0.02)
@@ -1577,7 +1580,7 @@ class TGAgentCLI:
 
         Args:
             text: The slash command text
-            source: Input source, such as ``local`` or ``remote``
+            source: Input source, such as ``local``, ``im``, or ``web``
 
         Returns:
             True if the command was handled, False otherwise
@@ -1651,7 +1654,7 @@ class TGAgentCLI:
         # Handle reset command
         if command_name == "reset":
             reset_message = await self._handle_reset_command(source=source)
-            if source == "remote":
+            if source in {"im", "web"}:
                 self._store_command_final_content(reset_message)
             return True
 
@@ -1940,12 +1943,15 @@ class TGAgentCLI:
         agent: Agent | None = None,
         intermediate_text_callback: Callable[[str], None] | None = None,
         propagate_errors: bool = False,
+        enable_interactive_terminal_ui: bool = True,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
         self._console.print()
         final_response: str | None = None
         active_agent = agent or self._agent
+        previous_interactive_terminal_ui_enabled = self._interactive_terminal_ui_enabled
+        self._interactive_terminal_ui_enabled = enable_interactive_terminal_ui
         self._ensure_context_budget_hook(active_agent)
 
         # Keep workspace instructions synchronized for the main CLI agent.
@@ -1956,14 +1962,18 @@ class TGAgentCLI:
         # Start loading animation
         self._loading = self._start_loading("思考中")
 
-        # Show cancel hint
-        self._console.print("[dim]按 q 可取消本次运行[/dim]")
+        # Show cancel hint for local runs, or a static thinking hint for remote runs.
+        if enable_interactive_terminal_ui:
+            self._console.print("[dim]按 q 可取消本次运行[/dim]")
+        else:
+            self._console.print("[dim]思考中...[/dim]")
 
         # Create cancellation event for 'q' key
         import asyncio
 
         cancel_event = asyncio.Event()
         pending_intermediate_text: list[str] = []
+        streamed_text_started = False
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -1974,9 +1984,19 @@ class TGAgentCLI:
             if content:
                 intermediate_text_callback(content)
 
+        def render_stream_text(text: str) -> None:
+            nonlocal streamed_text_started
+            if enable_interactive_terminal_ui:
+                self._console.print(text, end="")
+            else:
+                self._write_stream_chunk(text)
+            streamed_text_started = True
+
         # Background task to listen for 'q' key
         async def listen_for_cancel():
             """Listen for 'q' key press to cancel the current agent run."""
+            if not enable_interactive_terminal_ui:
+                return
             import sys
             import os
 
@@ -2097,35 +2117,39 @@ class TGAgentCLI:
                 elif isinstance(event, ThinkingEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
+                    if enable_interactive_terminal_ui:
+                        self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, ThinkingStartEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    self._active_thinking_id = event.think_id
-                    self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+                    if enable_interactive_terminal_ui:
+                        self._active_thinking_id = event.think_id
+                        self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
 
                 elif isinstance(event, ThinkingDeltaEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    if self._active_thinking_id != event.think_id:
-                        self._active_thinking_id = event.think_id
-                        self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
-                    self._console.print(f"[{self.COLOR_THINKING}]{event.delta}[/]", end="")
+                    if enable_interactive_terminal_ui:
+                        if self._active_thinking_id != event.think_id:
+                            self._active_thinking_id = event.think_id
+                            self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+                        self._console.print(f"[{self.COLOR_THINKING}]{event.delta}[/]", end="")
 
                 elif isinstance(event, ThinkingEndEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    if self._active_thinking_id == event.think_id:
-                        self._active_thinking_id = None
-                    self._console.print()
+                    if enable_interactive_terminal_ui:
+                        if self._active_thinking_id == event.think_id:
+                            self._active_thinking_id = None
+                        self._console.print()
 
                 elif isinstance(event, TextDeltaEvent):
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.delta)
                     self._stop_loading(self._loading)
                     self._loading = None
-                    self._console.print(event.delta, end="")
+                    render_stream_text(event.delta)
 
                 elif isinstance(event, TextEvent):
                     if intermediate_text_callback is not None:
@@ -2139,8 +2163,12 @@ class TGAgentCLI:
                     self._stop_loading(self._loading)
                     self._loading = None
                     final_response = event.content
-                    self._console.print()
-                    self._console.print()
+                    if enable_interactive_terminal_ui:
+                        self._console.print()
+                        self._console.print()
+                    elif streamed_text_started:
+                        sys.stdout.write("\n\n")
+                        sys.stdout.flush()
 
         except Exception as e:
             self._stop_loading(self._loading)
@@ -2156,11 +2184,16 @@ class TGAgentCLI:
                 await listener_task
             except (asyncio.CancelledError, Exception):
                 pass
+            self._interactive_terminal_ui_enabled = previous_interactive_terminal_ui_enabled
 
         # Ensure loading is stopped
         self._stop_loading(self._loading)
         self._loading = None
-        self._console.print()
+        if enable_interactive_terminal_ui:
+            self._console.print()
+        elif streamed_text_started:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if active_agent is self._agent:
             self._persist_current_session_state()
         return final_response
@@ -2229,6 +2262,12 @@ class TGAgentCLI:
         normalized = user_input.strip().lower()
         return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
 
+    def _has_pending_bridge_work(self) -> bool:
+        """Return whether the local bridge currently has queued work."""
+        if self._bridge_store is None:
+            return False
+        return self._bridge_store.pending_count() > 0
+
     def _build_bridge_progress_callback(
         self,
         *,
@@ -2236,13 +2275,52 @@ class TGAgentCLI:
         bridge_request: BridgeRequest | None,
     ) -> Callable[[str], None] | None:
         """Build a callback that records intermediate remote agent text."""
-        if source != "remote" or bridge_request is None or self._bridge_store is None:
+        if source not in {"im", "web"} or bridge_request is None or self._bridge_store is None:
             return None
 
         def record_progress(content: str) -> None:
             self._bridge_store.record_progress(bridge_request, content)
 
         return record_progress
+
+    async def _prompt_async_with_patch_stdout(self, session: Any):
+        """Read one prompt input while stdout is safely proxied above the prompt."""
+        from prompt_toolkit.patch_stdout import patch_stdout
+
+        with patch_stdout(raw=True):
+            return await session.prompt_async()
+
+    def _dismiss_active_prompt_line(self) -> None:
+        """Move the terminal cursor off the current prompt line before remote output."""
+        self._console.print()
+
+    @staticmethod
+    def _write_stream_chunk(text: str) -> None:
+        """Append streaming text directly to stdout without Rich re-rendering."""
+        if not text:
+            return
+        sys.stdout.write(text)
+        sys.stdout.flush()
+
+    async def _terminate_active_prompt(
+        self,
+        session: Any,
+        prompt_task: asyncio.Task | None,
+    ) -> None:
+        """Best-effort terminate the active prompt_toolkit application before remote output."""
+        app = getattr(session, "app", None)
+        if app is not None and getattr(app, "is_running", False):
+            try:
+                app.exit(exception=KeyboardInterrupt())
+            except Exception:
+                pass
+        if prompt_task is not None and not prompt_task.done():
+            prompt_task.cancel()
+        if prompt_task is not None:
+            try:
+                await prompt_task
+            except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                pass
 
     async def _execute_input_text(
         self,
@@ -2292,6 +2370,7 @@ class TGAgentCLI:
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
                 propagate_errors=source == "remote",
+                enable_interactive_terminal_ui=source == "local",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2301,6 +2380,7 @@ class TGAgentCLI:
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
                 propagate_errors=source == "remote",
+                enable_interactive_terminal_ui=source == "local",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2347,6 +2427,7 @@ class TGAgentCLI:
             has_image=False,
             intermediate_text_callback=intermediate_text_callback,
             propagate_errors=source == "remote",
+            enable_interactive_terminal_ui=source == "local",
         )
         return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2361,7 +2442,7 @@ class TGAgentCLI:
                 return True
 
             parsed_remote_image = None
-            if request.source == "remote":
+            if request.source in {"im", "web"}:
                 try:
                     parsed_remote_image = parse_remote_image_message(request.content)
                 except ImageInputError as exc:
@@ -2414,7 +2495,7 @@ class TGAgentCLI:
                     continue
                 raise
 
-            if request.source == "remote" and request.content.strip() == "/reset":
+            if request.source in {"im", "web"} and request.content.strip() == "/reset":
                 self._print_remote_reset_console_output(outcome.final_content)
 
             self._bridge_store.complete_request(request, final_content=outcome.final_content)
@@ -2446,7 +2527,7 @@ class TGAgentCLI:
         try:
             while True:
                 if prompt_task is None:
-                    prompt_task = asyncio.create_task(session.prompt_async())
+                    prompt_task = asyncio.create_task(self._prompt_async_with_patch_stdout(session))
 
                 done, _ = await asyncio.wait(
                     {prompt_task},
@@ -2455,13 +2536,18 @@ class TGAgentCLI:
                 )
 
                 if prompt_task not in done:
+                    if self._has_pending_bridge_work():
+                        await self._terminate_active_prompt(session, prompt_task)
+                        prompt_task = None
+                        self._dismiss_active_prompt_line()
                     should_continue = await self._drain_bridge_queue()
                     if not should_continue:
-                        prompt_task.cancel()
-                        try:
-                            await prompt_task
-                        except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
-                            pass
+                        if prompt_task is not None:
+                            prompt_task.cancel()
+                            try:
+                                await prompt_task
+                            except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                                pass
                         break
                     continue
 
@@ -2499,7 +2585,6 @@ class TGAgentCLI:
     async def run(self):
         """Run the interactive CLI."""
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.patch_stdout import patch_stdout
         from prompt_toolkit.styles import Style
 
         # Print welcome
@@ -2583,8 +2668,7 @@ class TGAgentCLI:
             )
 
             if self._bridge_store is not None:
-                with patch_stdout(raw=True):
-                    await self._run_with_bridge_session(session)
+                await self._run_with_bridge_session(session)
                 return
 
             while True:
@@ -2622,6 +2706,8 @@ class TGAgentCLI:
             justify="center",
         )
 
+        version_text = Text(f"v{get_cli_version()}", style="dim #8ecae6", justify="center")
+
         tips = Text()
         tips.append("Enter", style="bold white")
         tips.append(" 发送消息，", style="white")
@@ -2636,7 +2722,7 @@ class TGAgentCLI:
         tips.append("/exit", style="bold cyan")
         tips.append(" 退出，准备好了就直接开工。", style="dim")
 
-        banner = Group(title, subtitle, Text(""), tips)
+        banner = Group(title, subtitle, version_text, Text(""), tips)
 
         self._console.print(
             Panel(

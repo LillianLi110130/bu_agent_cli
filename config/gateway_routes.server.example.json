@@ -4,13 +4,17 @@
       "provider": "openai",
       "upstream_model": "GLM-5.1",
       "base_url": "https://your-upstream-provider.example.com/v1",
-      "api_key_env": "OPENAI_API_KEY"
+      "api_key_env": "OPENAI_API_KEY",
+      "max_input_tokens": 200000,
+      "max_output_tokens": 128000
     },
     "vision-default": {
       "provider": "openai",
       "upstream_model": "GLM-4.6V",
       "base_url": "https://your-upstream-provider.example.com/v1",
-      "api_key_env": "OPENAI_API_KEY"
+      "api_key_env": "OPENAI_API_KEY",
+      "max_input_tokens": 128000,
+      "max_output_tokens": 4096
     }
   }
 }

@@ -15,6 +15,7 @@ from cli.im_bridge.models import (
     BridgeRequest,
     BridgeResult,
     classify_input_kind,
+    normalize_bridge_source,
     utc_now,
 )
 
@@ -85,6 +86,9 @@ class FileBridgeStore:
         """Append one text request to the pending queue."""
         self.initialize()
         source_meta = dict(source_meta or {})
+        source = normalize_bridge_source(source, source_meta=source_meta)
+        if source in {"im", "web"} and not source_meta.get("origin"):
+            source_meta["origin"] = source
         request_id = request_id or f"req_{uuid.uuid4().hex}"
 
         with self._enqueue_lock():

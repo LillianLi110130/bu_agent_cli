@@ -1,0 +1,148 @@
+@import '../../../styles/variables.less';
+
+.sidebar {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  min-height: 100vh;
+  padding: 22px 16px 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 18%),
+    @sidebar-bg;
+  border-right: 1px solid @sidebar-border;
+}
+
+.brandBlock {
+  padding: 10px 10px 0;
+}
+
+.eyebrow {
+  color: rgba(250, 250, 249, 0.58);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.brandTitle {
+  margin: 8px 0 10px !important;
+  color: @text-inverse !important;
+  font-size: 24px !important;
+  line-height: 1.1 !important;
+}
+
+.workerBadge {
+  :global(.ant-badge-status-text) {
+    color: rgba(250, 250, 249, 0.82);
+  }
+}
+
+.workerText {
+  color: rgba(250, 250, 249, 0.82);
+}
+
+.newChatButton {
+  height: 48px !important;
+  border: none !important;
+  border-radius: @radius-md !important;
+  background: linear-gradient(135deg, #0f766e 0%, #115e59 100%) !important;
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.18);
+}
+
+.searchInput {
+  :global(.ant-input-affix-wrapper) {
+    height: 46px;
+    color: rgba(250, 250, 249, 0.92);
+    background: @sidebar-surface;
+    border: 1px solid @sidebar-border;
+    border-radius: @radius-md;
+    box-shadow: none;
+  }
+
+  :global(.ant-input) {
+    color: rgba(250, 250, 249, 0.92);
+    background: transparent;
+  }
+
+  :global(.ant-input::placeholder) {
+    color: rgba(250, 250, 249, 0.35);
+  }
+}
+
+.sessionList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.sessionCard,
+.sessionCardActive {
+  width: 100%;
+  padding: 14px 14px 12px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: @radius-md;
+  transition:
+    background-color 0.18s ease,
+    border-color 0.18s ease,
+    transform 0.18s ease;
+}
+
+.sessionCard:hover,
+.sessionCardActive:hover {
+  transform: translateY(-1px);
+}
+
+.sessionCard {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: transparent;
+}
+
+.sessionCard:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.sessionCardActive {
+  background: @sidebar-active;
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.sessionHeader {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.sessionTitle {
+  display: block;
+  color: @text-inverse !important;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.sessionTime {
+  flex: none;
+  color: rgba(250, 250, 249, 0.4) !important;
+  font-size: 12px;
+}
+
+.sessionSnippet {
+  margin: 8px 0 0 !important;
+  color: rgba(250, 250, 249, 0.6) !important;
+  font-size: 13px;
+  line-height: 1.5 !important;
+}
+
+.footnote {
+  padding: 12px 10px 4px;
+  color: rgba(250, 250, 249, 0.44);
+  font-size: 12px;
+  line-height: 1.6;
+}

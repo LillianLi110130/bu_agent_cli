@@ -1,0 +1,106 @@
+@import '../../../styles/variables.less';
+
+.dock {
+  flex: 0 0 auto;
+  padding-top: 18px;
+}
+
+.centerColumn {
+  max-width: 920px;
+  margin: 0 auto;
+}
+
+.composer {
+  padding: 14px 16px 14px 18px;
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid rgba(23, 23, 23, 0.08);
+  border-radius: @radius-2xl;
+  box-shadow: @shadow-soft;
+  backdrop-filter: blur(10px);
+}
+
+.textarea {
+  padding: 4px 2px;
+
+  :global(.ant-input) {
+    padding: 0;
+    color: @text-primary;
+    font-size: 15px;
+    line-height: 1.75;
+    background: transparent;
+  }
+
+  :global(.ant-input::placeholder) {
+    color: @text-muted;
+  }
+}
+
+.footer {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+}
+
+.helperText {
+  color: @text-secondary !important;
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.statusText {
+  color: @text-secondary !important;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sendButton {
+  height: 42px !important;
+  padding: 0 20px !important;
+  border-radius: 999px !important;
+  background: linear-gradient(135deg, #0f766e 0%, #115e59 100%) !important;
+  color: #ffffff !important;
+  border-color: transparent !important;
+  box-shadow: 0 14px 28px rgba(15, 118, 110, 0.16);
+}
+
+.sendButton:hover,
+.sendButton:focus {
+  color: #ffffff !important;
+  border-color: transparent !important;
+  background: linear-gradient(135deg, #0d6d65 0%, #0f5752 100%) !important;
+}
+
+.sendButton:active {
+  color: #ffffff !important;
+  border-color: transparent !important;
+  background: linear-gradient(135deg, #0b625c 0%, #0d4d48 100%) !important;
+}
+
+.sendButton:disabled,
+.sendButton:global(.ant-btn-loading) {
+  color: rgba(255, 255, 255, 0.9) !important;
+}
+
+.stopButton {
+  height: 42px !important;
+  padding: 0 18px !important;
+  border-radius: 999px !important;
+  border: 1px solid rgba(15, 23, 42, 0.12) !important;
+  background: rgba(255, 255, 255, 0.82) !important;
+  color: @text-primary !important;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+
+.stopButton:hover,
+.stopButton:focus {
+  color: @text-primary !important;
+  border-color: rgba(15, 23, 42, 0.18) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
+}

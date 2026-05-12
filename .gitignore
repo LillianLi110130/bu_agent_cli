@@ -28,3 +28,12 @@ node_modules/
 .m2/
 gateway/target/
 blank/
+ppt/
+node_modules/
+package.json
+package-lock.json
+config/gateway_routes.server.json
+web/node_modules/
+web/dist/
+!web/package.json
+!web/package-lock.json
