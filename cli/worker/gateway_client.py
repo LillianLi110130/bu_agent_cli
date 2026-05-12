@@ -124,7 +124,7 @@ class WorkerGatewayClient:
             "worker_id": worker_id,
             "final_content": final_content,
             "final_status": final_status,
-        )
+        }
         if source:
             payload["source"] = source
         if error_code is not None:
