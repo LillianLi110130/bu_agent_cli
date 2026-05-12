@@ -3,6 +3,7 @@
 from tools.bash import bash
 from tools.agent_tool import delegate, delegate_parallel
 from tools.files import edit, read, write
+from tools.message import message
 from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, SecurityError, get_sandbox_context
 from tools.search import glob_search, grep
@@ -26,10 +27,13 @@ ALL_TOOLS = [
     resolve_path,
     read,
     read_excel,
+    # read_excel,
+    write,
     edit,
     write,
     glob_search,
     grep,
+    message,
     todo_read,
     todo_write,
     done,
@@ -54,6 +58,7 @@ __all__ = [
     "edit",
     "glob_search",
     "grep",
+    "message",
     "todo_read",
     "todo_write",
     "done",
