@@ -21,6 +21,7 @@ class WorkerMessage:
     """One message returned by the gateway poll API."""
 
     content: str
+    source: str | None = None
 
 
 @dataclass(slots=True)
@@ -64,7 +65,17 @@ class WorkerGatewayClient:
         )
         payload = response.json()
         messages = payload.get("messages", [])
-        return [WorkerMessage(content=str(message["content"])) for message in messages]
+        return [
+            WorkerMessage(
+                content=str(message["content"]),
+                source=(
+                    str(message["source"]).strip()
+                    if isinstance(message, dict) and message.get("source") is not None
+                    else None
+                ),
+            )
+            for message in messages
+        ]
 
     async def stream_events(self, worker_id: str) -> AsyncIterator[WorkerStreamEvent]:
         """Consume SSE events for the bound worker."""
@@ -102,15 +113,39 @@ class WorkerGatewayClient:
         self,
         worker_id: str,
         final_content: str,
+        source: str | None = None,
     ) -> bool:
         """Submit the final response for one delivery."""
         logger.info(f"Completing delivery for worker_id={worker_id}")
+        payload: dict[str, object] = {
+            "worker_id": worker_id,
+            "final_content": final_content,
+        }
+        if source:
+            payload["source"] = source
         response = await self._post_with_auth_refresh(
             "/api/worker/complete",
-            {
-                "worker_id": worker_id,
-                "final_content": final_content,
-            },
+            payload,
+        )
+        return bool(response.json().get("ok", False))
+
+    async def progress(
+        self,
+        worker_id: str,
+        content: str,
+        source: str | None = None,
+    ) -> bool:
+        """Submit one intermediate progress update for one delivery."""
+        logger.info(f"Sending progress update for worker_id={worker_id}")
+        payload: dict[str, object] = {
+            "worker_id": worker_id,
+            "content": content,
+        }
+        if source:
+            payload["source"] = source
+        response = await self._post_with_auth_refresh(
+            "/api/worker/progress",
+            payload,
         )
         return bool(response.json().get("ok", False))
 
@@ -278,7 +313,14 @@ def _build_stream_event(
             return None
         return WorkerStreamEvent(
             event="message",
-            message=WorkerMessage(content=str(payload["content"])),
+            message=WorkerMessage(
+                content=str(payload["content"]),
+                source=(
+                    str(payload["source"]).strip()
+                    if payload.get("source") is not None
+                    else None
+                ),
+            ),
             payload=payload,
         )
     return WorkerStreamEvent(

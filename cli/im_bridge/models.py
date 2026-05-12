@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 
 InputKind = Literal["text", "slash", "skill", "image"]
+BridgeSource = Literal["local", "im", "web"]
 
 
 def utc_now() -> datetime:
@@ -39,6 +40,24 @@ def classify_input_kind(content: str) -> InputKind:
     return "text"
 
 
+def normalize_bridge_source(
+    source: str | None,
+    *,
+    source_meta: dict[str, Any] | None = None,
+) -> BridgeSource:
+    """Normalize legacy and current bridge source values."""
+    normalized_source = (source or "").strip().lower()
+    if normalized_source == "local":
+        return "local"
+    if normalized_source in {"im", "web"}:
+        return normalized_source
+
+    origin = str((source_meta or {}).get("origin", "")).strip().lower()
+    if origin in {"im", "web"}:
+        return origin
+    return "im"
+
+
 @dataclass
 class BridgeRequest:
     """One queued request in the local file bridge."""
@@ -46,7 +65,7 @@ class BridgeRequest:
     version: int
     request_id: str
     seq: int
-    source: Literal["local", "remote"]
+    source: BridgeSource
     source_meta: dict[str, Any] = field(default_factory=dict)
     content: str = ""
     input_kind: InputKind = "text"
@@ -70,7 +89,10 @@ class BridgeRequest:
             version=int(payload["version"]),
             request_id=str(payload["request_id"]),
             seq=int(payload["seq"]),
-            source=str(payload["source"]),
+            source=normalize_bridge_source(
+                str(payload.get("source", "")),
+                source_meta=dict(payload.get("source_meta") or {}),
+            ),
             source_meta=dict(payload.get("source_meta") or {}),
             content=str(payload.get("content", "")),
             input_kind=str(payload.get("input_kind", "text")),
@@ -91,7 +113,7 @@ class BridgeResult:
     version: int
     request_id: str
     seq: int
-    source: Literal["local", "remote"]
+    source: BridgeSource
     final_status: Literal["completed", "failed"]
     input_content: str = ""
     input_kind: InputKind = "text"
@@ -115,7 +137,7 @@ class BridgeResult:
             version=int(payload["version"]),
             request_id=str(payload["request_id"]),
             seq=int(payload["seq"]),
-            source=str(payload["source"]),
+            source=normalize_bridge_source(str(payload.get("source", ""))),
             final_status=str(payload["final_status"]),
             input_content=str(payload.get("input_content", "")),
             input_kind=str(payload.get("input_kind", "text")),
@@ -140,7 +162,7 @@ class BridgeProgress:
     version: int
     request_id: str
     seq: int
-    source: Literal["local", "remote"]
+    source: BridgeSource
     progress_id: str
     content: str
     created_at: datetime = field(default_factory=utc_now)
@@ -158,7 +180,7 @@ class BridgeProgress:
             version=int(payload["version"]),
             request_id=str(payload["request_id"]),
             seq=int(payload["seq"]),
-            source=str(payload["source"]),
+            source=normalize_bridge_source(str(payload.get("source", ""))),
             progress_id=str(payload["progress_id"]),
             content=str(payload.get("content", "")),
             created_at=from_iso8601(str(payload["created_at"])),

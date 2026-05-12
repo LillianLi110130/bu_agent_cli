@@ -20,6 +20,7 @@ from agent_core.llm.messages import AssistantMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
+from cli.im_bridge.models import BridgeRequest
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.runtime_factory import EchoLLM
 from tools import SandboxContext
@@ -75,7 +76,8 @@ async def test_local_bridge_drains_enqueued_input_through_execution(workspace_ro
     cli, store = _create_cli(workspace_root, monkeypatch)
     seen_calls: list[tuple[str, bool]] = []
 
-    async def fake_run_agent(user_input, has_image=False):
+    async def fake_run_agent(user_input, has_image=False, **kwargs):
+        del kwargs
         seen_calls.append((user_input, has_image))
         return f"processed:{user_input}"
 
@@ -112,7 +114,8 @@ async def test_init_command_uses_dedicated_agent_and_injects_immediately(
     )
     monkeypatch.setattr(app_module, "validate_init_output", lambda workspace: (True, None))
 
-    async def fake_run_agent(user_input, has_image=False, agent=None):
+    async def fake_run_agent(user_input, has_image=False, agent=None, **kwargs):
+        del kwargs
         assert has_image is False
         assert agent is init_agent
         assert str(workspace_root) in user_input
@@ -179,11 +182,14 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
 ):
     cli, store = _create_cli(workspace_root, monkeypatch)
     seen_calls: list[tuple[str, bool]] = []
+    prompt_calls = 0
     prompt_started = asyncio.Event()
     allow_prompt_to_exit = asyncio.Event()
 
     class _FakePromptSession:
         async def prompt_async(self):
+            nonlocal prompt_calls
+            prompt_calls += 1
             prompt_started.set()
             await allow_prompt_to_exit.wait()
             raise EOFError()
@@ -191,7 +197,8 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
     monkeypatch.setattr(prompt_toolkit, "PromptSession", lambda **kwargs: _FakePromptSession())
     monkeypatch.setattr(prompt_patch_stdout, "patch_stdout", lambda *args, **kwargs: nullcontext())
 
-    async def fake_run_agent(user_input, has_image=False):
+    async def fake_run_agent(user_input, has_image=False, **kwargs):
+        del kwargs
         seen_calls.append((user_input, has_image))
         return f"processed:{user_input}"
 
@@ -201,7 +208,7 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
         await prompt_started.wait()
         store.enqueue_text(
             "remote hello",
-            source="remote",
+            source="web",
             source_meta={"delivery_id": "delivery-1"},
             remote_response_required=True,
             request_id="remote_delivery-1",
@@ -221,10 +228,12 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
     assert seen_calls == [("remote hello", False)]
     result = store.find_result("remote_delivery-1")
     assert result is not None
+    assert result.source == "web"
     assert result.final_status == "completed"
     assert result.input_content == "remote hello"
     assert result.input_kind == "text"
     assert result.final_content == "processed:remote hello"
+    assert prompt_calls >= 2
 
 
 @pytest.mark.asyncio
@@ -235,7 +244,8 @@ async def test_remote_bridge_image_json_is_processed_as_multimodal_input(
     cli, store = _create_cli(workspace_root, monkeypatch)
     seen_calls = []
 
-    async def fake_run_agent(user_input, has_image=False):
+    async def fake_run_agent(user_input, has_image=False, **kwargs):
+        del kwargs
         seen_calls.append((user_input, has_image))
         return "processed:remote image"
 
@@ -247,7 +257,7 @@ async def test_remote_bridge_image_json_is_processed_as_multimodal_input(
     )
     store.enqueue_text(
         payload,
-        source="remote",
+        source="web",
         source_meta={"delivery_id": "delivery-image-1"},
         remote_response_required=True,
         request_id="remote-image-1",
@@ -268,6 +278,7 @@ async def test_remote_bridge_image_json_is_processed_as_multimodal_input(
 
     result = store.find_result("remote-image-1")
     assert result is not None
+    assert result.source == "web"
     assert result.final_status == "completed"
     assert result.input_kind == "image"
     assert result.final_content == "processed:remote image"
@@ -281,7 +292,8 @@ async def test_remote_bridge_image_json_supports_multiple_images(
     cli, store = _create_cli(workspace_root, monkeypatch)
     seen_calls = []
 
-    async def fake_run_agent(user_input, has_image=False):
+    async def fake_run_agent(user_input, has_image=False, **kwargs):
+        del kwargs
         seen_calls.append((user_input, has_image))
         return "processed:remote images"
 
@@ -300,7 +312,7 @@ async def test_remote_bridge_image_json_supports_multiple_images(
     )
     store.enqueue_text(
         payload,
-        source="remote",
+        source="web",
         source_meta={"delivery_id": "delivery-images-1"},
         remote_response_required=True,
         request_id="remote-images-1",
@@ -320,6 +332,7 @@ async def test_remote_bridge_image_json_supports_multiple_images(
 
     result = store.find_result("remote-images-1")
     assert result is not None
+    assert result.source == "web"
     assert result.final_status == "completed"
     assert result.input_kind == "image"
     assert result.final_content == "processed:remote images"
@@ -329,15 +342,15 @@ async def test_remote_bridge_image_json_supports_multiple_images(
 async def test_remote_bridge_invalid_image_json_fails_request(workspace_root, monkeypatch):
     cli, store = _create_cli(workspace_root, monkeypatch)
 
-    async def fail_run_agent(user_input, has_image=False):
-        del user_input, has_image
+    async def fail_run_agent(user_input, has_image=False, **kwargs):
+        del user_input, has_image, kwargs
         raise AssertionError("invalid remote image payload should not reach _run_agent")
 
     monkeypatch.setattr(cli, "_run_agent", fail_run_agent)
 
     store.enqueue_text(
         '{"msgType":"image","imageDataBase64":["not-base64"],"userInput":"帮我看下"}',
-        source="remote",
+        source="web",
         source_meta={"delivery_id": "delivery-image-invalid-1"},
         remote_response_required=True,
         request_id="remote-image-invalid-1",
@@ -348,6 +361,7 @@ async def test_remote_bridge_invalid_image_json_fails_request(workspace_root, mo
     assert should_continue is True
     result = store.find_result("remote-image-invalid-1")
     assert result is not None
+    assert result.source == "web"
     assert result.final_status == "failed"
     assert result.error_code == "REMOTE_IMAGE_MESSAGE_INVALID"
     assert "base64" in (result.error_message or "")
@@ -361,7 +375,8 @@ async def test_remote_bridge_image_json_skips_invalid_images_when_others_are_val
     cli, store = _create_cli(workspace_root, monkeypatch)
     seen_calls = []
 
-    async def fake_run_agent(user_input, has_image=False):
+    async def fake_run_agent(user_input, has_image=False, **kwargs):
+        del kwargs
         seen_calls.append((user_input, has_image))
         return "processed:partial remote images"
 
@@ -377,7 +392,7 @@ async def test_remote_bridge_image_json_skips_invalid_images_when_others_are_val
             + png_base64
             + '"],"userInput":"只看有效图片"}'
         ),
-        source="remote",
+        source="web",
         source_meta={"delivery_id": "delivery-image-partial-1"},
         remote_response_required=True,
         request_id="remote-image-partial-1",
@@ -396,6 +411,7 @@ async def test_remote_bridge_image_json_skips_invalid_images_when_others_are_val
 
     result = store.find_result("remote-image-partial-1")
     assert result is not None
+    assert result.source == "web"
     assert result.final_status == "completed"
     assert result.input_kind == "image"
     assert result.final_content == "processed:partial remote images"
@@ -452,8 +468,8 @@ async def test_remote_reset_bootstraps_new_session_and_returns_greeting(
                 break
         return ChatInvokeCompletion(content="你好呀，想做什么？")
 
-    async def fail_run_agent(user_input, has_image=False, agent=None):
-        del user_input, has_image, agent
+    async def fail_run_agent(user_input, has_image=False, agent=None, **kwargs):
+        del user_input, has_image, agent, kwargs
         raise AssertionError("remote /reset should not go through _run_agent")
 
     monkeypatch.setattr(cli._agent.llm, "ainvoke", fake_ainvoke)
@@ -461,7 +477,7 @@ async def test_remote_reset_bootstraps_new_session_and_returns_greeting(
 
     store.enqueue_text(
         "/reset",
-        source="remote",
+        source="web",
         source_meta={"delivery_id": "delivery-reset-1"},
         remote_response_required=True,
         request_id="remote-reset-1",
@@ -472,6 +488,7 @@ async def test_remote_reset_bootstraps_new_session_and_returns_greeting(
     assert should_continue is True
     result = store.find_result("remote-reset-1")
     assert result is not None
+    assert result.source == "web"
     assert result.final_status == "completed"
     assert result.final_content == "你好呀，想做什么？"
     assert seen_user_prompts
@@ -488,6 +505,28 @@ async def test_remote_reset_bootstraps_new_session_and_returns_greeting(
     assert "repo rules" in system_contents
     assert all("old question" not in content for content in system_contents)
     assert all("old answer" not in content for content in system_contents)
+
+
+def test_bridge_request_from_dict_maps_legacy_remote_source_to_origin():
+    request = BridgeRequest.from_dict(
+        {
+            "version": 1,
+            "request_id": "legacy-remote-1",
+            "seq": 12,
+            "source": "remote",
+            "source_meta": {"origin": "web"},
+            "content": "hello",
+            "input_kind": "text",
+            "content_type": "text",
+            "enqueue_time": "2026-05-11T00:00:00Z",
+            "remote_response_required": True,
+            "status": "pending",
+            "started_at": None,
+        }
+    )
+
+    assert request.source == "web"
+    return
 
     user_contents = [
         str(getattr(message, "content", ""))

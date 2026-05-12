@@ -77,7 +77,7 @@ async def test_gateway_client_refreshes_authorization_from_poll_response(
         return httpx.Response(
             200,
             headers={"Authorization": "Bearer new-token"},
-            json={"messages": [{"content": "hello"}]},
+            json={"messages": [{"content": "hello", "source": "web"}]},
         )
 
     transport = httpx.MockTransport(handler)
@@ -91,6 +91,7 @@ async def test_gateway_client_refreshes_authorization_from_poll_response(
         messages = await client.poll("worker-1")
 
     assert [message.content for message in messages] == ["hello"]
+    assert [message.source for message in messages] == ["web"]
     assert client.authorization == "Bearer new-token"
     token_payload = json.loads(token_path.read_text(encoding="utf-8"))
     assert token_payload["authorization"] == "Bearer new-token"
@@ -149,6 +150,29 @@ async def test_gateway_client_retries_once_after_refreshing_authorization(
 
 
 @pytest.mark.asyncio
+async def test_gateway_client_sends_progress_payload() -> None:
+    seen_payloads: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_payloads.append(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        client = WorkerGatewayClient(base_url="http://testserver", client=http_client)
+        ok = await client.progress(worker_id="worker-1", content="partial text", source="web")
+
+    assert ok is True
+    assert seen_payloads == [
+        {
+            "worker_id": "worker-1",
+            "content": "partial text",
+            "source": "web",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_gateway_client_consumes_sse_message_event():
     app = FastAPI()
 
@@ -156,7 +180,7 @@ async def test_gateway_client_consumes_sse_message_event():
     async def stream(worker_id: str):  # noqa: ARG001
         async def event_stream():
             yield b'event: ready\ndata: {"worker_id":"worker-1"}\n\n'
-            yield b'event: message\ndata: {"content":"hello over sse"}\n\n'
+            yield b'event: message\ndata: {"content":"hello over sse","source":"web"}\n\n'
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -169,6 +193,7 @@ async def test_gateway_client_consumes_sse_message_event():
             if event.event == "message":
                 assert event.message is not None
                 assert event.message.content == "hello over sse"
+                assert event.message.source == "web"
                 break
 
     assert events[0] == "ready"
@@ -198,7 +223,7 @@ async def test_gateway_client_refreshes_authorization_from_stream_response(
     @app.get("/api/worker/stream")
     async def stream(worker_id: str):  # noqa: ARG001
         async def event_stream():
-            yield b'event: message\ndata: {"content":"hello"}\n\n'
+            yield b'event: message\ndata: {"content":"hello","source":"im"}\n\n'
 
         return StreamingResponse(
             event_stream(),
@@ -218,6 +243,7 @@ async def test_gateway_client_refreshes_authorization_from_stream_response(
             if event.event == "message":
                 assert event.message is not None
                 assert event.message.content == "hello"
+                assert event.message.source == "im"
                 break
 
     assert client.authorization == "Bearer new-token"

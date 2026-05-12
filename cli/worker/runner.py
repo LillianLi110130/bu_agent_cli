@@ -153,37 +153,40 @@ class WorkerRunner:
 
     async def _process_message(self, message: Any) -> None:
         """Process one polled message."""
+        source = self._normalize_remote_source(getattr(message, "source", None))
         request = self.bridge_store.enqueue_text(
             message.content,
-            source="remote",
+            source=source,
             source_meta={
                 "worker_id": self.worker_id,
+                "origin": source,
             },
             remote_response_required=True,
         )
 
         try:
-            result = await self._wait_for_result(request.request_id)
+            result = await self._wait_for_result(request.request_id, source=source)
         except Exception:
             return
 
         ok = await self.gateway_client.complete(
             worker_id=self.worker_id,
             final_content=result.final_content,
+            source=source,
         )
         if not ok:
             logger.warning(
                 f"Worker complete returned ok=false for worker_id={self.worker_id}"
             )
 
-    async def _wait_for_result(self, request_id: str):
+    async def _wait_for_result(self, request_id: str, *, source: str):
         """Wait until the local CLI writes a result for *request_id*."""
         sent_progress_ids: set[str] = set()
         while not self._stop_event.is_set():
-            await self._forward_pending_progress(request_id, sent_progress_ids)
+            await self._forward_pending_progress(request_id, sent_progress_ids, source=source)
             result = self.bridge_store.find_result(request_id)
             if result is not None:
-                await self._forward_pending_progress(request_id, sent_progress_ids)
+                await self._forward_pending_progress(request_id, sent_progress_ids, source=source)
                 return result
             await asyncio.sleep(self.result_poll_interval_seconds)
         raise RuntimeError(f"Worker stopped while waiting for bridge result: {request_id}")
@@ -192,17 +195,27 @@ class WorkerRunner:
         self,
         request_id: str,
         sent_progress_ids: set[str],
+        *,
+        source: str,
     ) -> None:
         """Forward unsent intermediate text responses for *request_id*."""
         for progress in self.bridge_store.list_progress(request_id):
             if progress.progress_id in sent_progress_ids:
                 continue
             sent_progress_ids.add(progress.progress_id)
-            ok = await self.gateway_client.complete(
+            ok = await self.gateway_client.progress(
                 worker_id=self.worker_id,
-                final_content=progress.content,
+                content=progress.content,
+                source=source,
             )
             if not ok:
                 logger.warning(
-                    f"Worker progress complete returned ok=false for worker_id={self.worker_id}"
+                    f"Worker progress returned ok=false for worker_id={self.worker_id}"
                 )
+
+    def _normalize_remote_source(self, source: str | None) -> str:
+        """Return a protocol-safe remote source label."""
+        normalized_source = (source or "").strip().lower()
+        if normalized_source in {"im", "web"}:
+            return normalized_source
+        return "im"

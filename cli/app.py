@@ -1404,7 +1404,7 @@ class TGAgentCLI:
 
         Args:
             text: The slash command text
-            source: Input source, such as ``local`` or ``remote``
+            source: Input source, such as ``local``, ``im``, or ``web``
 
         Returns:
             True if the command was handled, False otherwise
@@ -1478,7 +1478,7 @@ class TGAgentCLI:
         # Handle reset command
         if command_name == "reset":
             reset_message = await self._handle_reset_command(source=source)
-            if source == "remote":
+            if source in {"im", "web"}:
                 self._store_command_final_content(reset_message)
             return True
 
@@ -2036,6 +2036,12 @@ class TGAgentCLI:
         normalized = user_input.strip().lower()
         return normalized in {"/exit", "/quit", "/q", "exit", "quit"}
 
+    def _has_pending_bridge_work(self) -> bool:
+        """Return whether the local bridge currently has queued work."""
+        if self._bridge_store is None:
+            return False
+        return self._bridge_store.pending_count() > 0
+
     def _build_bridge_progress_callback(
         self,
         *,
@@ -2043,7 +2049,7 @@ class TGAgentCLI:
         bridge_request: BridgeRequest | None,
     ) -> Callable[[str], None] | None:
         """Build a callback that records intermediate remote agent text."""
-        if source != "remote" or bridge_request is None or self._bridge_store is None:
+        if source not in {"im", "web"} or bridge_request is None or self._bridge_store is None:
             return None
 
         def record_progress(content: str) -> None:
@@ -2156,7 +2162,7 @@ class TGAgentCLI:
                 return True
 
             parsed_remote_image = None
-            if request.source == "remote":
+            if request.source in {"im", "web"}:
                 try:
                     parsed_remote_image = parse_remote_image_message(request.content)
                 except ImageInputError as exc:
@@ -2207,7 +2213,7 @@ class TGAgentCLI:
                 )
                 raise
 
-            if request.source == "remote" and request.content.strip() == "/reset":
+            if request.source in {"im", "web"} and request.content.strip() == "/reset":
                 self._print_remote_reset_console_output(outcome.final_content)
 
             self._bridge_store.complete_request(request, final_content=outcome.final_content)
@@ -2248,13 +2254,21 @@ class TGAgentCLI:
                 )
 
                 if prompt_task not in done:
-                    should_continue = await self._drain_bridge_queue()
-                    if not should_continue:
+                    if self._has_pending_bridge_work():
                         prompt_task.cancel()
                         try:
                             await prompt_task
                         except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
                             pass
+                        prompt_task = None
+                    should_continue = await self._drain_bridge_queue()
+                    if not should_continue:
+                        if prompt_task is not None:
+                            prompt_task.cancel()
+                            try:
+                                await prompt_task
+                            except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                                pass
                         break
                     continue
 
