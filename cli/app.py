@@ -2132,7 +2132,6 @@ class TGAgentCLI:
                         pending_intermediate_text.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
-                    logger.info(event.content)
                     self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
