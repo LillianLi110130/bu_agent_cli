@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 import shlex
 from typing import Any
 
 from agent_core.team import team_experiment_disabled_message
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 
@@ -29,10 +31,8 @@ class TeamSlashHandler:
         rest = args[1:]
         if subcommand in {"list", "ls"}:
             self._list_teams()
-        elif subcommand in {"create", "start"}:
+        elif subcommand == "create":
             self._create(rest)
-        elif subcommand == "use":
-            self._use(rest)
         elif subcommand in {"members", "member"}:
             self._members(rest)
         elif self._team_exists(subcommand):
@@ -45,6 +45,8 @@ class TeamSlashHandler:
             self._tasks(rest)
         elif subcommand == "inbox":
             self._inbox(rest)
+        elif subcommand == "ui":
+            self._ui(rest)
         elif subcommand == "send":
             self._send(rest)
         elif subcommand == "status":
@@ -60,7 +62,7 @@ class TeamSlashHandler:
 
     def _create(self, args: list[str]) -> None:
         if not args:
-            self.console.print("[red]用法：/team create <goal> [--name <name>][/red]")
+            self._print_error_usage("用法：/team create <goal> [--name <name>]")
             return
         name = self._option(args, "--name")
         goal = " ".join(self._positional_without_options(args, {"--name"})).strip()
@@ -75,22 +77,6 @@ class TeamSlashHandler:
         self.console.print(f"[green]已创建并切换到 team：[/green]{team.team_id}")
         self.console.print(f"[dim]Goal:[/] {team.goal}")
 
-    def _use(self, args: list[str]) -> None:
-        if not args:
-            active = self.runtime.get_active_team()
-            if active:
-                self.console.print(f"[green]当前 active team：[/green]{active}")
-            else:
-                self.console.print("[yellow]当前 workspace 没有 active team。[/yellow]")
-            return
-        team_id = args[0]
-        try:
-            self.runtime.set_active_team(team_id)
-        except FileNotFoundError:
-            self.console.print(f"[red]Team 不存在：{team_id}[/red]")
-            return
-        self.console.print(f"[green]已切换 active team：[/green]{team_id}")
-
     def _list_teams(self) -> None:
         teams = self.runtime.list_teams()
         table = Table(title="Agent Teams")
@@ -104,9 +90,7 @@ class TeamSlashHandler:
 
     def _spawn(self, args: list[str]) -> None:
         if len(args) < 2:
-            self.console.print(
-                "[red]用法：/team spawn <team_id> <member_id> [--agent <agent_type>][/red]"
-            )
+            self._print_error_usage("用法：/team spawn <team_id> <member_id> [--agent <agent_type>]")
             return
         team_id, member_id = args[0], args[1]
         agent_type = self._option(args[2:], "--agent") or "general-purpose"
@@ -123,9 +107,9 @@ class TeamSlashHandler:
     def _task(self, args: list[str]) -> None:
         resolved = self._resolve_team_args(args)
         if resolved is None or not resolved[1]:
-            self.console.print(
-                "[red]用法：/team task <team_id> <title> "
-                "[--assign <member>] [--to <member>] [--desc <desc>][/red]"
+            self._print_error_usage(
+                "用法：/team task <team_id> <title> "
+                "[--assign <member>] [--to <member>] [--desc <desc>]"
             )
             return
         team_id, rest = resolved
@@ -152,7 +136,7 @@ class TeamSlashHandler:
     def _tasks(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)
         if team_id is None:
-            self.console.print("[red]用法：/team tasks [team_id][/red]")
+            self._print_error_usage("用法：/team tasks [team_id]")
             return
         tasks = self.runtime.list_tasks(team_id)
         table = Table(title=f"Tasks: {team_id}")
@@ -174,7 +158,7 @@ class TeamSlashHandler:
     def _inbox(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)
         if team_id is None:
-            self.console.print("[red]用法：/team inbox [team_id] [--peek][/red]")
+            self._print_error_usage("用法：/team inbox [team_id] [--peek]")
             return
         ack = "--peek" not in args
         messages = self.runtime.read_lead_inbox(team_id, ack=ack)
@@ -187,12 +171,27 @@ class TeamSlashHandler:
                 f"{message.sender} -> lead [{message.type}]\n{message.body}"
             )
 
+    def _ui(self, args: list[str]) -> None:
+        team_id = self._resolve_team_id(args)
+        if team_id is None:
+            self._print_error_usage("用法：/team ui [team_id]")
+            return
+        try:
+            self.runtime.status(team_id)
+        except FileNotFoundError:
+            self.console.print(f"[red]Team 不存在：{team_id}[/red]")
+            return
+        html_path = (Path(__file__).resolve().parent / "dashboard" / "team_dashboard.html")
+        team_dir = self.runtime.store.team_dir(team_id)
+        self.console.print("[green]Team dashboard 是纯 HTML，不会启动后端，也不会标记 inbox 已读。[/green]")
+        self.console.print(f"[cyan]HTML:[/cyan] {html_path}")
+        self.console.print(f"[cyan]Team directory:[/cyan] {team_dir}")
+        self.console.print("[dim]在浏览器打开 HTML 后，选择上面的 Team directory。[/dim]")
+
     def _send(self, args: list[str]) -> None:
         resolved = self._resolve_team_args(args)
         if resolved is None or len(resolved[1]) < 2:
-            self.console.print(
-                "[red]用法：/team send [team_id] <member_id> <message> [--from <sender>][/red]"
-            )
+            self._print_error_usage("用法：/team send [team_id] <member_id> <message> [--from <sender>]")
             return
         team_id, rest = resolved
         sender = self._option(rest[1:], "--from") or "lead"
@@ -208,13 +207,13 @@ class TeamSlashHandler:
     def _status(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)
         if team_id is None:
-            self.console.print("[red]用法：/team status [team_id][/red]")
+            self._print_error_usage("用法：/team status [team_id]")
             return
         self._print_cockpit(team_id)
 
     def _stop(self, args: list[str]) -> None:
         if len(args) < 2:
-            self.console.print("[red]用法：/team stop <team_id> <member_id>[/red]")
+            self._print_error_usage("用法：/team stop <team_id> <member_id>")
             return
         self.runtime.stop_member(args[0], args[1])
         self.console.print(f"[yellow]已停止 teammate（必要时会超时后强制终止）：[/yellow]{args[1]}")
@@ -222,15 +221,19 @@ class TeamSlashHandler:
     def _shutdown(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)
         if team_id is None:
-            self.console.print("[red]用法：/team shutdown [team_id][/red]")
+            self._print_error_usage("用法：/team shutdown [team_id]")
             return
-        self.runtime.shutdown_team(team_id)
+        try:
+            self.runtime.shutdown_team(team_id)
+        except ValueError as exc:
+            self.console.print(f"[yellow]{exc}[/yellow]")
+            return
         self.console.print(f"[yellow]已请求关闭 team：[/yellow]{team_id}")
 
     def _members(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)
         if team_id is None:
-            self.console.print("[red]用法：/team members [team_id][/red]")
+            self._print_error_usage("用法：/team members [team_id]")
             return
         status = self.runtime.status(team_id)
         table = Table(title=f"Members: {team_id}")
@@ -254,10 +257,8 @@ class TeamSlashHandler:
         team_id = args[0] if args else self.runtime.get_active_team()
         if team_id is None:
             self.console.print("[yellow]当前 workspace 没有 active team。[/yellow]")
-            self.console.print("[dim]使用 /team create <goal> [--name <name>] 创建一个 team。[/dim]")
-            self.console.print(
-                "[dim]或者使用 /team auto <goal> [--name <name>] 让 lead 自动创建、拆分并编排 team。[/dim]"
-            )
+            self._print_dim("使用 /team create <goal> [--name <name>] 创建一个 team。")
+            self._print_dim("或者使用 /team auto <goal> [--name <name>] 让 lead 自动创建、拆分并编排 team。")
             return
         self._print_cockpit(team_id)
 
@@ -297,9 +298,16 @@ class TeamSlashHandler:
         self.console.print(f"[dim]Tasks:[/] {task_summary or 'none'}")
 
     def _print_usage(self) -> None:
-        self.console.print(
-            "[dim]用法：/team auto <goal> [--name <name>] | create <goal> [--name <name>] | use|list|spawn|task|tasks|members|inbox|send|status|stop|shutdown[/dim]"
+        self._print_dim(
+            "用法：/team auto <goal> [--name <name>] | create <goal> [--name <name>] | "
+            "list|spawn|task|tasks|members|inbox|ui|send|status|stop|shutdown"
         )
+
+    def _print_error_usage(self, text: str) -> None:
+        self.console.print(f"[red]{escape(text)}[/red]")
+
+    def _print_dim(self, text: str) -> None:
+        self.console.print(f"[dim]{escape(text)}[/dim]")
 
     @staticmethod
     def parse_args_text(args_text: str) -> list[str]:

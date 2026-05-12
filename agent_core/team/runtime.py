@@ -28,8 +28,8 @@ from agent_core.team.task_board import TaskBoard
 
 PopenFactory = Callable[..., subprocess.Popen]
 TEAM_WORKER_INTERNAL_FLAG = "--run-team-worker-internal"
-TERMINAL_TEAM_STATUSES = {"shutdown", "completed", "failed"}
-TERMINAL_TEAM_PHASES = {"shutdown", "completed", "failed"}
+TERMINAL_TEAM_STATUSES = {"shutdown", "failed"}
+TERMINAL_TEAM_PHASES = {"shutdown", "failed"}
 
 
 def build_team_worker_command(
@@ -263,7 +263,7 @@ class TeamRuntime:
     ) -> set[str]:
         deadline = time.monotonic() + timeout_seconds
         pending = set(member_ids)
-        terminal_statuses = {"stopped", "completed", "failed"}
+        terminal_statuses = {"stopped", "failed"}
         while pending:
             members = {member.member_id: member for member in self.store.list_members(team_id)}
             for member_id in list(pending):
@@ -277,9 +277,20 @@ class TeamRuntime:
         return pending
 
     def shutdown_team(self, team_id: str, *, grace_seconds: float = 10.0) -> None:
+        config = self.store.load_config(team_id)
+        state = self.store.read_state(team_id)
+        if (
+            config.status in TERMINAL_TEAM_STATUSES
+            or not state.active
+            or state.phase in TERMINAL_TEAM_PHASES
+        ):
+            raise ValueError(
+                f"Team '{team_id}' is already terminal "
+                f"(status={config.status}, phase={state.phase})."
+        )
         requested: list[str] = []
         for member in self.store.list_members(team_id):
-            if member.status not in {"stopped", "completed", "failed"}:
+            if member.status not in {"stopped", "failed"}:
                 self.request_stop_member(team_id, member.member_id)
                 requested.append(member.member_id)
         timed_out = self.wait_for_members_stopped(
@@ -522,7 +533,7 @@ class TeamRuntime:
 
     @staticmethod
     def _snapshot_terminal(*, task_counts: dict[str, int], team_status: str) -> bool:
-        if team_status in {"shutdown", "completed", "failed"}:
+        if team_status in TERMINAL_TEAM_STATUSES:
             return True
         total = sum(task_counts.values())
         return total > 0 and task_counts.get("completed", 0) == total

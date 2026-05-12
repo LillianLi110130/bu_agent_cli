@@ -566,6 +566,41 @@ async def test_slash_command_final_content_is_captured(workspace_root, monkeypat
     assert "\x1b" not in result.final_content
 
 
+def test_team_inbox_submits_messages_to_lead_agent(workspace_root, monkeypatch):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+    runtime = TeamRuntime(
+        teams_root=workspace_root / "teams",
+        workspace_root=workspace_root,
+    )
+    cli._ctx.team_runtime = runtime
+    team = runtime.start_team(goal="Coordinate work")
+    runtime.send_message(
+        team_id=team.team_id,
+        sender="worker-1",
+        recipient="lead",
+        body="Need guidance",
+        type="clarification_request",
+        metadata={"task_id": "task_1"},
+    )
+    seen_prompts: list[str] = []
+
+    async def fake_run_agent(user_input, has_image=False, agent=None):
+        del has_image, agent
+        seen_prompts.append(user_input)
+        return "processed inbox"
+
+    monkeypatch.setattr(cli, "_run_agent", fake_run_agent)
+
+    handled = asyncio.run(cli._handle_slash_command("/team inbox"))
+
+    assert handled is True
+    assert len(seen_prompts) == 1
+    assert "[Team Inbox Auto Trigger]" in seen_prompts[0]
+    assert "Need guidance" in seen_prompts[0]
+    assert runtime.read_lead_inbox(team.team_id, ack=False) == []
+    assert cli._last_command_final_content == "processed inbox"
+
+
 @pytest.mark.asyncio
 async def test_local_reset_does_not_trigger_startup_bootstrap(workspace_root, monkeypatch):
     cli, _store = _create_cli(workspace_root, monkeypatch)

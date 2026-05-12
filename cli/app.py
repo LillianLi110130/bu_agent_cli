@@ -1838,6 +1838,35 @@ class TGAgentCLI:
                 final_content = await self._run_agent(prompt, has_image=False)
                 self._store_command_final_content(final_content or "")
                 return True
+            if team_args and team_args[0].lower() == "inbox" and "--peek" not in team_args[1:]:
+                if self._ctx.team_runtime is None:
+                    message = team_experiment_disabled_message()
+                    self._console.print(f"[yellow]{message}[/yellow]")
+                    self._store_command_final_content(message)
+                    return True
+                team_id = team_args[1] if len(team_args) > 1 and not team_args[1].startswith("--") else None
+                team_id = team_id or self._ctx.team_runtime.get_active_team()
+                if team_id is None:
+                    message = "用法：/team inbox [team_id] [--peek]"
+                    self._console.print(f"[red]{message}[/red]")
+                    self._store_command_final_content(message)
+                    return True
+                messages = self._ctx.team_runtime.read_lead_inbox(team_id, ack=True)
+                if not messages:
+                    message = "lead inbox 为空。"
+                    self._console.print(f"[dim]{message}[/dim]")
+                    self._store_command_final_content(message)
+                    return True
+                self._console.print(
+                    f"[cyan]已读取 {len(messages)} 条 lead inbox 消息，提交给 lead 处理...[/cyan]"
+                )
+                prompt = self._build_team_inbox_auto_trigger_prompt(
+                    team_id=team_id,
+                    messages=messages,
+                )
+                final_content = await self._run_agent(prompt, has_image=False)
+                self._store_command_final_content(final_content or "")
+                return True
 
             handler = TeamSlashHandler(
                 runtime=self._ctx.team_runtime,

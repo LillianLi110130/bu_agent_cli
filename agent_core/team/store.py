@@ -85,7 +85,7 @@ class TeamStore:
             state = TeamState(
                 team_id=team_id,
                 goal=config.goal,
-                active=config.status not in {"shutdown", "completed", "failed"},
+                active=config.status not in {"shutdown", "failed"},
             )
             atomic_write_json(path, state.to_dict())
             return state

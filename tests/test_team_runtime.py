@@ -219,6 +219,23 @@ def test_team_runtime_allows_new_team_after_active_shutdown(tmp_path: Path) -> N
     assert runtime.get_active_team() == second.team_id
 
 
+def test_team_runtime_rejects_shutdown_for_terminal_team(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = runtime.start_team(goal="First team")
+    runtime.shutdown_team(team.team_id)
+
+    try:
+        runtime.shutdown_team(team.team_id)
+    except ValueError as exc:
+        assert "already terminal" in str(exc)
+        assert team.team_id in str(exc)
+    else:
+        raise AssertionError("expected terminal team shutdown rejection")
+
+
 def test_team_runtime_request_stop_member_only_requests_shutdown(
     tmp_path: Path,
     monkeypatch,
@@ -673,7 +690,41 @@ def test_team_slash_handler_create_and_list(tmp_path: Path) -> None:
     assert "Analyze repo" in output
 
 
-def test_team_slash_handler_create_use_and_active_cockpit(tmp_path: Path) -> None:
+def test_team_slash_handler_rejects_start_alias(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    console = Console(record=True, width=100)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["start", "Analyze", "repo", "--name", "demo"]))
+
+    output = console.export_text()
+    assert "未知 /team 子命令：start" in output
+    assert runtime.list_teams() == []
+
+
+def test_team_slash_handler_ui_prints_static_dashboard_paths(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.start_team(goal="Observe team")
+    console = Console(record=True, width=140)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["ui"]))
+
+    output = console.export_text()
+    assert "Team dashboard 是纯 HTML" in output
+    assert "team_dashboard.html" in output
+    assert str(runtime.store.team_dir(team.team_id)).replace("\n", "") in output.replace("\n", "")
+
+
+def test_team_slash_handler_create_and_active_cockpit(tmp_path: Path) -> None:
     runtime = TeamRuntime(
         teams_root=tmp_path / "teams",
         workspace_root=tmp_path,
@@ -697,6 +748,21 @@ def test_team_slash_handler_create_use_and_active_cockpit(tmp_path: Path) -> Non
     assert "Check status" in output
 
 
+def test_team_slash_handler_rejects_use_command(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    console = Console(record=True, width=100)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["use", "some-team"]))
+
+    output = console.export_text()
+    assert "未知 /team 子命令：use" in output
+
+
 def test_team_slash_handler_rejects_second_active_team(tmp_path: Path) -> None:
     runtime = TeamRuntime(
         teams_root=tmp_path / "teams",
@@ -712,6 +778,24 @@ def test_team_slash_handler_rejects_second_active_team(tmp_path: Path) -> None:
     output = console.export_text()
     assert "already has an active running team" in output
     assert "/team shutdown" in output
+
+
+def test_team_slash_handler_rejects_shutdown_for_terminal_team(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.start_team(goal="Done team")
+    runtime.shutdown_team(team.team_id)
+    console = Console(record=True, width=120)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["shutdown", team.team_id]))
+
+    output = console.export_text()
+    assert "already terminal" in output
+    assert "已请求关闭 team" not in output
 
 
 def test_tg_crab_main_create_agent_initializes_team_runtime(
@@ -923,6 +1007,20 @@ def test_team_slash_handler_empty_cockpit_suggests_auto(tmp_path: Path) -> None:
     assert "/team create <goal>" in output
     assert "/team auto <goal>" in output
     assert "[--name <name>]" in output
+
+
+def test_team_slash_handler_usage_preserves_optional_brackets(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    console = Console(record=True, width=100)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+
+    asyncio.run(handler.handle(["status"]))
+
+    output = console.export_text()
+    assert "用法：/team status [team_id]" in output
 
 
 def test_team_tool_reports_disabled_experiment() -> None:
