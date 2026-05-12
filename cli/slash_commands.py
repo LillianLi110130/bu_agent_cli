@@ -1,8 +1,8 @@
 """Slash command system for Crab CLI."""
 
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
-import re
 from typing import Callable
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
@@ -129,6 +129,13 @@ class SlashCommandRegistry:
                 description="重置会话上下文",
                 usage="/reset",
                 examples=["/reset"],
+                category="会话",
+            ),
+            SlashCommand(
+                name="new",
+                description="开启一个新的干净会话",
+                usage="/new",
+                examples=["/new"],
                 category="会话",
             ),
             SlashCommand(
