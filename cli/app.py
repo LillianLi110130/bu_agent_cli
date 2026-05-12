@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape as html_escape
@@ -850,6 +851,29 @@ class TGAgentCLI:
         self._console.print("[yellow]会话上下文已重置。[/yellow]")
         return _REMOTE_RESET_RESPONSE
 
+    async def _handle_new_command(self) -> None:
+        """Start a clean conversation session in the current CLI process."""
+        old_conversation_session_id = self._conversation_session_id
+        self._persist_current_session_state()
+        if self._session_store is not None and self._conversation_session_created:
+            self._session_store.end_session(old_conversation_session_id, reason="new_session")
+
+        self._conversation_session_id = str(uuid.uuid4())[:8]
+        self._conversation_session_created = False
+        self._last_transcript_flushed_idx = 0
+        self._agent.clear_history()
+
+        self._resume_handler.clear_pick()
+        self._model_pick_active = False
+        self._model_pick_order = []
+        self._workspace_instruction_state = WorkspaceInstructionState()
+        self._foreground_delegate_depth = 0
+        self._active_thinking_id = None
+
+        os.system("cls" if os.name == "nt" else "clear")
+        self._print_welcome()
+        await self._refresh_empty_context_budget_display()
+
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
         if key in self._context_budget_hook_agents:
@@ -1629,6 +1653,10 @@ class TGAgentCLI:
             reset_message = await self._handle_reset_command(source=source)
             if source == "remote":
                 self._store_command_final_content(reset_message)
+            return True
+
+        if command_name == "new":
+            await self._handle_new_command()
             return True
 
         if command_name == "resume":
