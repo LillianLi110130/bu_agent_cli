@@ -130,6 +130,9 @@ class CompleteRequest(BaseModel):
     worker_id: str
     final_content: str
     source: str | None = None
+    final_status: str = "completed"
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class ProgressRequest(BaseModel):
@@ -224,6 +227,10 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
             {
                 "worker_id": request.worker_id,
                 "final_content": request.final_content,
+                "source": request.source or "im",
+                "final_status": request.final_status,
+                "error_code": request.error_code,
+                "error_message": request.error_message,
                 "source": request.source or "im",
                 "completed_at": time.time(),
             }

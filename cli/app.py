@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape as html_escape
@@ -847,6 +848,29 @@ class TGAgentCLI:
         self._console.print("[yellow]会话上下文已重置。[/yellow]")
         return _REMOTE_RESET_RESPONSE
 
+    async def _handle_new_command(self) -> None:
+        """Start a clean conversation session in the current CLI process."""
+        old_conversation_session_id = self._conversation_session_id
+        self._persist_current_session_state()
+        if self._session_store is not None and self._conversation_session_created:
+            self._session_store.end_session(old_conversation_session_id, reason="new_session")
+
+        self._conversation_session_id = str(uuid.uuid4())[:8]
+        self._conversation_session_created = False
+        self._last_transcript_flushed_idx = 0
+        self._agent.clear_history()
+
+        self._resume_handler.clear_pick()
+        self._model_pick_active = False
+        self._model_pick_order = []
+        self._workspace_instruction_state = WorkspaceInstructionState()
+        self._foreground_delegate_depth = 0
+        self._active_thinking_id = None
+
+        os.system("cls" if os.name == "nt" else "clear")
+        self._print_welcome()
+        await self._refresh_empty_context_budget_display()
+
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
         if key in self._context_budget_hook_agents:
@@ -1631,6 +1655,10 @@ class TGAgentCLI:
                 self._store_command_final_content(reset_message)
             return True
 
+        if command_name == "new":
+            await self._handle_new_command()
+            return True
+
         if command_name == "resume":
             self._resume_handler.bind_console(self._console)
             self._resume_handler.bind_store(self._session_store)
@@ -1911,6 +1939,7 @@ class TGAgentCLI:
         has_image: bool = False,
         agent: Agent | None = None,
         intermediate_text_callback: Callable[[str], None] | None = None,
+        propagate_errors: bool = False,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
@@ -2103,6 +2132,7 @@ class TGAgentCLI:
                         pending_intermediate_text.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
+                    logger.info(event.content)
                     self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
@@ -2117,6 +2147,8 @@ class TGAgentCLI:
             self._stop_loading(self._loading)
             self._loading = None
             self._console.print(f"[{self.COLOR_ERROR}]错误：{e}[/]")
+            if propagate_errors:
+                raise
         finally:
             # Cancel the listener task
             cancel_event.set()
@@ -2266,6 +2298,7 @@ class TGAgentCLI:
                 parsed.content_parts,
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
+                propagate_errors=source == "remote",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2274,6 +2307,7 @@ class TGAgentCLI:
                 parsed_remote_image.content_parts,
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
+                propagate_errors=source == "remote",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2319,6 +2353,7 @@ class TGAgentCLI:
             user_input,
             has_image=False,
             intermediate_text_callback=intermediate_text_callback,
+            propagate_errors=source == "remote",
         )
         return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2378,10 +2413,12 @@ class TGAgentCLI:
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
-                    final_content=f"执行失败：{exc}",
+                    final_content=f"Execution failed: {exc}",
                     error_code="LOCAL_BRIDGE_EXECUTION_ERROR",
                     error_message=str(exc),
                 )
+                if request.source == "remote" or request.remote_response_required:
+                    continue
                 raise
 
             if request.source in {"im", "web"} and request.content.strip() == "/reset":

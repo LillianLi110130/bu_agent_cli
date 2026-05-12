@@ -193,6 +193,15 @@ class FileBridgeStore:
             for path in sorted(progress_dir.glob("*.json"))
         ]
 
+    def complete_progress(self, progress: BridgeProgress) -> None:
+        """Clear one intermediate progress item after it has been delivered."""
+        progress_dir = self.results_progress_dir / progress.request_id
+        progress_path = progress_dir / f"{progress.progress_id}.json"
+        if progress_path.exists():
+            progress_path.unlink()
+        if progress_dir.exists() and not any(progress_dir.iterdir()):
+            progress_dir.rmdir()
+
     def find_result(self, request_id: str) -> BridgeResult | None:
         """Return a completed or failed result by request id."""
         self.initialize()
