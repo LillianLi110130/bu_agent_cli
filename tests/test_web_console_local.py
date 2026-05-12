@@ -8,8 +8,8 @@ import uuid
 import httpx
 import pytest
 
-import test_server
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.worker.mock_server import MockGatewayState, create_mock_gateway_app
 from cli.worker.gateway_client import WorkerGatewayClient
 from cli.worker.runner import WorkerRunner
 
@@ -55,7 +55,7 @@ def workspace_root() -> Path:
 
 
 def test_build_app_registers_web_console_and_worker_routes() -> None:
-    app = test_server.build_app()
+    app = create_mock_gateway_app(MockGatewayState())
 
     route_paths = {route.path for route in app.routes}
     assert "/web-console/messages" in route_paths
@@ -69,7 +69,7 @@ def test_build_app_registers_web_console_and_worker_routes() -> None:
 
 @pytest.mark.asyncio
 async def test_web_console_message_stays_pending_without_worker(workspace_root: Path) -> None:
-    app = test_server.build_app()
+    app = create_mock_gateway_app(MockGatewayState())
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -95,7 +95,7 @@ async def test_web_console_message_stays_pending_without_worker(workspace_root: 
 
 @pytest.mark.asyncio
 async def test_web_console_message_flows_through_worker_bridge(workspace_root: Path) -> None:
-    app = test_server.build_app()
+    app = create_mock_gateway_app(MockGatewayState())
     transport = httpx.ASGITransport(app=app)
     state = app.state.web_console_state
 
@@ -163,7 +163,7 @@ async def test_web_console_message_flows_through_worker_bridge(workspace_root: P
 
 @pytest.mark.asyncio
 async def test_worker_stream_cleanup_stops_current_web_request(workspace_root: Path) -> None:
-    app = test_server.build_app()
+    app = create_mock_gateway_app(MockGatewayState())
     transport = httpx.ASGITransport(app=app)
     state = app.state.web_console_state
 
@@ -190,7 +190,7 @@ async def test_worker_stream_cleanup_stops_current_web_request(workspace_root: P
 
 @pytest.mark.asyncio
 async def test_rejects_second_active_web_request_for_same_worker(workspace_root: Path) -> None:
-    app = test_server.build_app()
+    app = create_mock_gateway_app(MockGatewayState())
     transport = httpx.ASGITransport(app=app)
 
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as web_client:

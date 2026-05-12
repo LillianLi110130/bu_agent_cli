@@ -15,7 +15,7 @@ import pytest
 
 import cli.app as app_module
 from agent_core import Agent
-from agent_core.agent.events import FinalResponseEvent
+from agent_core.agent.events import FinalResponseEvent, TextDeltaEvent
 from agent_core.llm.messages import AssistantMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
@@ -185,8 +185,21 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
     prompt_calls = 0
     prompt_started = asyncio.Event()
     allow_prompt_to_exit = asyncio.Event()
+    app_exit_calls = 0
 
     class _FakePromptSession:
+        class _FakeApp:
+            is_running = True
+
+            def exit(self, exception=None, **kwargs):
+                del exception, kwargs
+                nonlocal app_exit_calls
+                app_exit_calls += 1
+                allow_prompt_to_exit.set()
+
+        def __init__(self):
+            self.app = self._FakeApp()
+
         async def prompt_async(self):
             nonlocal prompt_calls
             prompt_calls += 1
@@ -234,6 +247,7 @@ async def test_remote_bridge_message_is_processed_while_prompt_is_waiting(
     assert result.input_kind == "text"
     assert result.final_content == "processed:remote hello"
     assert prompt_calls >= 2
+    assert app_exit_calls >= 1
 
 
 @pytest.mark.asyncio
@@ -591,6 +605,116 @@ async def test_bridge_mode_uses_raw_patch_stdout(workspace_root, monkeypatch):
     await cli.run()
 
     assert seen_kwargs == [{"raw": True}]
+
+
+@pytest.mark.asyncio
+async def test_bridge_mode_drains_remote_work_outside_patch_stdout(workspace_root, monkeypatch):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    store.enqueue_text("remote question", source="web", remote_response_required=True)
+
+    patch_active = False
+
+    class _PatchContext:
+        def __enter__(self):
+            nonlocal patch_active
+            patch_active = True
+
+        def __exit__(self, exc_type, exc, tb):
+            nonlocal patch_active
+            patch_active = False
+
+    monkeypatch.setattr(prompt_patch_stdout, "patch_stdout", lambda *args, **kwargs: _PatchContext())
+
+    class _FakePromptSession:
+        async def prompt_async(self):
+            await asyncio.sleep(3600)
+
+    async def fake_drain_bridge_queue():
+        assert patch_active is False
+        return False
+
+    monkeypatch.setattr(cli, "_drain_bridge_queue", fake_drain_bridge_queue)
+
+    await cli._run_with_bridge_session(_FakePromptSession())
+
+
+@pytest.mark.asyncio
+async def test_bridge_mode_dismisses_prompt_line_before_remote_drain(workspace_root, monkeypatch):
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    store.enqueue_text("remote question", source="web", remote_response_required=True)
+    dismiss_calls = 0
+
+    class _FakePromptSession:
+        async def prompt_async(self):
+            await asyncio.sleep(3600)
+
+    def fake_dismiss_active_prompt_line():
+        nonlocal dismiss_calls
+        dismiss_calls += 1
+
+    async def fake_drain_bridge_queue():
+        return False
+
+    monkeypatch.setattr(cli, "_dismiss_active_prompt_line", fake_dismiss_active_prompt_line)
+    monkeypatch.setattr(cli, "_drain_bridge_queue", fake_drain_bridge_queue)
+    monkeypatch.setattr(prompt_patch_stdout, "patch_stdout", lambda *args, **kwargs: nullcontext())
+
+    await cli._run_with_bridge_session(_FakePromptSession())
+
+    assert dismiss_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_run_agent_disables_interactive_loading_for_remote_execution(workspace_root, monkeypatch):
+    cli, _ = _create_cli(workspace_root, monkeypatch)
+    indicator_start_calls: list[str] = []
+    printed_messages: list[str] = []
+
+    def fake_indicator_start(self):
+        indicator_start_calls.append(self.message)
+
+    original_console_print = cli._console.print
+
+    def fake_console_print(*args, **kwargs):
+        printed_messages.append(" ".join(str(arg) for arg in args))
+        return original_console_print(*args, **kwargs)
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del user_input, cancel_event
+        yield FinalResponseEvent(content="done")
+
+    monkeypatch.setattr(_SafeLoadingIndicator, "start", fake_indicator_start)
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+    monkeypatch.setattr(cli._console, "print", fake_console_print)
+
+    result = await cli._run_agent("remote question", enable_interactive_terminal_ui=False)
+
+    assert result == "done"
+    assert indicator_start_calls == []
+    assert any("思考中..." in message for message in printed_messages)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_uses_plain_stdout_for_remote_text_deltas(workspace_root, monkeypatch):
+    cli, _ = _create_cli(workspace_root, monkeypatch)
+    written_chunks: list[str] = []
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del user_input, cancel_event
+        yield TextDeltaEvent(delta="abc")
+        yield TextDeltaEvent(delta="def")
+        yield FinalResponseEvent(content="abcdef")
+
+    def fake_write_stream_chunk(text: str) -> None:
+        written_chunks.append(text)
+
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+    monkeypatch.setattr(cli, "_write_stream_chunk", fake_write_stream_chunk)
+
+    result = await cli._run_agent("remote question", enable_interactive_terminal_ui=False)
+
+    assert result == "abcdef"
+    assert written_chunks == ["abc", "def"]
 
 
 def test_safe_loading_and_console_output_do_not_emit_ansi(workspace_root, monkeypatch):

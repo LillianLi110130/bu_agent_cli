@@ -19,14 +19,6 @@ Useful routes after startup:
     POST /agent/query-stream
     POST /agent/query-stream-delta
     POST /llm/query-stream
-    POST /api/worker/online
-    POST /api/worker/offline
-    POST /api/worker/poll
-    GET  /api/worker/stream
-    POST /api/worker/complete
-    GET  /web-console/workers/{worker_id}
-    POST /web-console/messages
-    GET  /web-console/workers/{worker_id}/events
 """
 
 from __future__ import annotations
@@ -38,7 +30,6 @@ from pathlib import Path
 from agent_core import Agent
 from agent_core.bootstrap.agent_factory import create_agent as create_runtime_agent
 from agent_core.server import create_server
-from agent_core.server.web_console_local import install_web_console_routes
 
 
 def _configure_logging() -> None:
@@ -72,14 +63,13 @@ def create_test_agent() -> Agent:
 
 
 def build_app():
-    """Build the FastAPI app used for local gateway and agent testing."""
+    """Build the FastAPI app used for local agent server testing."""
     app = create_server(
         agent_factory=create_test_agent,
         session_timeout_minutes=int(os.getenv("TEST_SERVER_SESSION_TIMEOUT_MINUTES", "60")),
         max_sessions=int(os.getenv("TEST_SERVER_MAX_SESSIONS", "1000")),
         enable_cleanup_task=True,
     )
-    install_web_console_routes(app)
     return app
 
 
@@ -100,15 +90,6 @@ if __name__ == "__main__":
     print("  POST /agent/query-stream")
     print("  POST /agent/query-stream-delta")
     print("  POST /llm/query-stream")
-    print("  POST /api/worker/online")
-    print("  POST /api/worker/offline")
-    print("  POST /api/worker/poll")
-    print("  GET  /api/worker/stream")
-    print("  POST /api/worker/complete")
-    print("  GET  /web-console/workers/{worker_id}")
-    print("  POST /web-console/messages")
-    print("  GET  /web-console/workers/{worker_id}/events")
-    print("  Web console messages now require a connected local worker to complete.")
     if os.getenv("TEST_SERVER_USER_HOME"):
         print(f"Using isolated test home: {Path(os.environ['HOME']).resolve()}")
     print("Server-only gateway routes file: config/gateway_routes.server.json")

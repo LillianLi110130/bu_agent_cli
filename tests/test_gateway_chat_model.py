@@ -156,6 +156,8 @@ def test_load_gateway_routes_reads_alias_mapping(monkeypatch: pytest.MonkeyPatch
                         "upstream_model": "GLM-5.1",
                         "base_url": "https://example.invalid/v1",
                         "api_key_env": "OPENAI_API_KEY",
+                        "max_input_tokens": 200000,
+                        "max_output_tokens": 128000,
                     }
                 },
             }
@@ -169,6 +171,8 @@ def test_load_gateway_routes_reads_alias_mapping(monkeypatch: pytest.MonkeyPatch
         assert routes["coding-default"].upstream_model == "GLM-5.1"
         assert routes["coding-default"].base_url == "https://example.invalid/v1"
         assert routes["coding-default"].api_key_env == "OPENAI_API_KEY"
+        assert routes["coding-default"].max_input_tokens == 200000
+        assert routes["coding-default"].max_output_tokens == 128000
     finally:
         config_path.unlink(missing_ok=True)
 
@@ -180,10 +184,23 @@ async def test_llm_gateway_service_routes_alias_to_upstream_model(
     captured: dict[str, str | None] = {}
 
     class FakeChatOpenAI:
-        def __init__(self, *, model: str, api_key: str | None, base_url: str | None, **_: object):
+        def __init__(
+            self,
+            *,
+            model: str,
+            api_key: str | None,
+            base_url: str | None,
+            max_input_tokens: int | None = None,
+            max_completion_tokens: int | None = None,
+            **_: object,
+        ):
             captured["model"] = model
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["max_input_tokens"] = str(max_input_tokens) if max_input_tokens is not None else None
+            captured["max_completion_tokens"] = (
+                str(max_completion_tokens) if max_completion_tokens is not None else None
+            )
 
         async def astream(self, **_: object):
             yield type("Chunk", (), {"delta": "ok", "thinking": None, "tool_calls": [], "usage": None, "stop_reason": "stop"})()
@@ -202,6 +219,8 @@ async def test_llm_gateway_service_routes_alias_to_upstream_model(
                 upstream_model="GLM-5.1",
                 base_url="https://gateway-upstream.example.com/v1",
                 api_key_env="OPENAI_API_KEY",
+                max_input_tokens=200000,
+                max_output_tokens=128000,
             )
         }
     )
@@ -215,4 +234,6 @@ async def test_llm_gateway_service_routes_alias_to_upstream_model(
     assert captured["model"] == "GLM-5.1"
     assert captured["api_key"] == "upstream-key"
     assert captured["base_url"] == "https://gateway-upstream.example.com/v1"
+    assert captured["max_input_tokens"] == "200000"
+    assert captured["max_completion_tokens"] == "128000"
     assert events[-1].type == "done"
