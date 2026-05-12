@@ -132,6 +132,13 @@ class SlashCommandRegistry:
                 category="会话",
             ),
             SlashCommand(
+                name="resume",
+                description="恢复当前工作区的历史会话",
+                usage="/resume",
+                examples=["/resume"],
+                category="会话",
+            ),
+            SlashCommand(
                 name="init",
                 description="生成 TGAGENTS.md",
                 usage="/init",

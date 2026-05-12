@@ -11,6 +11,7 @@ from typing import Any
 
 from cli.im_bridge.models import (
     BridgeProgress,
+    BridgeOutboundEvent,
     BridgeRequest,
     BridgeResult,
     classify_input_kind,
@@ -40,7 +41,12 @@ class FileBridgeStore:
         self.results_progress_dir = self.bridge_dir / "results" / "progress"
         self.results_index_path = self.results_dir / "results.json"
         self.sequence_path = self.state_dir / "sequence.json"
+        self.outbox_dir = self.bridge_dir / "outbox"
+        self.outbox_pending_dir = self.outbox_dir / "pending"
+        self.outbox_processing_dir = self.outbox_dir / "processing"
+        self.outbox_sequence_path = self.state_dir / "outbox_sequence.json"
         self.enqueue_lock_dir = self.locks_dir / "enqueue.lock"
+        self.outbox_enqueue_lock_dir = self.locks_dir / "outbox_enqueue.lock"
 
     def initialize(self) -> None:
         """Create the bridge directory structure if it does not already exist."""
@@ -53,12 +59,17 @@ class FileBridgeStore:
             self.results_dir,
             self.results_completed_dir,
             self.results_failed_dir,
+            self.outbox_dir,
+            self.outbox_pending_dir,
+            self.outbox_processing_dir,
             self.results_progress_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
         if not self.sequence_path.exists():
             self._write_json_atomic(self.sequence_path, {"next_seq": 1})
+        if not self.outbox_sequence_path.exists():
+            self._write_json_atomic(self.outbox_sequence_path, {"next_seq": 1})
         if not self.results_index_path.exists():
             self._write_json_atomic(self.results_index_path, {"version": self.VERSION, "results": []})
 
@@ -215,6 +226,75 @@ class FileBridgeStore:
         self.initialize()
         return len(list(self.inbox_pending_dir.glob("*.json")))
 
+    def enqueue_outbound_text(self, text: str) -> BridgeOutboundEvent:
+        """Append one outbound text event to the pending outbox."""
+        self.initialize()
+        event_id = f"evt_{uuid.uuid4().hex}"
+
+        with self._outbox_enqueue_lock():
+            seq = self._read_next_outbox_seq()
+            event = BridgeOutboundEvent(
+                version=self.VERSION,
+                event_id=event_id,
+                seq=seq,
+                action="text",
+                text=text,
+            )
+            self._write_json_atomic(self.outbox_pending_dir / f"{seq:020d}.json", event.to_dict())
+            self._write_json_atomic(self.outbox_sequence_path, {"next_seq": seq + 1})
+            return event
+
+    def enqueue_outbound_attachment(
+        self,
+        *,
+        file_path: str,
+        file_name: str,
+        mime_type: str,
+        file_size: int,
+    ) -> BridgeOutboundEvent:
+        """Append one outbound attachment event to the pending outbox."""
+        self.initialize()
+        event_id = f"evt_{uuid.uuid4().hex}"
+
+        with self._outbox_enqueue_lock():
+            seq = self._read_next_outbox_seq()
+            event = BridgeOutboundEvent(
+                version=self.VERSION,
+                event_id=event_id,
+                seq=seq,
+                action="attachment",
+                file_path=file_path,
+                file_name=file_name,
+                mime_type=mime_type,
+                file_size=file_size,
+            )
+            self._write_json_atomic(self.outbox_pending_dir / f"{seq:020d}.json", event.to_dict())
+            self._write_json_atomic(self.outbox_sequence_path, {"next_seq": seq + 1})
+            return event
+
+    def claim_next_pending_outbound(self) -> BridgeOutboundEvent | None:
+        """Claim the lowest-sequence outbound event for worker delivery."""
+        self.initialize()
+        for path in sorted(self.outbox_pending_dir.glob("*.json")):
+            processing_path = self.outbox_processing_dir / path.name
+            try:
+                path.replace(processing_path)
+            except FileNotFoundError:
+                continue
+
+            event = BridgeOutboundEvent.from_dict(self._read_json(processing_path))
+            event.status = "running"
+            event.started_at = utc_now()
+            self._write_json_atomic(processing_path, event.to_dict())
+            return event
+        return None
+
+    def complete_outbound_event(self, event: BridgeOutboundEvent) -> None:
+        """Mark one outbound event as fully delivered and clear processing state."""
+        processing_path = self.outbox_processing_dir / f"{event.seq:020d}.json"
+        if processing_path.exists():
+            processing_path.unlink()
+
     def _finalize_request(
         self,
         request: BridgeRequest,
@@ -239,6 +319,10 @@ class FileBridgeStore:
         payload = self._read_json(self.sequence_path)
         return int(payload.get("next_seq", 1))
 
+    def _read_next_outbox_seq(self) -> int:
+        payload = self._read_json(self.outbox_sequence_path)
+        return int(payload.get("next_seq", 1))
+
     def _read_json(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
 
@@ -253,6 +337,9 @@ class FileBridgeStore:
 
     def _enqueue_lock(self):
         return _DirectoryLock(self.enqueue_lock_dir)
+
+    def _outbox_enqueue_lock(self):
+        return _DirectoryLock(self.outbox_enqueue_lock_dir)
 
 
 def resolve_session_binding_id(session_key: str | None) -> str:
