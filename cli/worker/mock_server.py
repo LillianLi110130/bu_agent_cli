@@ -123,6 +123,9 @@ class WorkerRequest(BaseModel):
 class CompleteRequest(BaseModel):
     worker_id: str
     final_content: str
+    final_status: str = "completed"
+    error_code: str | None = None
+    error_message: str | None = None
 
 
 class EnqueueRequest(BaseModel):
@@ -204,6 +207,9 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
             {
                 "worker_id": request.worker_id,
                 "final_content": request.final_content,
+                "final_status": request.final_status,
+                "error_code": request.error_code,
+                "error_message": request.error_message,
                 "completed_at": time.time(),
             }
         )

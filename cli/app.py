@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape as html_escape
@@ -64,7 +65,7 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
-from agent_core.runtime_paths import application_root
+from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
@@ -107,7 +108,13 @@ from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
+from cli.resume_handler import ResumeSlashHandler
 from cli.session_runtime import CLISessionRuntime
+from cli.session_store import (
+    CLISessionStore,
+    SessionStoreError,
+    workspace_identity,
+)
 from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
 from config.model_config import (
     ModelPreset,
@@ -546,8 +553,49 @@ class TGAgentCLI:
         self._subagent_progress_signatures: dict[str, tuple[str, int, str]] = {}
         self._foreground_delegate_depth = 0
         self._active_thinking_id: str | None = None
+        self._session_store: CLISessionStore | None = None
+        self._conversation_session_id = (
+            self._session_runtime.session_id
+            if self._session_runtime is not None
+            else self._ctx.session_id
+        )
+        self._last_transcript_flushed_idx = 0
+        self._conversation_session_created = False
+        self._initialize_session_store()
+        self._resume_handler = ResumeSlashHandler(
+            store=self._session_store,
+            console=self._console,
+            workspace_dir=self._ctx.working_dir,
+        )
         if self._bridge_store is not None:
             self._bridge_store.initialize()
+
+    def _initialize_session_store(self) -> None:
+        """Initialize user-level conversation history storage if available."""
+        try:
+            store = CLISessionStore(tg_agent_home() / "sessions.db")
+        except Exception as exc:  # noqa: BLE001 - resume must not block normal CLI startup.
+            self._session_store = None
+            self._console.print(f"[yellow]会话历史存储不可用，/resume 将不可用：{exc}[/yellow]")
+            return
+        self._session_store = store
+
+    def _ensure_current_session_created(self) -> bool:
+        """Create the current conversation session row on first real transcript write."""
+        if self._session_store is None:
+            return False
+        if self._conversation_session_created:
+            return True
+        workspace_root, workspace_key = workspace_identity(self._ctx.working_dir)
+        self._session_store.create_session(
+            session_id=self._conversation_session_id,
+            workspace_root=workspace_root,
+            workspace_key=workspace_key,
+            model=getattr(self._agent.llm, "model", None),
+            system_prompt=self._agent.system_prompt,
+        )
+        self._conversation_session_created = True
+        return True
 
     def _bind_skill_review_notifications(self) -> None:
         for hook in getattr(self._agent, "hooks", []):
@@ -803,9 +851,33 @@ class TGAgentCLI:
     async def _handle_reset_command(self, *, source: str = "local") -> str:
         """Reset conversation state."""
         self._agent.clear_history()
+        self._reset_current_session_persistence_cursor()
         await self._refresh_empty_context_budget_display()
         self._console.print("[yellow]会话上下文已重置。[/yellow]")
         return _REMOTE_RESET_RESPONSE
+
+    async def _handle_new_command(self) -> None:
+        """Start a clean conversation session in the current CLI process."""
+        old_conversation_session_id = self._conversation_session_id
+        self._persist_current_session_state()
+        if self._session_store is not None and self._conversation_session_created:
+            self._session_store.end_session(old_conversation_session_id, reason="new_session")
+
+        self._conversation_session_id = str(uuid.uuid4())[:8]
+        self._conversation_session_created = False
+        self._last_transcript_flushed_idx = 0
+        self._agent.clear_history()
+
+        self._resume_handler.clear_pick()
+        self._model_pick_active = False
+        self._model_pick_order = []
+        self._workspace_instruction_state = WorkspaceInstructionState()
+        self._foreground_delegate_depth = 0
+        self._active_thinking_id = None
+
+        os.system("cls" if os.name == "nt" else "clear")
+        self._print_welcome()
+        await self._refresh_empty_context_budget_display()
 
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
@@ -1121,6 +1193,107 @@ class TGAgentCLI:
         self._model_pick_order = []
         await self._switch_model_preset(preset_name)
         return True
+
+    async def _switch_resume_session(self, target_session_id: str) -> bool:
+        """Switch the active conversation history to a persisted session snapshot."""
+        if target_session_id == self._conversation_session_id:
+            self._resume_handler.clear_pick()
+            self._console.print("[yellow]已在该会话中。[/yellow]")
+            return True
+
+        if self._session_store is None:
+            self._console.print("[yellow]会话历史存储不可用，无法恢复。[/yellow]")
+            return False
+
+        meta = self._session_store.get_session(target_session_id)
+        if meta is None:
+            self._console.print("[red]该会话不存在，无法恢复。[/red]")
+            return False
+
+        try:
+            snapshot = self._session_store.load_context_snapshot(target_session_id)
+        except SessionStoreError:
+            self._console.print("[red]该会话数据损坏，无法恢复。[/red]")
+            return False
+
+        if snapshot is None:
+            self._console.print("[red]该会话缺少可恢复上下文，无法恢复。[/red]")
+            return False
+
+        self._persist_current_session_state()
+        if self._conversation_session_created:
+            self._session_store.end_session(self._conversation_session_id, reason="resumed_other")
+
+        self._conversation_session_id = target_session_id
+        self._conversation_session_created = True
+        self._agent.system_prompt = meta.system_prompt
+        self._agent.load_history(snapshot.messages)
+        self._last_transcript_flushed_idx = len(snapshot.messages)
+        self._session_store.reopen_session(target_session_id)
+
+        self._resume_handler.clear_pick()
+        self._model_pick_active = False
+        self._model_pick_order = []
+        self._workspace_instruction_state = WorkspaceInstructionState()
+        self._foreground_delegate_depth = 0
+        self._active_thinking_id = None
+
+        await self._refresh_current_context_budget_display(trigger="resume", print_status=False)
+        self._resume_handler.bind_console(self._console)
+        self._resume_handler.bind_store(self._session_store)
+        self._resume_handler.print_resume_result(meta, snapshot)
+        return True
+
+    def _persist_current_session_state(self) -> None:
+        """Flush the current main-agent transcript delta and resumable snapshot."""
+        if self._session_store is None:
+            return
+        try:
+            messages = self._agent.messages
+            if self._last_transcript_flushed_idx > len(messages):
+                self._last_transcript_flushed_idx = 0
+            new_messages = messages[self._last_transcript_flushed_idx :]
+            if not new_messages and not self._conversation_session_created:
+                return
+            if not self._ensure_current_session_created():
+                return
+            message_count = self._session_store.append_messages(
+                self._conversation_session_id,
+                new_messages,
+            )
+            self._last_transcript_flushed_idx = len(messages)
+            compacted = (
+                self._agent._context.summarized_boundary > 0
+                or self._agent._context._compacted_result is not None
+            )
+            self._session_store.upsert_context_snapshot(
+                session_id=self._conversation_session_id,
+                messages=messages,
+                compacted=compacted,
+            )
+            self._session_store.touch_session(
+                self._conversation_session_id,
+                model=getattr(self._agent.llm, "model", None),
+                message_count=message_count,
+            )
+        except Exception as exc:  # noqa: BLE001 - persistence must not break conversation.
+            self._console.print(f"[yellow]会话历史保存失败：{exc}[/yellow]")
+
+    def _reset_current_session_persistence_cursor(self) -> None:
+        """Keep persistence state consistent after local context is cleared."""
+        self._last_transcript_flushed_idx = 0
+        if self._session_store is None:
+            return
+        if not self._conversation_session_created:
+            return
+        try:
+            self._session_store.upsert_context_snapshot(
+                session_id=self._conversation_session_id,
+                messages=self._agent.messages,
+                compacted=False,
+            )
+        except Exception as exc:  # noqa: BLE001 - reset should still succeed.
+            self._console.print(f"[yellow]会话历史保存失败：{exc}[/yellow]")
 
     async def _switch_model_preset(self, preset_name: str, *, manual: bool = True) -> bool:
         """Switch to a configured model preset without clearing conversation context."""
@@ -1487,6 +1660,18 @@ class TGAgentCLI:
                 self._store_command_final_content(reset_message)
             return True
 
+        if command_name == "new":
+            await self._handle_new_command()
+            return True
+
+        if command_name == "resume":
+            self._resume_handler.bind_console(self._console)
+            self._resume_handler.bind_store(self._session_store)
+            self._resume_handler.start_pick_mode(
+                current_session_id=self._conversation_session_id,
+            )
+            return True
+
         if command_name == "init":
             await self._run_init_agent()
             return True
@@ -1713,6 +1898,7 @@ class TGAgentCLI:
             return
         self._agent.system_prompt = self._system_prompt_builder()
         self._agent.clear_history()
+        self._reset_current_session_persistence_cursor()
         self._console.print("[yellow]插件重载后会话上下文已重置。[/yellow]")
 
     def _print_available_skills(self):
@@ -1797,6 +1983,7 @@ class TGAgentCLI:
         has_image: bool = False,
         agent: Agent | None = None,
         intermediate_text_callback: Callable[[str], None] | None = None,
+        propagate_errors: bool = False,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
@@ -1978,6 +2165,8 @@ class TGAgentCLI:
                     self._console.print()
 
                 elif isinstance(event, TextDeltaEvent):
+                    if intermediate_text_callback is not None:
+                        pending_intermediate_text.append(event.delta)
                     self._stop_loading(self._loading)
                     self._loading = None
                     self._console.print(event.delta, end="")
@@ -1987,6 +2176,7 @@ class TGAgentCLI:
                         pending_intermediate_text.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
+                    logger.info(event.content)
                     self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
@@ -2001,6 +2191,8 @@ class TGAgentCLI:
             self._stop_loading(self._loading)
             self._loading = None
             self._console.print(f"[{self.COLOR_ERROR}]错误：{e}[/]")
+            if propagate_errors:
+                raise
         finally:
             # Cancel the listener task
             cancel_event.set()
@@ -2014,6 +2206,8 @@ class TGAgentCLI:
         self._stop_loading(self._loading)
         self._loading = None
         self._console.print()
+        if active_agent is self._agent:
+            self._persist_current_session_state()
         return final_response
 
     async def _on_task_completed(self, result: Any):
@@ -2116,6 +2310,15 @@ class TGAgentCLI:
             bridge_request=bridge_request,
         )
 
+        # Handle numbered resume picker mode before normal command dispatch.
+        if self._resume_handler.pick_active:
+            self._resume_handler.bind_console(self._console)
+            pick_result = self._resume_handler.handle_pick_input(user_input)
+            if pick_result.selected_session_id is not None:
+                await self._switch_resume_session(pick_result.selected_session_id)
+            if pick_result.handled:
+                return _ExecutionOutcome()
+
         # Handle numbered model picker mode
         if self._model_pick_active:
             if await self._handle_model_pick_input(user_input):
@@ -2133,6 +2336,7 @@ class TGAgentCLI:
                 parsed.content_parts,
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
+                propagate_errors=source == "remote",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2141,6 +2345,7 @@ class TGAgentCLI:
                 parsed_remote_image.content_parts,
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
+                propagate_errors=source == "remote",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2186,6 +2391,7 @@ class TGAgentCLI:
             user_input,
             has_image=False,
             intermediate_text_callback=intermediate_text_callback,
+            propagate_errors=source == "remote",
         )
         return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2245,10 +2451,12 @@ class TGAgentCLI:
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
-                    final_content=f"执行失败：{exc}",
+                    final_content=f"Execution failed: {exc}",
                     error_code="LOCAL_BRIDGE_EXECUTION_ERROR",
                     error_message=str(exc),
                 )
+                if request.source == "remote" or request.remote_response_required:
+                    continue
                 raise
 
             if request.source == "remote" and request.content.strip() == "/reset":
