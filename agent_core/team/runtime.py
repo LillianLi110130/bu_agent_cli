@@ -29,7 +29,6 @@ from agent_core.team.task_board import TaskBoard
 PopenFactory = Callable[..., subprocess.Popen]
 TEAM_WORKER_INTERNAL_FLAG = "--run-team-worker-internal"
 TERMINAL_TEAM_STATUSES = {"shutdown", "failed"}
-TERMINAL_TEAM_PHASES = {"shutdown", "failed"}
 
 
 def build_team_worker_command(
@@ -121,8 +120,6 @@ class TeamRuntime:
             return None
         if not state.active:
             return None
-        if state.phase in TERMINAL_TEAM_PHASES:
-            return None
         return config
 
     def ensure_can_start_team(self) -> None:
@@ -137,9 +134,6 @@ class TeamRuntime:
 
     def read_state(self, team_id: str) -> TeamState:
         return self.store.read_state(team_id)
-
-    def update_phase(self, team_id: str, phase: str) -> TeamState:
-        return self.store.update_phase(team_id, phase)
 
     def spawn_member(
         self,
@@ -282,12 +276,11 @@ class TeamRuntime:
         if (
             config.status in TERMINAL_TEAM_STATUSES
             or not state.active
-            or state.phase in TERMINAL_TEAM_PHASES
         ):
             raise ValueError(
-                f"Team '{team_id}' is already terminal "
-                f"(status={config.status}, phase={state.phase})."
-        )
+                f"Team '{team_id}' 已经关闭"
+                f"（status={config.status}, active={state.active}）。"
+            )
         requested: list[str] = []
         for member in self.store.list_members(team_id):
             if member.status not in {"stopped", "failed"}:
@@ -303,7 +296,7 @@ class TeamRuntime:
         for member_id in requested:
             self.reap_member_process(team_id, member_id, timeout_seconds=0.2)
         self.store.update_config_status(team_id, "shutdown")
-        self.store.write_state(team_id, active=False, phase="shutdown")
+        self.store.write_state(team_id, active=False)
         self.clear_active_team(team_id)
 
     def create_task(

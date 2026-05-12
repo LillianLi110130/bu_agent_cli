@@ -46,7 +46,7 @@ from agent_core.team import (
     is_team_experiment_enabled,
     team_experiment_disabled_message,
 )
-from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG
+from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG, TERMINAL_TEAM_STATUSES
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.memory.review import MemoryReviewHook, MemoryReviewRunner
@@ -615,6 +615,15 @@ async def _shutdown_active_team_on_exit(ctx: SandboxContext) -> None:
         return
 
     try:
+        store = getattr(runtime, "store", None)
+        if store is not None:
+            config = store.load_config(active_team)
+            state = store.read_state(active_team)
+            if (
+                config.status in TERMINAL_TEAM_STATUSES
+                or not state.active
+            ):
+                return
         runtime.shutdown_team(active_team)
         console.print(f"[dim]已请求关闭 active team：[/] {active_team}")
     except Exception as exc:

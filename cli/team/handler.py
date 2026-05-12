@@ -269,11 +269,10 @@ class TeamSlashHandler:
             self.console.print(f"[red]Team 不存在：{team_id}[/red]")
             return
         team = status["team"]
-        state = status.get("state") or {}
         active_marker = " [green](active)[/green]" if self.runtime.get_active_team() == team_id else ""
         self.console.print(
             f"[bold cyan]{team['team_id']}[/bold cyan]{active_marker} "
-            f"{team['status']} / {state.get('phase', '-')}"
+            f"{team['status']}"
         )
         self.console.print(f"[dim]Goal:[/] {team['goal']}")
         self.console.print(f"members={len(status['members'])}, tasks={len(status['tasks'])}")

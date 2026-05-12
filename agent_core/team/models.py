@@ -52,10 +52,8 @@ class TeamState:
     team_id: str
     goal: str
     active: bool = True
-    phase: str = "created"
     fix_loop_count: int = 0
     max_fix_loops: int = 3
-    stage_history: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
     version: int = 1
@@ -66,10 +64,8 @@ class TeamState:
             team_id=str(payload["team_id"]),
             goal=str(payload.get("goal") or ""),
             active=bool(payload.get("active", True)),
-            phase=str(payload.get("phase") or "created"),
             fix_loop_count=int(payload.get("fix_loop_count") or 0),
             max_fix_loops=int(payload.get("max_fix_loops") or 3),
-            stage_history=[str(item) for item in _list(payload.get("stage_history"))],
             created_at=str(payload.get("created_at") or utc_now_iso()),
             updated_at=str(payload.get("updated_at") or utc_now_iso()),
             version=int(payload.get("version") or 1),

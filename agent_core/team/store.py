@@ -102,15 +102,6 @@ class TeamStore:
         self.append_event(team_id, "state_updated", actor="lead", payload=state.to_dict())
         return state
 
-    def update_phase(self, team_id: str, phase: str) -> TeamState:
-        state = self.read_state(team_id)
-        state.phase = phase
-        state.updated_at = utc_now_iso()
-        state.stage_history.append(f"{phase}:{state.updated_at}")
-        atomic_write_json(self.team_dir(team_id) / "state.json", state.to_dict())
-        self.append_event(team_id, "phase_updated", actor="lead", payload=state.to_dict())
-        return state
-
     def set_active_team(self, *, workspace_root: Path, team_id: str) -> None:
         self.load_config(team_id)
         path = self.teams_root / "active.json"

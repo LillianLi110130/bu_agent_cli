@@ -181,9 +181,9 @@ def test_team_runtime_start_team_sets_active_and_state(tmp_path: Path) -> None:
     state = runtime.read_state(team.team_id)
     assert state.team_id == team.team_id
     assert state.goal == "Implement the team cockpit"
-    assert state.phase == "created"
+    assert state.active is True
     status = runtime.status(team.team_id)
-    assert status["state"]["phase"] == "created"
+    assert status["state"]["active"] is True
 
 
 def test_team_runtime_rejects_second_active_running_team(tmp_path: Path) -> None:
@@ -230,7 +230,7 @@ def test_team_runtime_rejects_shutdown_for_terminal_team(tmp_path: Path) -> None
     try:
         runtime.shutdown_team(team.team_id)
     except ValueError as exc:
-        assert "already terminal" in str(exc)
+        assert "已经关闭" in str(exc)
         assert team.team_id in str(exc)
     else:
         raise AssertionError("expected terminal team shutdown rejection")
@@ -794,7 +794,7 @@ def test_team_slash_handler_rejects_shutdown_for_terminal_team(tmp_path: Path) -
     asyncio.run(handler.handle(["shutdown", team.team_id]))
 
     output = console.export_text()
-    assert "already terminal" in output
+    assert "已经关闭" in output
     assert "已请求关闭 team" not in output
 
 
@@ -932,6 +932,23 @@ def test_tg_crab_main_shutdown_active_team_noops_without_active_team() -> None:
     asyncio.run(tg_crab_main._shutdown_active_team_on_exit(ctx))
 
     assert runtime.shutdowns == []
+
+
+def test_tg_crab_main_shutdown_active_team_silently_skips_terminal_team(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = runtime.start_team(goal="Terminal team")
+    runtime.shutdown_team(team.team_id)
+    runtime.set_active_team(team.team_id)
+    ctx = SimpleNamespace(team_runtime=runtime)
+
+    asyncio.run(tg_crab_main._shutdown_active_team_on_exit(ctx))
+
+    state = runtime.read_state(team.team_id)
+    assert state.active is False
+    assert runtime.get_active_team() == team.team_id
 
 
 def test_build_team_worker_command_uses_unified_main_entrypoint(tmp_path: Path) -> None:

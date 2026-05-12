@@ -541,7 +541,7 @@
 
     function render(snapshot) {
       const teamId = snapshot.config.team_id || "(unknown team)";
-      $("teamMeta").textContent = `${teamId} / ${snapshot.config.status || "-"} / ${snapshot.state.phase || "-"} / ${snapshot.config.goal || ""}`;
+      $("teamMeta").textContent = `${teamId} / ${snapshot.config.status || "-"} / ${snapshot.config.goal || ""}`;
       renderSummary(snapshot);
       renderMembers(snapshot);
       renderTasks(snapshot);
