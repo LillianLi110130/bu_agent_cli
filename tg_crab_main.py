@@ -52,6 +52,7 @@ from agent_core.runtime_paths import (
     ensure_cli_runtime_state,
     is_frozen_app,
     load_runtime_env,
+    resolve_default_workspace,
 )
 from agent_core.skill.discovery import default_skill_dirs
 from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
@@ -467,6 +468,7 @@ def parse_args():
     )
     args = parser.parse_args()
     args.config_dir = Path.cwd().resolve()
+    args.root_dir = resolve_default_workspace(args.root_dir, cwd=args.config_dir)
     resolved_config_path = _resolve_auth_config_path(base_dir=args.config_dir)
     if resolved_config_path is not None:
         args.config_source_dir = resolved_config_path.parent.resolve()

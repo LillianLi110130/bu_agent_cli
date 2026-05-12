@@ -146,6 +146,13 @@ class SlashCommandRegistry:
                 category="会话",
             ),
             SlashCommand(
+                name="settings",
+                description="管理用户级 CLI 设置",
+                usage="/settings",
+                examples=["/settings"],
+                category="配置",
+            ),
+            SlashCommand(
                 name="init",
                 description="生成 TGAGENTS.md",
                 usage="/init",

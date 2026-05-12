@@ -10,7 +10,8 @@ import pytest
 import tg_crab_main
 
 
-def test_parse_args_defaults_enable_local_bridge_and_im(monkeypatch):
+def test_parse_args_defaults_enable_local_bridge_and_im(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["tg_crab_main.py"])
 
     args = tg_crab_main.parse_args()
@@ -21,7 +22,8 @@ def test_parse_args_defaults_enable_local_bridge_and_im(monkeypatch):
     assert args.im_worker_id.startswith("worker-")
 
 
-def test_parse_args_can_disable_im_and_local_bridge(monkeypatch):
+def test_parse_args_can_disable_im_and_local_bridge(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -86,10 +88,80 @@ def test_parse_args_falls_back_to_packaged_worker_config(monkeypatch):
         monkeypatch.setattr(sys, "argv", ["tg_crab_main.py"])
 
         args = tg_crab_main.parse_args()
+        expected_gateway = tg_crab_main.load_auth_config(base_dir=startup_dir).gateway_base_url
 
         assert args.config_dir == startup_dir_resolved
         assert args.config_source_dir == Path(tg_crab_main._SCRIPT_DIR).resolve()
-        assert args.im_gateway_base_url == "http://127.0.0.1:8765"
+        assert args.im_gateway_base_url == expected_gateway
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
+
+
+def test_parse_args_uses_user_default_workspace_when_root_dir_missing(monkeypatch):
+    root = Path(".pytest_tmp") / f"cli-default-workspace-{uuid.uuid4().hex}"
+    if root.exists():
+        shutil.rmtree(root)
+    startup_dir = root / "startup"
+    startup_dir.mkdir(parents=True)
+    startup_dir_resolved = startup_dir.resolve()
+    home_dir = root / "home"
+    configured_workspace = root / "configured-workspace"
+    configured_workspace.mkdir(parents=True)
+    configured_workspace_resolved = configured_workspace.resolve()
+    (home_dir / ".tg_agent").mkdir(parents=True)
+    (home_dir / ".tg_agent" / "settings.json").write_text(
+        '{\n  "default_workspace": "%s"\n}\n' % configured_workspace_resolved.as_posix(),
+        encoding="utf-8",
+    )
+
+    try:
+        monkeypatch.setenv("HOME", str(home_dir.resolve()))
+        monkeypatch.chdir(startup_dir)
+        monkeypatch.setattr(sys, "argv", ["tg_crab_main.py"])
+
+        args = tg_crab_main.parse_args()
+
+        assert args.root_dir == configured_workspace_resolved
+        assert args.config_dir == startup_dir_resolved
+    finally:
+        if root.exists():
+            shutil.rmtree(root)
+
+
+def test_parse_args_explicit_root_dir_overrides_user_default_workspace(monkeypatch):
+    root = Path(".pytest_tmp") / f"cli-default-workspace-override-{uuid.uuid4().hex}"
+    if root.exists():
+        shutil.rmtree(root)
+    startup_dir = root / "startup"
+    startup_dir.mkdir(parents=True)
+    startup_dir_resolved = startup_dir.resolve()
+    home_dir = root / "home"
+    configured_workspace = root / "configured-workspace"
+    explicit_workspace = root / "explicit-workspace"
+    configured_workspace.mkdir(parents=True)
+    explicit_workspace.mkdir(parents=True)
+    configured_workspace_resolved = configured_workspace.resolve()
+    explicit_workspace_resolved = explicit_workspace.resolve()
+    (home_dir / ".tg_agent").mkdir(parents=True)
+    (home_dir / ".tg_agent" / "settings.json").write_text(
+        '{\n  "default_workspace": "%s"\n}\n' % configured_workspace_resolved.as_posix(),
+        encoding="utf-8",
+    )
+
+    try:
+        monkeypatch.setenv("HOME", str(home_dir.resolve()))
+        monkeypatch.chdir(startup_dir)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["tg_crab_main.py", "--root-dir", str(explicit_workspace_resolved)],
+        )
+
+        args = tg_crab_main.parse_args()
+
+        assert args.root_dir == explicit_workspace_resolved
+        assert args.config_dir == startup_dir_resolved
     finally:
         if root.exists():
             shutil.rmtree(root)

@@ -8,6 +8,7 @@ from pathlib import Path
 from dotenv import dotenv_values
 
 _TG_AGENT_HOME_DIRNAME = ".tg_agent"
+_USER_SETTINGS_FILENAME = "settings.json"
 
 
 def is_frozen_app() -> bool:
@@ -35,6 +36,11 @@ def _user_home_dir() -> Path:
 def tg_agent_home() -> Path:
     """Return the fixed user-level state and configuration directory."""
     return _user_home_dir() / _TG_AGENT_HOME_DIRNAME
+
+
+def user_settings_path() -> Path:
+    """Return the user-level settings file path."""
+    return tg_agent_home() / _USER_SETTINGS_FILENAME
 
 
 def packaged_env_path() -> Path:
@@ -117,6 +123,82 @@ def ensure_cli_runtime_state() -> Path:
         shutil.copyfile(packaged_worker_config, user_worker_config)
 
     return home_dir
+
+
+def load_user_settings() -> dict[str, object]:
+    """Load user-level CLI settings from ``~/.tg_agent/settings.json``."""
+    settings_path = user_settings_path()
+    if not settings_path.exists():
+        return {}
+
+    try:
+        import json
+
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid user settings JSON: {settings_path}") from exc
+
+    if not isinstance(loaded, dict):
+        raise ValueError(f"User settings must be a JSON object: {settings_path}")
+    return loaded
+
+
+def save_user_settings(settings: dict[str, object]) -> Path:
+    """Persist user-level CLI settings under ``~/.tg_agent``."""
+    import json
+
+    settings_path = user_settings_path()
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_path.write_text(
+        json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return settings_path
+
+
+def get_default_workspace() -> Path | None:
+    """Return the configured default workspace, if any."""
+    raw_value = load_user_settings().get("default_workspace")
+    if raw_value is None:
+        return None
+    if not isinstance(raw_value, str):
+        raise ValueError("default_workspace must be a string when present")
+
+    stripped = raw_value.strip()
+    if not stripped:
+        return None
+    return Path(stripped).expanduser().resolve()
+
+
+def set_default_workspace(path: Path | str) -> Path:
+    """Store the default workspace as an absolute, resolved path."""
+    resolved_path = Path(path).expanduser().resolve()
+    settings = load_user_settings()
+    settings["default_workspace"] = str(resolved_path)
+    save_user_settings(settings)
+    return resolved_path
+
+
+def clear_default_workspace() -> None:
+    """Remove the configured default workspace from user settings."""
+    settings = load_user_settings()
+    settings.pop("default_workspace", None)
+    save_user_settings(settings)
+
+
+def resolve_default_workspace(root_dir: Path | str | None, *, cwd: Path | None = None) -> Path:
+    """Resolve the workspace root using CLI args, then user settings, then cwd."""
+    if root_dir is not None:
+        return Path(root_dir).expanduser().resolve()
+
+    try:
+        configured_workspace = get_default_workspace()
+    except ValueError:
+        configured_workspace = None
+    if configured_workspace is not None and configured_workspace.exists() and configured_workspace.is_dir():
+        return configured_workspace
+
+    return (cwd or Path.cwd()).resolve()
 
 
 def runtime_env_files(cwd: Path | None = None) -> list[Path]:

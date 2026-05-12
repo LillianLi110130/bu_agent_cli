@@ -109,6 +109,7 @@ from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
 from cli.plugins_handler import PluginSlashHandler
 from cli.ralph_commands import RalphSlashHandler
 from cli.resume_handler import ResumeSlashHandler
+from cli.settings_handler import SettingsSlashHandler
 from cli.session_runtime import CLISessionRuntime
 from cli.session_store import (
     CLISessionStore,
@@ -561,6 +562,10 @@ class TGAgentCLI:
         self._initialize_session_store()
         self._resume_handler = ResumeSlashHandler(
             store=self._session_store,
+            console=self._console,
+            workspace_dir=self._ctx.working_dir,
+        )
+        self._settings_handler = SettingsSlashHandler(
             console=self._console,
             workspace_dir=self._ctx.working_dir,
         )
@@ -1670,6 +1675,11 @@ class TGAgentCLI:
             )
             return True
 
+        if command_name == "settings":
+            self._settings_handler.bind_console(self._console)
+            self._settings_handler.start()
+            return True
+
         if command_name == "init":
             await self._run_init_agent()
             return True
@@ -2351,6 +2361,12 @@ class TGAgentCLI:
             if pick_result.selected_session_id is not None:
                 await self._switch_resume_session(pick_result.selected_session_id)
             if pick_result.handled:
+                return _ExecutionOutcome()
+
+        if self._settings_handler.active:
+            self._settings_handler.bind_console(self._console)
+            settings_result = self._settings_handler.handle_input(user_input)
+            if settings_result.handled:
                 return _ExecutionOutcome()
 
         # Handle numbered model picker mode

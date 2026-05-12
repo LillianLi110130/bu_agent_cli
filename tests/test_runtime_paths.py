@@ -4,7 +4,14 @@ import os
 from pathlib import Path
 
 import tg_crab_main
-from agent_core.runtime_paths import ensure_cli_runtime_state, load_runtime_env
+from agent_core.runtime_paths import (
+    clear_default_workspace,
+    ensure_cli_runtime_state,
+    get_default_workspace,
+    load_runtime_env,
+    resolve_default_workspace,
+    set_default_workspace,
+)
 from cli.worker.auth import load_auth_config
 
 
@@ -215,3 +222,55 @@ def test_ensure_cli_runtime_state_preserves_existing_worker_config(
     assert user_worker_config.read_text(encoding="utf-8").strip() == (
         '{"enable_auth": true, "gateway_base_url": "http://127.0.0.1:9988"}'
     )
+
+
+def test_default_workspace_round_trips_under_user_home(tmp_path: Path, monkeypatch) -> None:
+    home_dir = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    saved = set_default_workspace(workspace)
+
+    assert saved == workspace.resolve()
+    assert get_default_workspace() == workspace.resolve()
+
+    clear_default_workspace()
+
+    assert get_default_workspace() is None
+
+
+def test_resolve_default_workspace_prefers_cli_arg_over_user_setting(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home_dir = tmp_path / "home"
+    configured = tmp_path / "configured-workspace"
+    explicit = tmp_path / "explicit-workspace"
+    cwd = tmp_path / "cwd"
+    configured.mkdir(parents=True)
+    explicit.mkdir(parents=True)
+    cwd.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home_dir))
+    set_default_workspace(configured)
+
+    resolved = resolve_default_workspace(explicit, cwd=cwd)
+
+    assert resolved == explicit.resolve()
+
+
+def test_resolve_default_workspace_uses_user_setting_before_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home_dir = tmp_path / "home"
+    configured = tmp_path / "configured-workspace"
+    cwd = tmp_path / "cwd"
+    configured.mkdir(parents=True)
+    cwd.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home_dir))
+    set_default_workspace(configured)
+
+    resolved = resolve_default_workspace(None, cwd=cwd)
+
+    assert resolved == configured.resolve()
