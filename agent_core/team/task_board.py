@@ -56,7 +56,7 @@ class TaskBoard:
             for task in tasks:
                 if task.status != "pending":
                     continue
-                if task.assigned_to is not None and task.assigned_to != member_id:
+                if task.assigned_to != member_id:
                     continue
                 if any(dep not in completed for dep in task.depends_on):
                     continue

@@ -741,7 +741,6 @@ def create_agent(
             get_memory_store: lambda: memory_store,
             get_bridge_store: lambda: ctx.bridge_store,
         },
-        mode=mode,
         agent_config=agent_config,
         hooks=build_agent_hooks(),
     )

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -80,6 +81,7 @@ class TeamRuntime:
         self.workspace_root = workspace_root.resolve()
         self.store = TeamStore(self.teams_root)
         self._popen_factory = popen_factory or subprocess.Popen
+        self._member_processes: dict[tuple[str, str], subprocess.Popen] = {}
 
     def create_team(self, *, name: str, goal: str) -> TeamConfig:
         return self.store.create_team(
@@ -158,31 +160,65 @@ class TeamRuntime:
             agent_type=agent_type,
             workspace_root=self.workspace_root,
         )
-        log_file = log_path.open("ab")
-        try:
-            process = self._popen_factory(
-                command,
-                stdout=log_file,
-                stderr=log_file,
-                cwd=str(self.workspace_root),
-            )
-        finally:
-            log_file.close()
-        member = TeamMember(
-            member_id=member_id,
-            agent_type=agent_type,
-            pid=int(process.pid),
-            status="running",
+        member = self.store.upsert_member(
+            team_id,
+            TeamMember(
+                member_id=member_id,
+                agent_type=agent_type,
+                status="starting",
+            ),
         )
+        try:
+            log_file = log_path.open("ab")
+            try:
+                process = self._popen_factory(
+                    command,
+                    stdout=log_file,
+                    stderr=log_file,
+                    cwd=str(self.workspace_root),
+                )
+            finally:
+                log_file.close()
+        except Exception:
+            self.store.mark_member_status(team_id, member_id, "failed")
+            raise
+        self._member_processes[(team_id, member_id)] = process
+        member.pid = int(process.pid)
+        member.status = "running"
         return self.store.upsert_member(team_id, member)
 
-    def stop_member(self, team_id: str, member_id: str) -> TeamMessage:
+    def request_stop_member(self, team_id: str, member_id: str) -> TeamMessage:
+        """Send a graceful shutdown request to a teammate."""
         message = self.send_message(
             team_id=team_id,
             recipient=member_id,
             body="shutdown requested",
             type="shutdown_request",
         )
+        self.store.mark_member_status(team_id, member_id, "stopping")
+        return message
+
+    def stop_member(
+        self,
+        team_id: str,
+        member_id: str,
+        *,
+        grace_seconds: float = 10.0,
+    ) -> TeamMessage:
+        """Two-phase stop: request graceful shutdown, then SIGTERM after timeout."""
+        message = self.request_stop_member(team_id, member_id)
+        timed_out = self.wait_for_members_stopped(
+            team_id,
+            [member_id],
+            timeout_seconds=grace_seconds,
+        )
+        if member_id in timed_out:
+            self.terminate_member(team_id, member_id)
+            self.reap_member_process(team_id, member_id, timeout_seconds=2.0)
+        return message
+
+    def terminate_member(self, team_id: str, member_id: str) -> None:
+        """Force the teammate process to terminate after graceful shutdown times out."""
         for member in self.store.list_members(team_id):
             if member.member_id == member_id and member.pid:
                 try:
@@ -191,12 +227,70 @@ class TeamRuntime:
                     pass
                 break
         self.store.mark_member_status(team_id, member_id, "stopping")
-        return message
+        self.reap_member_process(team_id, member_id, timeout_seconds=2.0)
 
-    def shutdown_team(self, team_id: str) -> None:
+    def reap_member_process(
+        self,
+        team_id: str,
+        member_id: str,
+        *,
+        timeout_seconds: float = 0.0,
+    ) -> int | None:
+        """Reap a teammate process started by this runtime to avoid defunct children."""
+        process = self._member_processes.get((team_id, member_id))
+        if process is None:
+            return None
+        return_code = process.poll()
+        if return_code is None:
+            if timeout_seconds <= 0:
+                return None
+            try:
+                return_code = process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                return None
+        else:
+            return_code = process.wait(timeout=0)
+        self._member_processes.pop((team_id, member_id), None)
+        return return_code
+
+    def wait_for_members_stopped(
+        self,
+        team_id: str,
+        member_ids: list[str],
+        *,
+        timeout_seconds: float = 10.0,
+        poll_interval_seconds: float = 0.2,
+    ) -> set[str]:
+        deadline = time.monotonic() + timeout_seconds
+        pending = set(member_ids)
+        terminal_statuses = {"stopped", "completed", "failed"}
+        while pending:
+            members = {member.member_id: member for member in self.store.list_members(team_id)}
+            for member_id in list(pending):
+                self.reap_member_process(team_id, member_id)
+                member = members.get(member_id)
+                if member is None or member.status in terminal_statuses:
+                    pending.remove(member_id)
+            if not pending or time.monotonic() >= deadline:
+                break
+            time.sleep(poll_interval_seconds)
+        return pending
+
+    def shutdown_team(self, team_id: str, *, grace_seconds: float = 10.0) -> None:
+        requested: list[str] = []
         for member in self.store.list_members(team_id):
             if member.status not in {"stopped", "completed", "failed"}:
-                self.stop_member(team_id, member.member_id)
+                self.request_stop_member(team_id, member.member_id)
+                requested.append(member.member_id)
+        timed_out = self.wait_for_members_stopped(
+            team_id,
+            requested,
+            timeout_seconds=grace_seconds,
+        )
+        for member_id in timed_out:
+            self.terminate_member(team_id, member_id)
+        for member_id in requested:
+            self.reap_member_process(team_id, member_id, timeout_seconds=0.2)
         self.store.update_config_status(team_id, "shutdown")
         self.store.write_state(team_id, active=False, phase="shutdown")
         self.clear_active_team(team_id)
@@ -247,7 +341,15 @@ class TeamRuntime:
         result: str | None = None,
         error: str | None = None,
     ) -> TeamTask:
-        task = self._task_board(team_id).update_task(
+        board = self._task_board(team_id)
+        previous_task = next(
+            (item for item in board.list_tasks() if item.task_id == task_id),
+            None,
+        )
+        if previous_task is None:
+            raise ValueError(f"Task not found: {task_id}")
+        previous_assigned_to = previous_task.assigned_to
+        task = board.update_task(
             task_id,
             title=title,
             description=description,
@@ -259,7 +361,15 @@ class TeamRuntime:
             error=error,
         )
         self.store.append_event(team_id, "task_update", actor="lead", payload=task.to_dict())
-        if assigned_to:
+        if assigned_to and assigned_to != previous_assigned_to:
+            self.send_message(
+                team_id=team_id,
+                recipient=assigned_to,
+                type="task_assignment",
+                body=f"Task assigned: {task.title}",
+                metadata={"task_id": task.task_id},
+            )
+        elif assigned_to:
             self.send_message(
                 team_id=team_id,
                 recipient=assigned_to,
@@ -321,7 +431,7 @@ class TeamRuntime:
         *,
         include_inbox: bool = True,
         ack_inbox: bool = False,
-        stale_after_seconds: int = 120,
+        stale_after_seconds: int = 300,
     ) -> dict[str, Any]:
         status = self.status(team_id)
         tasks = status["tasks"]

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,10 +44,23 @@ from tools.team_tool import team_create, team_send_message, team_snapshot, team_
 class _FakeProcess:
     pid = 4242
 
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.wait_calls = 0
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.wait_calls += 1
+        self.returncode = 0
+        return self.returncode
+
 
 def _fake_popen(*args, **kwargs):
-    _fake_popen.calls.append((args, kwargs))
-    return _FakeProcess()
+    process = _FakeProcess()
+    _fake_popen.calls.append((args, kwargs, process))
+    return process
 
 
 _fake_popen.calls = []
@@ -112,11 +127,46 @@ def test_team_runtime_create_spawn_task_and_mailbox(tmp_path: Path) -> None:
     assert [message.type for message in inbox_messages] == ["task_assignment"]
     assert inbox_messages[0].metadata["task_id"] == task.task_id
 
-    runtime.send_message(team_id=team.team_id, recipient="lead", body="done", type="task_completed")
+    runtime.send_message(
+        team_id=team.team_id,
+        recipient="lead",
+        body="done",
+        type="task_done_notification",
+    )
     lead_messages = runtime.read_lead_inbox(team.team_id)
     assert len(lead_messages) == 1
     assert lead_messages[0].type == "task_done_notification"
     assert lead_messages[0].body == "done"
+
+
+def test_team_runtime_registers_member_before_process_start(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    seen_members: list[tuple[str, int | None]] = []
+
+    def popen_factory(*args, **kwargs):
+        del args, kwargs
+        members = runtime.store.list_members(team.team_id)
+        seen_members.extend((member.status, member.pid) for member in members)
+        return _FakeProcess()
+
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=popen_factory,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+
+    member = runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="worker-1",
+        agent_type="general-purpose",
+    )
+
+    assert seen_members == [("starting", None)]
+    assert member.status == "running"
+    assert member.pid == 4242
 
 
 def test_team_runtime_start_team_sets_active_and_state(tmp_path: Path) -> None:
@@ -167,6 +217,116 @@ def test_team_runtime_allows_new_team_after_active_shutdown(tmp_path: Path) -> N
     second = runtime.start_team(goal="Second team")
 
     assert runtime.get_active_team() == second.team_id
+
+
+def test_team_runtime_request_stop_member_only_requests_shutdown(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="worker-1",
+        agent_type="general-purpose",
+    )
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("agent_core.team.runtime.os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    runtime.request_stop_member(team.team_id, "worker-1")
+
+    assert kill_calls == []
+    messages = Mailbox(teams_root / team.team_id).receive("worker-1", ack=False)
+    assert [message.type for message in messages] == ["shutdown_request"]
+    members = runtime.store.list_members(team.team_id)
+    assert members[0].status == "stopping"
+
+
+def test_team_runtime_stop_member_forces_after_grace_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="worker-1",
+        agent_type="general-purpose",
+    )
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("agent_core.team.runtime.os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    runtime.stop_member(team.team_id, "worker-1", grace_seconds=0)
+
+    assert kill_calls == [(4242, signal.SIGTERM)]
+    messages = Mailbox(teams_root / team.team_id).receive("worker-1", ack=False)
+    assert [message.type for message in messages] == ["shutdown_request"]
+    assert not runtime._member_processes  # noqa: SLF001
+
+
+def test_team_runtime_shutdown_forces_member_after_grace_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.start_team(goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="worker-1",
+        agent_type="general-purpose",
+    )
+    kill_calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("agent_core.team.runtime.os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+    runtime.shutdown_team(team.team_id, grace_seconds=0)
+
+    assert kill_calls == [(4242, signal.SIGTERM)]
+    assert runtime.get_active_team() is None
+    assert not runtime._member_processes  # noqa: SLF001
+
+
+def test_team_runtime_reaps_exited_member_process(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="worker-1",
+        agent_type="general-purpose",
+    )
+    process = _fake_popen.calls[-1][2]
+    process.returncode = 0
+
+    assert runtime.reap_member_process(team.team_id, "worker-1") == 0
+    assert process.wait_calls == 1
+    assert not runtime._member_processes  # noqa: SLF001
 
 
 def test_team_auto_prompt_parses_goal_and_keeps_orchestration_model_driven() -> None:
@@ -220,6 +380,18 @@ def test_task_board_claim_complete_and_file_lock(tmp_path: Path) -> None:
     assert not any((team_dir / "locks" / "files").glob("*.lock"))
 
 
+def test_task_board_does_not_claim_unassigned_tasks(tmp_path: Path) -> None:
+    team_dir = tmp_path / "team"
+    team_dir.mkdir()
+    board = TaskBoard(team_dir)
+    board.create_task(
+        title="Unassigned",
+        description="Lead must assign this explicitly",
+    )
+
+    assert board.claim_next("worker-1") is None
+
+
 def test_task_board_rejects_missing_self_and_cyclic_dependencies(tmp_path: Path) -> None:
     team_dir = tmp_path / "team"
     team_dir.mkdir()
@@ -261,7 +433,7 @@ def test_team_runtime_send_message_accepts_any_sender(tmp_path: Path) -> None:
         sender="explorer-1",
         recipient="coder-1",
         body="Please inspect the failing test.",
-        type="handoff",
+        type="message",
     )
 
     assert message.sender == "explorer-1"
@@ -356,6 +528,38 @@ def test_team_snapshot_groups_idle_member_by_heartbeat(tmp_path: Path) -> None:
     assert "running" not in snapshot["summary"]["members"]
     assert "running" not in snapshot["members_by_state"]
     assert snapshot["members_by_state"]["idle"][0]["member_id"] == "frontend-1"
+
+
+def test_team_snapshot_default_stale_timeout_is_300_seconds(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(
+        teams_root=teams_root,
+        workspace_root=workspace,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    runtime.spawn_member(
+        team_id=team.team_id,
+        member_id="frontend-1",
+        agent_type="frontend",
+    )
+    runtime.store.write_heartbeat(
+        team.team_id,
+        "frontend-1",
+        {
+            "team_id": team.team_id,
+            "member_id": "frontend-1",
+            "status": "idle",
+            "updated_at": (datetime.now(timezone.utc) - timedelta(seconds=240)).isoformat(),
+        },
+    )
+
+    snapshot = runtime.snapshot(team.team_id)
+
+    assert snapshot["summary"]["members"]["idle"] == 1
+    assert snapshot["summary"]["members"]["stale"] == 0
 
 
 def test_team_snapshot_treats_legacy_running_member_as_idle(tmp_path: Path) -> None:
@@ -820,6 +1024,31 @@ def test_team_update_task_tool_updates_existing_task(tmp_path: Path) -> None:
     assert payload["write_scope"] == ["new.py"]
     assert payload["error"] == "Waiting for dependency"
     messages = Mailbox(teams_root / team.team_id).receive("coder-1")
+    assert [message.type for message in messages] == ["task_assignment"]
+
+
+def test_team_update_task_sends_update_when_assignment_does_not_change(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = runtime.create_team(name="demo", goal="Coordinate")
+    task = runtime.create_task(
+        team_id=team.team_id,
+        title="Old title",
+        description="Old description",
+        assigned_to="coder-1",
+    )
+    Mailbox(teams_root / team.team_id).receive("coder-1")
+
+    runtime.update_task(
+        team_id=team.team_id,
+        task_id=task.task_id,
+        title="New title",
+        assigned_to="coder-1",
+    )
+
+    messages = Mailbox(teams_root / team.team_id).receive("coder-1")
     assert [message.type for message in messages] == ["task_update"]
 
 
@@ -990,6 +1219,12 @@ Explore.
     assert "Member ID: explorer-1" in agent.system_prompt
     assert "Language rules:" in agent.system_prompt
     assert "prefer Chinese" in agent.system_prompt
+    assert "Team context:" in agent.system_prompt
+    assert "Lead: lead" in agent.system_prompt
+    assert "You: explorer-1 (agent_type=explore)" in agent.system_prompt
+    assert str(teams_root / team.team_id / "members.json") in agent.system_prompt
+    assert "Read the members registry" in agent.system_prompt
+    assert "coordinate with other teammates" in agent.system_prompt
     assert "Skills are read-only for teammates" in agent.system_prompt
     assert "send a message to the team lead with the exact question" in agent.system_prompt
     assert "clarification_request" in agent.system_prompt
@@ -1341,6 +1576,48 @@ def test_team_worker_completes_task_from_query_stream_final_response(tmp_path: P
     assert tasks[0].result == "streamed task result"
     lead_messages = Mailbox(teams_root / team.team_id).receive("lead")
     assert "task_done_notification" in {message.type for message in lead_messages}
+
+
+def test_team_worker_blocks_task_when_query_stream_returns_cancelled(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    teams_root = tmp_path / "teams"
+    workspace.mkdir()
+    store_runtime = TeamRuntime(teams_root=teams_root, workspace_root=workspace)
+    team = store_runtime.create_team(name="demo", goal="Coordinate")
+    store_runtime.create_task(
+        team_id=team.team_id,
+        title="Implement feature",
+        description="Do the work",
+        assigned_to="explorer-1",
+    )
+    worker = TeamWorker(
+        teams_root=teams_root,
+        team_id=team.team_id,
+        member_id="explorer-1",
+        agent_type="explore",
+        workspace=workspace,
+    )
+
+    class _CancelledAgent:
+        async def query_stream(self, prompt: str):
+            del prompt
+            yield FinalResponseEvent(content="[Cancelled by user]")
+
+    claimed_task = worker.task_board.claim_next("explorer-1")
+    assert claimed_task is not None
+
+    asyncio.run(worker._run_task(_CancelledAgent(), claimed_task))  # noqa: SLF001
+
+    tasks = store_runtime.list_tasks(team.team_id)
+    assert tasks[0].status == "blocked"
+    assert tasks[0].result is None
+    assert tasks[0].error == "Task was cancelled by user"
+    lead_messages = Mailbox(teams_root / team.team_id).receive("lead")
+    blocked_messages = [
+        message for message in lead_messages if message.type == "task_blocked_notification"
+    ]
+    assert len(blocked_messages) == 1
+    assert blocked_messages[0].metadata["cancelled"] is True
 
 
 def test_team_worker_marks_member_failed_on_unhandled_exception(tmp_path: Path) -> None:

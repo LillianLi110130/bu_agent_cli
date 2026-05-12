@@ -208,7 +208,7 @@ def test_team_inbox_watcher_ignores_non_trigger_messages(workspace_root, monkeyp
             team_id=team.team_id,
             sender="backend-1",
             recipient="lead",
-            type="progress_update",
+            type="message",
             body="Done",
         )
 

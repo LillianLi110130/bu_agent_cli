@@ -217,7 +217,7 @@ class TeamSlashHandler:
             self.console.print("[red]用法：/team stop <team_id> <member_id>[/red]")
             return
         self.runtime.stop_member(args[0], args[1])
-        self.console.print(f"[yellow]已请求停止 teammate：[/yellow]{args[1]}")
+        self.console.print(f"[yellow]已停止 teammate（必要时会超时后强制终止）：[/yellow]{args[1]}")
 
     def _shutdown(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)

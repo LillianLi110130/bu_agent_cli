@@ -32,6 +32,7 @@ from cli.team.event_log import TeamAgentEventLogHook
 from cli.session_runtime import CLISessionRuntime
 
 CreateAgentFactory = Callable[..., tuple[Any, Any, Any]]
+CANCELLED_BY_USER_RESPONSE = "[Cancelled by user]"
 
 
 class TeamWorker:
@@ -139,6 +140,7 @@ class TeamWorker:
         return agent, ctx
 
     def _build_team_system_prompt(self) -> str:
+        team_context = self._build_team_context_prompt()
         return (
             "## Agent Team Runtime\n\n"
             "You are a teammate in a multi-process TgAgent team. The primary CLI process "
@@ -146,9 +148,16 @@ class TeamWorker:
             f"- Team ID: {self.team_id}\n"
             f"- Member ID: {self.member_id}\n"
             f"- Workspace: {self.workspace}\n\n"
+            f"{team_context}\n\n"
             f"{TEAM_LANGUAGE_RULES}\n\n"
             "Team rules:\n"
             "- Work on tasks claimed from the shared team task board.\n"
+            "- You may coordinate with other teammates by sending `message` via `team_send_message` "
+            "when it directly helps your assigned task.\n"
+            "- Keep cross-teammate coordination narrow and factual. Do not reassign work, create "
+            "tasks, alter dependencies, or become the orchestrator; ask the lead for those decisions.\n"
+            "- Prefer reporting important coordination decisions back to the lead so the primary "
+            "CLI can keep the user-facing plan coherent.\n"
             "- Treat `message` and `clarification_response` mailbox messages as coordination "
             "instructions that enter your model context.\n"
             "- `task_assignment`, `task_update`, `message_ack`, `status_check`, and "
@@ -169,6 +178,29 @@ class TeamWorker:
             "task, ask the team lead first.\n"
             "- Return concise task results intended for the team lead to aggregate.\n"
             "- Keep file changes within the assigned task and write scope."
+        )
+
+    def _build_team_context_prompt(self) -> str:
+        try:
+            config = self.store.load_config(self.team_id)
+            members_path = self.team_dir / "members.json"
+        except Exception:
+            return (
+                "Team context:\n"
+                "- Lead: lead\n"
+                "- Members registry: unavailable at startup"
+            )
+
+        return "\n".join(
+            [
+                "Team context:",
+                f"- Goal: {config.goal}",
+                "- Lead: lead",
+                f"- You: {self.member_id} (agent_type={self.agent_type})",
+                f"- Members registry: {members_path}",
+                "- Read the members registry when you need the latest teammate list, "
+                "agent types, process ids, or statuses.",
+            ]
         )
 
     async def _message_pump(self) -> None:
@@ -299,6 +331,22 @@ class TeamWorker:
         prompt = self._build_task_prompt(task)
         try:
             result = await self._query_agent_stream(agent, prompt)
+            if result.strip() == CANCELLED_BY_USER_RESPONSE:
+                self.task_board.block_task(
+                    task.task_id,
+                    self.member_id,
+                    "Task was cancelled by user",
+                )
+                self._send_to_lead(
+                    "task_blocked_notification",
+                    "Task was cancelled by user",
+                    metadata={
+                        "task_id": task.task_id,
+                        "title": task.title,
+                        "cancelled": True,
+                    },
+                )
+                return
             self.task_board.complete_task(task.task_id, self.member_id, result)
             self._send_to_lead(
                 "task_done_notification",

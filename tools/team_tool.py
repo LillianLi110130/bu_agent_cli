@@ -192,7 +192,7 @@ async def team_snapshot(
     team_id: str,
     include_inbox: bool = True,
     ack_inbox: bool = False,
-    stale_after_seconds: int = 120,
+    stale_after_seconds: int = 300,
 ) -> str:
     runtime, error = _runtime_or_error(ctx)
     if error is not None:
