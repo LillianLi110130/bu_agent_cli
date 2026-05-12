@@ -6,6 +6,15 @@ from collections.abc import AsyncIterator
 import pytest
 
 from agent_core import Agent
+from agent_core.agent.events import (
+    FinalResponseEvent,
+    TextDeltaEvent,
+    TextEvent,
+    ThinkingDeltaEvent,
+    ThinkingEndEvent,
+    ThinkingEvent,
+    ThinkingStartEvent,
+)
 from agent_core.llm.messages import BaseMessage, Function, ToolCall, ToolMessage, UserMessage
 from agent_core.llm.openai.chat import ChatOpenAI
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
@@ -55,9 +64,55 @@ class ScriptedLLM:
         tool_choice=None,
         **kwargs,
     ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        del tools, tool_choice, kwargs
+        self.invocations.append(list(messages))
+        if not self.responses:
+            raise AssertionError("No scripted response left for ScriptedLLM")
+        response = self.responses.pop(0)
+        yield ChatInvokeCompletionChunk(
+            delta=response.content or "",
+            tool_calls=response.tool_calls,
+            thinking=response.thinking,
+            usage=response.usage,
+            stop_reason=response.stop_reason,
+        )
+
+
+class ScriptedStreamingLLM:
+    def __init__(self, chunks: list[ChatInvokeCompletionChunk]) -> None:
+        self.chunks = list(chunks)
+        self.stream_invocations: list[list[BaseMessage]] = []
+        self.model = "scripted-streaming-model"
+
+    @property
+    def provider(self) -> str:
+        return "fake"
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def ainvoke(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
         del messages, tools, tool_choice, kwargs
-        if False:
-            yield ChatInvokeCompletionChunk()
+        raise AssertionError("query_stream() should consume astream() in stream mode")
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        del tools, tool_choice, kwargs
+        self.stream_invocations.append(list(messages))
+        for chunk in self.chunks:
+            yield chunk
 
 
 @pytest.mark.asyncio
@@ -152,6 +207,64 @@ async def test_query_stream_cancellation_appends_synthetic_tool_results() -> Non
         "tool",
         "user",
     ]
+
+
+@pytest.mark.asyncio
+async def test_query_stream_emits_text_delta_events_before_final_response() -> None:
+    llm = ScriptedStreamingLLM(
+        [
+            ChatInvokeCompletionChunk(delta="hel"),
+            ChatInvokeCompletionChunk(delta="lo", stop_reason="stop"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt="test",
+    )
+
+    events = [event async for event in agent.query_stream("hello")]
+
+    text_deltas = [event.delta for event in events if isinstance(event, TextDeltaEvent)]
+    final_events = [event for event in events if isinstance(event, FinalResponseEvent)]
+    text_events = [event for event in events if isinstance(event, TextEvent)]
+
+    assert llm.stream_invocations
+    assert text_deltas == ["hel", "lo"]
+    assert len(final_events) == 1
+    assert final_events[0].content == "hello"
+    assert text_events == []
+
+
+@pytest.mark.asyncio
+async def test_query_stream_emits_thinking_delta_events_before_final_response() -> None:
+    llm = ScriptedStreamingLLM(
+        [
+            ChatInvokeCompletionChunk(thinking="先"),
+            ChatInvokeCompletionChunk(thinking="想", delta="答", stop_reason="stop"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt="test",
+    )
+
+    events = [event async for event in agent.query_stream("hello")]
+
+    thinking_starts = [event for event in events if isinstance(event, ThinkingStartEvent)]
+    thinking_deltas = [event.delta for event in events if isinstance(event, ThinkingDeltaEvent)]
+    thinking_ends = [event for event in events if isinstance(event, ThinkingEndEvent)]
+    thinking_events = [event for event in events if isinstance(event, ThinkingEvent)]
+    final_events = [event for event in events if isinstance(event, FinalResponseEvent)]
+
+    assert len(thinking_starts) == 1
+    assert thinking_deltas == ["先", "想"]
+    assert len(thinking_ends) == 1
+    assert thinking_starts[0].think_id == thinking_ends[0].think_id
+    assert thinking_events == []
+    assert len(final_events) == 1
+    assert final_events[0].content == "答"
 
 
 @pytest.mark.asyncio

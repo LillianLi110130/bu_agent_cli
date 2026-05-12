@@ -1,0 +1,192 @@
+@import '../../../styles/variables.less';
+
+.shell {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px 6px 24px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(15, 23, 42, 0.18) transparent;
+}
+
+.shell::-webkit-scrollbar {
+  width: 12px;
+}
+
+.shell::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.shell::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.18);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.shell::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.28);
+  background-clip: padding-box;
+}
+
+.shell::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.centerColumn {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 920px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.loadingStack {
+  display: grid;
+  gap: 14px;
+  padding: 12px 8px 0;
+}
+
+.emptyState {
+  padding: 40px 8px 12px;
+}
+
+.emptyEyebrow {
+  color: @primary-color !important;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.emptyTitle {
+  max-width: 700px;
+  margin: 12px 0 14px !important;
+  font-size: 44px !important;
+  line-height: 1.04 !important;
+  letter-spacing: -0.03em;
+}
+
+.emptyBody {
+  max-width: 680px;
+  margin: 0 0 26px !important;
+  color: @text-secondary !important;
+  font-size: 16px;
+  line-height: 1.75 !important;
+}
+
+.suggestionGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.suggestionButton {
+  height: auto !important;
+  min-height: 104px;
+  padding: 18px 18px 16px !important;
+  color: @text-primary !important;
+  text-align: left;
+  white-space: normal !important;
+  background: rgba(255, 255, 255, 0.72) !important;
+  border: 1px solid rgba(23, 23, 23, 0.08) !important;
+  border-radius: @radius-lg !important;
+  box-shadow: @shadow-card;
+}
+
+.messageRowAssistant,
+.messageRowUser,
+.messageRowSystem {
+  display: flex;
+}
+
+.messageRowAssistant,
+.messageRowSystem {
+  justify-content: flex-start;
+}
+
+.messageRowUser {
+  justify-content: flex-end;
+}
+
+.assistantCard,
+.userCard,
+.systemCard,
+.errorCard {
+  max-width: min(760px, 100%);
+  border-radius: @radius-xl;
+  box-shadow: @shadow-card;
+}
+
+.assistantCard {
+  padding: 22px 24px 18px;
+  background: @assistant-surface;
+  border: 1px solid rgba(23, 23, 23, 0.06);
+}
+
+.assistantLabel {
+  display: inline-flex;
+  margin-bottom: 10px;
+  color: @primary-color !important;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.userCard {
+  padding: 16px 18px 14px;
+  background: @user-surface;
+  border: 1px solid rgba(23, 23, 23, 0.06);
+}
+
+.systemCard,
+.errorCard {
+  padding: 14px 16px 12px;
+}
+
+.systemCard {
+  background: @status-processing-bg;
+  border: 1px solid rgba(180, 83, 9, 0.12);
+}
+
+.errorCard {
+  background: @status-failed-bg;
+  border: 1px solid rgba(180, 35, 24, 0.12);
+}
+
+.systemEyebrow {
+  display: inline-flex;
+  margin-bottom: 8px;
+  color: @text-secondary !important;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.systemCopy,
+.messageCopy {
+  margin: 0 !important;
+  color: @text-primary !important;
+  white-space: pre-wrap;
+  font-size: 15px;
+  line-height: 1.75 !important;
+}
+
+.messageTime,
+.messageTimeMuted {
+  display: inline-flex;
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.messageTime {
+  color: @text-secondary !important;
+}
+
+.messageTimeMuted {
+  color: @text-muted !important;
+}

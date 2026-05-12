@@ -1,0 +1,76 @@
+@import '../../../styles/variables.less';
+
+.topBar {
+  display: grid;
+  gap: 14px;
+  max-width: 980px;
+  width: 100%;
+  margin: 0 auto 18px;
+  padding: 10px 4px 8px;
+}
+
+.brandLine {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.eyebrow {
+  color: @primary-color !important;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workerTag {
+  margin-inline-end: 0 !important;
+  border-radius: 999px !important;
+}
+
+.mainRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.titleBlock {
+  min-width: 0;
+}
+
+.title {
+  margin: 0 0 6px !important;
+  color: @text-primary !important;
+  font-size: 34px !important;
+  line-height: 1.06 !important;
+}
+
+.subtitle {
+  margin: 0 !important;
+  color: @text-secondary !important;
+  font-size: 14px;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.statusTag {
+  margin-inline-end: 0 !important;
+  padding: 6px 12px !important;
+  border-radius: 999px !important;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.68) !important;
+}
+
+.newChatButton {
+  height: 40px !important;
+  padding: 0 16px !important;
+  background: rgba(255, 255, 255, 0.62) !important;
+  border: 1px solid rgba(23, 23, 23, 0.08) !important;
+  border-radius: 999px !important;
+  box-shadow: @shadow-card;
+}

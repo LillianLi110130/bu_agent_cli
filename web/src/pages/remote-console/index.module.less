@@ -1,0 +1,83 @@
+@import '../../styles/variables.less';
+
+.page {
+  position: relative;
+  height: 100%;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(15, 118, 110, 0.08), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(180, 83, 9, 0.08), transparent 22%),
+    linear-gradient(180deg, #f8f5ee 0%, @page-bg 100%);
+}
+
+.glowPrimary,
+.glowSecondary {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(60px);
+  pointer-events: none;
+}
+
+.glowPrimary {
+  top: -100px;
+  right: 80px;
+  width: 320px;
+  height: 320px;
+  background: rgba(15, 118, 110, 0.12);
+}
+
+.glowSecondary {
+  bottom: -120px;
+  left: 220px;
+  width: 280px;
+  height: 280px;
+  background: rgba(180, 83, 9, 0.1);
+}
+
+.chatStage {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 20px 28px 26px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.statusSlot {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  max-width: 980px;
+  width: 100%;
+  margin: 0 auto 12px;
+}
+
+.connectionBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+}
+
+.connectionText {
+  color: @text-secondary;
+  font-size: 13px;
+}
+
+.alertBanner {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto 16px;
+  border-radius: @radius-md;
+}

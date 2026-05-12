@@ -154,51 +154,57 @@ class WorkerRunner:
 
     async def _process_message(self, message: Any) -> None:
         """Process one polled message."""
+        source = self._normalize_remote_source(getattr(message, "source", None))
+        request = self.bridge_store.enqueue_text(
+            message.content,
+            source=source,
+            source_meta={
+                "worker_id": self.worker_id,
+                "origin": source,
+            },
+            remote_response_required=True,
+        )
+
         try:
-            request = self.bridge_store.enqueue_text(
-                message.content,
-                source="remote",
-                source_meta={
-                    "worker_id": self.worker_id,
-                },
-                remote_response_required=True,
-            )
-            result = await self._wait_for_result(request.request_id)
-            await self._complete_bridge_result(result)
-        except Exception as exc:
+            result = await self._wait_for_result(request.request_id, source=source)
+        except Exception:
             logger.exception(
                 f"Worker request processing failed for worker_id={self.worker_id}: {exc}"
             )
-            await self._report_request_processing_error(exc)
+            await self._report_request_processing_error(exc, source=source)
             return
-
-    async def _complete_bridge_result(self, result: Any) -> None:
-        """Report a bridge result back to the gateway complete endpoint."""
-        if result.final_status == "failed":
-            ok = await self.gateway_client.complete(
-                worker_id=self.worker_id,
-                final_content=result.final_content,
-                final_status="failed",
-                error_code=result.error_code,
-                error_message=result.error_message,
-            )
         else:
-            ok = await self.gateway_client.complete(
-                worker_id=self.worker_id,
-                final_content=result.final_content,
-            )
+            ok = await self._complete_bridge_result(result, source=source)
         if not ok:
             logger.warning(
                 f"Worker complete returned ok=false for worker_id={self.worker_id}"
             )
 
-    async def _report_request_processing_error(self, exc: Exception) -> None:
+    async def _complete_bridge_result(self, result: Any, *, source: str) -> bool:
+        """Report a bridge result back to the gateway complete endpoint."""
+        if result.final_status == "failed":
+            return await self.gateway_client.complete(
+                worker_id=self.worker_id,
+                final_content=result.final_content,
+                source=source,
+                final_status="failed",
+                error_code=result.error_code,
+                error_message=result.error_message,
+            )
+        return await self.gateway_client.complete(
+            worker_id=self.worker_id,
+            final_content=result.final_content,
+            source=source,
+        )
+
+    async def _report_request_processing_error(self, exc: Exception, *, source: str) -> None:
         """Best-effort complete-call report for failures before a bridge result exists."""
         error_message = str(exc) or exc.__class__.__name__
         try:
             ok = await self.gateway_client.complete(
                 worker_id=self.worker_id,
                 final_content=f"Execution failed: {error_message}",
+                source=source,
                 final_status="failed",
                 error_code="WORKER_REQUEST_PROCESSING_ERROR",
                 error_message=error_message,
@@ -215,15 +221,14 @@ class WorkerRunner:
                 f"worker_id={self.worker_id}"
             )
 
-    async def _wait_for_result(self, request_id: str):
+    async def _wait_for_result(self, request_id: str, *, source: str):
         """Wait until the local CLI writes a result for *request_id*."""
         sent_progress_ids: set[str] = set()
         while not self._stop_event.is_set():
-            await self._forward_pending_progress(request_id, sent_progress_ids)
+            await self._forward_pending_progress(request_id, sent_progress_ids, source=source)
             result = self.bridge_store.find_result(request_id)
             if result is not None:
-                await self._forward_pending_progress(request_id, sent_progress_ids)
-                logger.warning(result)
+                await self._forward_pending_progress(request_id, sent_progress_ids, source=source)
                 return result
             await asyncio.sleep(self.result_poll_interval_seconds)
         raise RuntimeError(f"Worker stopped while waiting for bridge result: {request_id}")
@@ -232,6 +237,8 @@ class WorkerRunner:
         self,
         request_id: str,
         sent_progress_ids: set[str],
+        *,
+        source: str,
     ) -> None:
         """Forward unsent intermediate text responses for *request_id*."""
         for progress in self.bridge_store.list_progress(request_id):
@@ -239,16 +246,24 @@ class WorkerRunner:
             if progress.progress_id in sent_progress_ids:
                 continue
             sent_progress_ids.add(progress.progress_id)
-            ok = await self.gateway_client.complete(
+            ok = await self.gateway_client.progress(
                 worker_id=self.worker_id,
-                final_content=progress.content,
+                content=progress.content,
+                source=source,
             )
             if not ok:
                 logger.warning(
-                    f"Worker progress complete returned ok=false for worker_id={self.worker_id}"
+                    f"Worker progress returned ok=false for worker_id={self.worker_id}"
                 )
                 continue
             self.bridge_store.complete_progress(progress)
+
+    def _normalize_remote_source(self, source: str | None) -> str:
+        """Return a protocol-safe remote source label."""
+        normalized_source = (source or "").strip().lower()
+        if normalized_source in {"im", "web"}:
+            return normalized_source
+        return "im"
 
     async def _drain_outbound_events(self) -> None:
         """Deliver queued outbound events through the gateway."""

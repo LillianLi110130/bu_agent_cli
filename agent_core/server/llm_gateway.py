@@ -80,6 +80,8 @@ class LLMGatewayService:
             model=self._resolve_upstream_model(requested_model, route),
             api_key=self._resolve_upstream_api_key(route),
             base_url=self._resolve_upstream_base_url(route),
+            max_input_tokens=route.max_input_tokens if route is not None else None,
+            max_completion_tokens=route.max_output_tokens if route is not None else None,
         )
 
     async def query_stream(self, request: LLMQueryRequest) -> AsyncIterator[object]:

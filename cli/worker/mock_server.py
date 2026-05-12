@@ -9,10 +9,8 @@ import json
 import time
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
@@ -23,6 +21,7 @@ class MockWorkerMessage:
 
     content: str
     worker_id: str
+    source: str = "im"
 
 
 @dataclass
@@ -31,6 +30,7 @@ class MockGatewayState:
 
     queued_messages: list[MockWorkerMessage] = field(default_factory=list)
     completions: list[dict[str, Any]] = field(default_factory=list)
+    progress_updates: list[dict[str, Any]] = field(default_factory=list)
     sent_texts: list[dict[str, Any]] = field(default_factory=list)
     uploaded_attachments: list[dict[str, Any]] = field(default_factory=list)
     online_workers: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -39,10 +39,16 @@ class MockGatewayState:
     stream_versions: dict[str, int] = field(default_factory=dict)
     stream_notifications: dict[str, asyncio.Event] = field(default_factory=dict)
 
-    def enqueue_message(self, *, worker_id: str, content: str) -> MockWorkerMessage:
+    def enqueue_message(
+        self,
+        *,
+        worker_id: str,
+        content: str,
+        source: str = "im",
+    ) -> MockWorkerMessage:
         if not self.is_online(worker_id):
             raise LookupError(f"no_online_worker:{worker_id}")
-        message = MockWorkerMessage(worker_id=worker_id, content=content)
+        message = MockWorkerMessage(worker_id=worker_id, content=content, source=source)
         self.queued_messages.append(message)
         self.notify_stream(worker_id)
         return message
@@ -123,14 +129,22 @@ class WorkerRequest(BaseModel):
 class CompleteRequest(BaseModel):
     worker_id: str
     final_content: str
+    source: str | None = None
     final_status: str = "completed"
     error_code: str | None = None
     error_message: str | None = None
 
 
+class ProgressRequest(BaseModel):
+    worker_id: str
+    content: str
+    source: str | None = None
+
+
 class EnqueueRequest(BaseModel):
     worker_id: str
     content: str
+    source: str = "im"
 
 
 class SendTextRequest(BaseModel):
@@ -165,7 +179,13 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
                 queued = state.dequeue_message(worker_id=worker_id)
                 if queued is not None:
                     state.mark_seen(worker_id=worker_id)
-                    yield _encode_sse("message", {"content": queued.content})
+                    yield _encode_sse(
+                        "message",
+                        {
+                            "content": queued.content,
+                            "source": queued.source,
+                        },
+                    )
                     continue
 
                 has_activity = await state.wait_for_stream_activity(
@@ -207,10 +227,24 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
             {
                 "worker_id": request.worker_id,
                 "final_content": request.final_content,
+                "source": request.source or "im",
                 "final_status": request.final_status,
                 "error_code": request.error_code,
                 "error_message": request.error_message,
+                "source": request.source or "im",
                 "completed_at": time.time(),
+            }
+        )
+        return {"ok": True}
+
+    @app.post("/api/worker/progress")
+    async def progress(request: ProgressRequest) -> dict[str, bool]:
+        state.progress_updates.append(
+            {
+                "worker_id": request.worker_id,
+                "content": request.content,
+                "source": request.source or "im",
+                "created_at": time.time(),
             }
         )
         return {"ok": True}
@@ -251,6 +285,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
         message = state.enqueue_message(
             worker_id=request.worker_id,
             content=request.content,
+            source=request.source,
         )
         return {
             "ok": True,
@@ -264,6 +299,10 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     @app.get("/mock/completions")
     async def list_completions() -> dict[str, Any]:
         return {"completions": list(state.completions)}
+
+    @app.get("/mock/progress")
+    async def list_progress() -> dict[str, Any]:
+        return {"progress": list(state.progress_updates)}
 
     @app.get("/mock/online")
     async def list_online() -> dict[str, Any]:
