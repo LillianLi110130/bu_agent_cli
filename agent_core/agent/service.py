@@ -273,7 +273,7 @@ class Agent:
     """HTTP status codes that trigger retries (matches browser-use)."""
     agent_config: AgentConfig | None = None
     """Agent configuration with tool permissions and other metadata."""
-    runtime_role: Literal["primary", "subagent", "skill_review"] = "primary"
+    runtime_role: Literal["primary", "subagent", "skill_review", "team_member"] = "primary"
     """Execution role used by runtime hooks to distinguish primary and internal agents."""
     is_fork_child: bool = False
     """Whether this runtime instance is a forked child agent."""

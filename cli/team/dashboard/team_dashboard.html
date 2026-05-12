@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TgAgent Team Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d8dde5;
+      --text: #1d2430;
+      --muted: #667085;
+      --blue: #2563eb;
+      --green: #16803c;
+      --amber: #b45309;
+      --red: #c2410c;
+      --purple: #7c3aed;
+      --gray: #64748b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    h2 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    h3 {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    button, input::file-selector-button {
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--text);
+      min-height: 34px;
+      border-radius: 6px;
+      padding: 0 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #ffffff;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    input[type="file"] {
+      max-width: 320px;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) minmax(420px, 1fr) minmax(280px, 380px);
+      gap: 14px;
+      padding: 14px;
+      min-height: calc(100vh - 67px);
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fbfcfe;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: #ffffff;
+      cursor: default;
+    }
+
+    .item.clickable {
+      cursor: pointer;
+    }
+
+    .item.clickable:hover {
+      border-color: #9db4e9;
+      background: #f8fbff;
+    }
+
+    .item.selected {
+      border-color: var(--blue);
+      background: #eff6ff;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .title {
+      font-weight: 700;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #eef2f7;
+      color: var(--gray);
+      white-space: nowrap;
+    }
+
+    .badge.working, .badge.in_progress { background: #dbeafe; color: var(--blue); }
+    .badge.idle, .badge.pending { background: #f1f5f9; color: var(--gray); }
+    .badge.completed, .badge.stopped { background: #dcfce7; color: var(--green); }
+    .badge.blocked, .badge.message_pending { background: #ffedd5; color: var(--amber); }
+    .badge.failed, .badge.stale { background: #fee2e2; color: var(--red); }
+    .badge.processing_messages { background: #ede9fe; color: var(--purple); }
+    .badge.starting, .badge.stopping { background: #fef3c7; color: var(--amber); }
+
+    .tasks-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .lane {
+      min-width: 180px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 10px;
+    }
+
+    .lane h3 {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a;
+      color: #dbeafe;
+      border-radius: 6px;
+      padding: 10px;
+      max-height: 260px;
+      overflow: auto;
+      font-size: 12px;
+    }
+
+    .timeline {
+      max-height: 360px;
+      overflow: auto;
+    }
+
+    .empty {
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 1100px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>TgAgent Team Dashboard</h1>
+      <div id="teamMeta" class="muted">Choose a team directory to begin.</div>
+    </div>
+    <div class="toolbar">
+      <button id="chooseDir" class="primary">Choose Team Directory</button>
+      <label>
+        <input id="folderInput" type="file" webkitdirectory multiple hidden>
+        <button id="folderFallback" type="button">Choose Folder Snapshot</button>
+      </label>
+      <button id="refresh" disabled>Refresh</button>
+      <span id="mode" class="muted mono"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="stack">
+      <section>
+        <h2>Summary</h2>
+        <div id="summary" class="summary"></div>
+      </section>
+      <section>
+        <h2>Members</h2>
+        <div id="members"></div>
+      </section>
+    </div>
+
+    <section>
+      <h2>Tasks</h2>
+      <div id="tasks" class="tasks-grid"></div>
+    </section>
+
+    <div class="stack">
+      <section>
+        <h2>Lead Inbox</h2>
+        <div id="inbox"></div>
+      </section>
+      <section>
+        <h2>Warnings</h2>
+        <div id="warnings"></div>
+      </section>
+      <section>
+        <h2>Member Detail</h2>
+        <div id="detail" class="empty">Select a member.</div>
+      </section>
+      <section>
+        <h2>Recent Events</h2>
+        <div id="events" class="timeline"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const state = {
+      mode: "none",
+      directoryHandle: null,
+      fileList: null,
+      selectedMember: null,
+      snapshot: null,
+      refreshTimer: null
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    $("chooseDir").addEventListener("click", chooseLiveDirectory);
+    $("folderFallback").addEventListener("click", () => $("folderInput").click());
+    $("folderInput").addEventListener("change", (event) => {
+      state.mode = "snapshot";
+      state.fileList = Array.from(event.target.files || []);
+      state.directoryHandle = null;
+      $("refresh").disabled = false;
+      $("mode").textContent = "snapshot folder mode";
+      loadAndRender();
+    });
+    $("refresh").addEventListener("click", loadAndRender);
+
+    async function chooseLiveDirectory() {
+      if (!window.showDirectoryPicker) {
+        alert("This browser does not support live directory access. Use folder snapshot mode.");
+        return;
+      }
+      state.directoryHandle = await window.showDirectoryPicker({ mode: "read" });
+      state.fileList = null;
+      state.mode = "live";
+      $("refresh").disabled = false;
+      $("mode").textContent = "live file-system mode";
+      if (state.refreshTimer) clearInterval(state.refreshTimer);
+      state.refreshTimer = setInterval(loadAndRender, 1500);
+      await loadAndRender();
+    }
+
+    async function loadAndRender() {
+      try {
+        const files = state.mode === "live"
+          ? await readDirectoryHandle(state.directoryHandle)
+          : await readFileList(state.fileList);
+        state.snapshot = buildSnapshot(files);
+        render(state.snapshot);
+      } catch (error) {
+        console.error(error);
+        $("teamMeta").textContent = `Failed to read team directory: ${error.message || error}`;
+      }
+    }
+
+    async function readDirectoryHandle(rootHandle) {
+      const files = new Map();
+      async function walk(handle, prefix) {
+        for await (const [name, entry] of handle.entries()) {
+          const path = prefix ? `${prefix}/${name}` : name;
+          if (entry.kind === "directory") {
+            await walk(entry, path);
+          } else if (entry.kind === "file") {
+            const file = await entry.getFile();
+            files.set(path, await file.text());
+          }
+        }
+      }
+      await walk(rootHandle, "");
+      return files;
+    }
+
+    async function readFileList(fileList) {
+      const files = new Map();
+      for (const file of fileList || []) {
+        const relative = normalizeSnapshotPath(file.webkitRelativePath || file.name);
+        files.set(relative, await file.text());
+      }
+      return files;
+    }
+
+    function normalizeSnapshotPath(path) {
+      const parts = path.split("/").filter(Boolean);
+      if (parts.length > 1) parts.shift();
+      return parts.join("/");
+    }
+
+    function readJson(files, path, fallback) {
+      if (!files.has(path)) return fallback;
+      try {
+        return JSON.parse(files.get(path));
+      } catch {
+        return fallback;
+      }
+    }
+
+    function readJsonByPrefix(files, prefix) {
+      const items = [];
+      for (const [path, text] of files.entries()) {
+        if (!path.startsWith(prefix) || !path.endsWith(".json")) continue;
+        try {
+          items.push({ path, data: JSON.parse(text) });
+        } catch {
+          items.push({ path, data: null, malformed: true });
+        }
+      }
+      return items;
+    }
+
+    function readJsonl(files, path, limit = 80) {
+      if (!files.has(path)) return [];
+      const records = [];
+      for (const line of files.get(path).split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          records.push(JSON.parse(trimmed));
+        } catch {
+          records.push({ type: "malformed_event", payload: { line: trimmed } });
+        }
+      }
+      return records.slice(-limit).reverse();
+    }
+
+    function buildSnapshot(files) {
+      const config = readJson(files, "config.json", {});
+      const teamState = readJson(files, "state.json", {});
+      const members = (readJson(files, "members.json", { members: [] }).members || []);
+      const tasks = (readJson(files, "tasks.json", { tasks: [] }).tasks || []);
+      const heartbeats = new Map(
+        readJsonByPrefix(files, "heartbeats/")
+          .map((entry) => [basename(entry.path, ".json"), entry.data])
+      );
+      const leadInbox = readJsonByPrefix(files, "mailboxes/lead/inbox/")
+        .filter((entry) => entry.data)
+        .map((entry) => entry.data)
+        .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+      const events = readJsonl(files, "events.jsonl", 120);
+      const taskById = new Map(tasks.map((task) => [task.task_id, task]));
+      const warnings = [];
+      const enrichedMembers = members.map((member) => {
+        const heartbeat = heartbeats.get(member.member_id) || null;
+        const status = heartbeat?.status || member.status || "running";
+        const heartbeatTime = heartbeat?.updated_at || member.last_heartbeat_at || member.updated_at;
+        const age = ageSeconds(heartbeatTime);
+        const isStale = age !== null && age > 300 && !["stopped", "failed"].includes(status);
+        const taskId = heartbeat?.task_id || null;
+        const currentTask = taskId
+          ? taskById.get(taskId) || null
+          : tasks.find((task) => task.claimed_by === member.member_id && task.status === "in_progress")
+            || tasks.find((task) => task.assigned_to === member.member_id && task.status === "in_progress")
+            || null;
+        const displayStatus = isStale ? "stale" : status;
+        if (displayStatus === "stale") warnings.push(`${member.member_id} heartbeat is stale`);
+        if (displayStatus === "failed") warnings.push(`${member.member_id} failed`);
+        return { ...member, heartbeat, display_status: displayStatus, heartbeat_age_seconds: age, current_task: currentTask };
+      });
+      for (const task of tasks) {
+        if (task.status === "blocked") warnings.push(`${task.task_id} is blocked: ${task.title}`);
+      }
+      return {
+        config,
+        state: teamState,
+        members: enrichedMembers,
+        tasks,
+        leadInbox,
+        events,
+        warnings,
+        summary: summarize(enrichedMembers, tasks, leadInbox)
+      };
+    }
+
+    function summarize(members, tasks, leadInbox) {
+      const memberCounts = countBy(members, (item) => item.display_status || "unknown");
+      const taskCounts = countBy(tasks, (item) => item.status || "unknown");
+      return {
+        members: memberCounts,
+        tasks: taskCounts,
+        lead_inbox_unread: leadInbox.length
+      };
+    }
+
+    function countBy(items, fn) {
+      const counts = {};
+      for (const item of items) {
+        const key = fn(item);
+        counts[key] = (counts[key] || 0) + 1;
+      }
+      return counts;
+    }
+
+    function basename(path, suffix) {
+      const name = path.split("/").pop() || path;
+      return suffix && name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
+    }
+
+    function ageSeconds(iso) {
+      if (!iso) return null;
+      const timestamp = Date.parse(iso);
+      if (Number.isNaN(timestamp)) return null;
+      return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+    }
+
+    function formatAge(seconds) {
+      if (seconds === null || seconds === undefined) return "-";
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m`;
+      return `${Math.floor(minutes / 60)}h`;
+    }
+
+    function render(snapshot) {
+      const teamId = snapshot.config.team_id || "(unknown team)";
+      $("teamMeta").textContent = `${teamId} / ${snapshot.config.status || "-"} / ${snapshot.config.goal || ""}`;
+      renderSummary(snapshot);
+      renderMembers(snapshot);
+      renderTasks(snapshot);
+      renderInbox(snapshot.leadInbox);
+      renderWarnings(snapshot.warnings);
+      renderDetail(snapshot);
+      renderEvents(snapshot.events);
+    }
+
+    function renderSummary(snapshot) {
+      const totalMembers = snapshot.members.length;
+      const totalTasks = snapshot.tasks.length;
+      $("summary").innerHTML = [
+        metric("Members", totalMembers),
+        metric("Tasks", totalTasks),
+        metric("Unread", snapshot.leadInbox.length),
+        metric("Warnings", snapshot.warnings.length)
+      ].join("");
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+    }
+
+    function renderMembers(snapshot) {
+      const container = $("members");
+      if (!snapshot.members.length) {
+        container.innerHTML = `<div class="empty">No members registered.</div>`;
+        return;
+      }
+      container.innerHTML = snapshot.members.map((member) => {
+        const current = member.current_task ? `${member.current_task.task_id}: ${member.current_task.title}` : "No current task";
+        const selected = state.selectedMember === member.member_id ? " selected" : "";
+        return `
+          <div class="item clickable${selected}" data-member="${escapeAttr(member.member_id)}">
+            <div class="row">
+              <div class="title">${escapeHtml(member.member_id)}</div>
+              ${badge(member.display_status)}
+            </div>
+            <div class="subtitle">${escapeHtml(member.agent_type || "-")} / pid ${escapeHtml(member.pid || "-")} / ${formatAge(member.heartbeat_age_seconds)}</div>
+            <div class="subtitle">${escapeHtml(current)}</div>
+          </div>
+        `;
+      }).join("");
+      container.querySelectorAll("[data-member]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedMember = node.getAttribute("data-member");
+          render(snapshot);
+        });
+      });
+    }
+
+    function renderTasks(snapshot) {
+      const statuses = ["pending", "in_progress", "blocked", "completed"];
+      const groups = Object.fromEntries(statuses.map((status) => [status, []]));
+      for (const task of snapshot.tasks) {
+        const status = task.status || "pending";
+        if (!groups[status]) groups[status] = [];
+        groups[status].push(task);
+      }
+      $("tasks").innerHTML = statuses.map((status) => `
+        <div class="lane">
+          <h3><span>${labelFor(status)}</span><span class="badge ${status}">${groups[status].length}</span></h3>
+          ${groups[status].length ? groups[status].map(renderTask).join("") : `<div class="empty">None</div>`}
+        </div>
+      `).join("");
+    }
+
+    function renderTask(task) {
+      const owner = task.assigned_to || task.claimed_by || "-";
+      return `
+        <div class="item">
+          <div class="row">
+            <div class="title">${escapeHtml(task.title || task.task_id)}</div>
+            ${badge(task.status)}
+          </div>
+          <div class="subtitle mono">${escapeHtml(task.task_id)}</div>
+          <div class="subtitle">owner: ${escapeHtml(owner)}</div>
+          ${task.error ? `<div class="subtitle">error: ${escapeHtml(task.error)}</div>` : ""}
+        </div>
+      `;
+    }
+
+    function renderInbox(messages) {
+      const container = $("inbox");
+      if (!messages.length) {
+        container.innerHTML = `<div class="empty">No unread lead messages.</div>`;
+        return;
+      }
+      container.innerHTML = messages.map((message) => `
+        <div class="item">
+          <div class="row">
+            <div class="title">${escapeHtml(message.sender || "unknown")}</div>
+            ${badge(message.type || "message")}
+          </div>
+          <div class="subtitle mono">${escapeHtml(message.message_id || "")}</div>
+          <div class="subtitle">${escapeHtml(message.body || "")}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderWarnings(warnings) {
+      $("warnings").innerHTML = warnings.length
+        ? warnings.map((warning) => `<div class="item">${escapeHtml(warning)}</div>`).join("")
+        : `<div class="empty">No warnings.</div>`;
+    }
+
+    function renderDetail(snapshot) {
+      const member = snapshot.members.find((item) => item.member_id === state.selectedMember);
+      if (!member) {
+        $("detail").className = "empty";
+        $("detail").textContent = "Select a member.";
+        return;
+      }
+      $("detail").className = "";
+      $("detail").innerHTML = `
+        <h3>${escapeHtml(member.member_id)}</h3>
+        <div class="subtitle">agent: ${escapeHtml(member.agent_type || "-")}</div>
+        <div class="subtitle">status: ${escapeHtml(member.display_status || "-")}</div>
+        <div class="subtitle">heartbeat age: ${formatAge(member.heartbeat_age_seconds)}</div>
+        <h3 style="margin-top:12px;">Current Task</h3>
+        ${member.current_task ? renderTask(member.current_task) : `<div class="empty">No current task.</div>`}
+        <h3 style="margin-top:12px;">Heartbeat JSON</h3>
+        <pre>${escapeHtml(JSON.stringify(member.heartbeat || {}, null, 2))}</pre>
+      `;
+    }
+
+    function renderEvents(events) {
+      const container = $("events");
+      if (!events.length) {
+        container.innerHTML = `<div class="empty">No events.</div>`;
+        return;
+      }
+      container.innerHTML = events.map((event) => {
+        const type = event.type || event.event_type || "event";
+        const actor = event.actor || event.member_id || "-";
+        const created = event.created_at || event.timestamp || "";
+        return `
+          <div class="item">
+            <div class="row">
+              <div class="title">${escapeHtml(type)}</div>
+              <span class="muted mono">${escapeHtml(actor)}</span>
+            </div>
+            <div class="subtitle">${escapeHtml(created)}</div>
+            <pre>${escapeHtml(JSON.stringify(event.payload || event, null, 2))}</pre>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function badge(value) {
+      const raw = String(value || "unknown");
+      const cls = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
+      return `<span class="badge ${escapeAttr(cls)}">${escapeHtml(labelFor(raw))}</span>`;
+    }
+
+    function labelFor(value) {
+      return String(value || "unknown").replaceAll("_", " ");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replaceAll("`", "&#96;");
+    }
+  </script>
+</body>
+</html>

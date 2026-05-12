@@ -248,6 +248,22 @@ def test_delegate_rejects_nested_delegation_from_subagent() -> None:
     assert result == "Error: subagents cannot delegate other subagents."
 
 
+def test_delegate_rejects_delegation_from_team_member() -> None:
+    result = asyncio.run(
+        delegate.func(
+            ctx=SimpleNamespace(subagent_executor=object()),
+            prompt="do work",
+            description="delegate again",
+            current_agent=SimpleNamespace(runtime_role="team_member", is_fork_child=False),
+            subagent_type="reviewer",
+            model=None,
+            run_in_background=None,
+        )
+    )
+
+    assert result == "Error: subagents cannot delegate other subagents."
+
+
 def test_named_subagent_model_inherit_uses_parent_llm(tmp_path: Path) -> None:
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir()

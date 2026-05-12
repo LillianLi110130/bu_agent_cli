@@ -141,6 +141,7 @@ class SandboxContext:
     shell_task_manager: ShellTaskManager | None = None
     subagent_events: asyncio.Queue | None = field(default=None)
     bridge_store: Any | None = None
+    team_runtime: Any | None = None
 
     def __post_init__(self) -> None:
         if self.subagent_events is None:

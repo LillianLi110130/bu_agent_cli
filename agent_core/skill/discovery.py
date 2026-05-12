@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import re
 import shutil
+import os
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
 from agent_core.runtime_paths import tg_agent_home
+from agent_core.team.file_lock import FileLock
 
 
 @dataclass(frozen=True)
@@ -75,21 +78,40 @@ def sync_builtin_skills(packaged_skills_dir: Path) -> Path:
     runtime_skills_root.mkdir(parents=True, exist_ok=True)
 
     builtin_root = builtin_skills_dir()
-    temp_root = sync_builtin_skills_dir()
-    if temp_root.exists():
-        shutil.rmtree(temp_root, ignore_errors=True)
-    temp_root.mkdir(parents=True, exist_ok=True)
-
-    packaged_root = packaged_skills_dir.resolve()
-    if packaged_root.exists() and packaged_root.is_dir():
-        for item in sorted(packaged_root.iterdir(), key=lambda path: path.name.lower()):
-            if not item.is_dir():
+    sync_root = sync_builtin_skills_dir()
+    lock_path = runtime_skills_root / ".builtin.__sync__.lock"
+    owner = f"sync_builtin_skills:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+    lock = FileLock(lock_path, owner=owner, ttl_sec=60.0)
+    lock.acquire(timeout=30.0)
+    try:
+        for stale_path in runtime_skills_root.glob(".builtin.__sync__*"):
+            if stale_path == lock_path:
                 continue
-            shutil.copytree(item, temp_root / item.name)
+            if stale_path == builtin_root:
+                continue
+            if stale_path.is_dir():
+                shutil.rmtree(stale_path, ignore_errors=True)
+            else:
+                stale_path.unlink(missing_ok=True)
 
-    if builtin_root.exists():
-        shutil.rmtree(builtin_root, ignore_errors=True)
-    temp_root.replace(builtin_root)
+        temp_root = runtime_skills_root / f"{sync_root.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}"
+        temp_root.mkdir(parents=True, exist_ok=False)
+        try:
+            packaged_root = packaged_skills_dir.resolve()
+            if packaged_root.exists() and packaged_root.is_dir():
+                for item in sorted(packaged_root.iterdir(), key=lambda path: path.name.lower()):
+                    if not item.is_dir():
+                        continue
+                    shutil.copytree(item, temp_root / item.name)
+
+            if builtin_root.exists():
+                shutil.rmtree(builtin_root, ignore_errors=True)
+            temp_root.replace(builtin_root)
+        finally:
+            if temp_root.exists():
+                shutil.rmtree(temp_root, ignore_errors=True)
+    finally:
+        lock.release()
     return builtin_root
 
 
