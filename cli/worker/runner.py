@@ -154,27 +154,65 @@ class WorkerRunner:
 
     async def _process_message(self, message: Any) -> None:
         """Process one polled message."""
-        request = self.bridge_store.enqueue_text(
-            message.content,
-            source="remote",
-            source_meta={
-                "worker_id": self.worker_id,
-            },
-            remote_response_required=True,
-        )
-
         try:
+            request = self.bridge_store.enqueue_text(
+                message.content,
+                source="remote",
+                source_meta={
+                    "worker_id": self.worker_id,
+                },
+                remote_response_required=True,
+            )
             result = await self._wait_for_result(request.request_id)
-        except Exception:
+            await self._complete_bridge_result(result)
+        except Exception as exc:
+            logger.exception(
+                f"Worker request processing failed for worker_id={self.worker_id}: {exc}"
+            )
+            await self._report_request_processing_error(exc)
             return
 
-        ok = await self.gateway_client.complete(
-            worker_id=self.worker_id,
-            final_content=result.final_content,
-        )
+    async def _complete_bridge_result(self, result: Any) -> None:
+        """Report a bridge result back to the gateway complete endpoint."""
+        if result.final_status == "failed":
+            ok = await self.gateway_client.complete(
+                worker_id=self.worker_id,
+                final_content=result.final_content,
+                final_status="failed",
+                error_code=result.error_code,
+                error_message=result.error_message,
+            )
+        else:
+            ok = await self.gateway_client.complete(
+                worker_id=self.worker_id,
+                final_content=result.final_content,
+            )
         if not ok:
             logger.warning(
                 f"Worker complete returned ok=false for worker_id={self.worker_id}"
+            )
+
+    async def _report_request_processing_error(self, exc: Exception) -> None:
+        """Best-effort complete-call report for failures before a bridge result exists."""
+        error_message = str(exc) or exc.__class__.__name__
+        try:
+            ok = await self.gateway_client.complete(
+                worker_id=self.worker_id,
+                final_content=f"Execution failed: {error_message}",
+                final_status="failed",
+                error_code="WORKER_REQUEST_PROCESSING_ERROR",
+                error_message=error_message,
+            )
+        except Exception as report_exc:
+            logger.exception(
+                "Failed to report worker request processing error via complete for "
+                f"worker_id={self.worker_id}: {report_exc}"
+            )
+            return
+        if not ok:
+            logger.warning(
+                "Worker request error complete returned ok=false for "
+                f"worker_id={self.worker_id}"
             )
 
     async def _wait_for_result(self, request_id: str):
@@ -185,6 +223,7 @@ class WorkerRunner:
             result = self.bridge_store.find_result(request_id)
             if result is not None:
                 await self._forward_pending_progress(request_id, sent_progress_ids)
+                logger.warning(result)
                 return result
             await asyncio.sleep(self.result_poll_interval_seconds)
         raise RuntimeError(f"Worker stopped while waiting for bridge result: {request_id}")
@@ -196,6 +235,7 @@ class WorkerRunner:
     ) -> None:
         """Forward unsent intermediate text responses for *request_id*."""
         for progress in self.bridge_store.list_progress(request_id):
+            logger.warning(progress)
             if progress.progress_id in sent_progress_ids:
                 continue
             sent_progress_ids.add(progress.progress_id)

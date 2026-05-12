@@ -1753,6 +1753,7 @@ class TGAgentCLI:
         has_image: bool = False,
         agent: Agent | None = None,
         intermediate_text_callback: Callable[[str], None] | None = None,
+        propagate_errors: bool = False,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
@@ -1943,6 +1944,7 @@ class TGAgentCLI:
                         pending_intermediate_text.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
+                    logger.info(event.content)
                     self._console.print(event.content, end="")
 
                 elif isinstance(event, FinalResponseEvent):
@@ -1957,6 +1959,8 @@ class TGAgentCLI:
             self._stop_loading(self._loading)
             self._loading = None
             self._console.print(f"[{self.COLOR_ERROR}]错误：{e}[/]")
+            if propagate_errors:
+                raise
         finally:
             # Cancel the listener task
             cancel_event.set()
@@ -2089,6 +2093,7 @@ class TGAgentCLI:
                 parsed.content_parts,
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
+                propagate_errors=source == "remote",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2097,6 +2102,7 @@ class TGAgentCLI:
                 parsed_remote_image.content_parts,
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
+                propagate_errors=source == "remote",
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2142,6 +2148,7 @@ class TGAgentCLI:
             user_input,
             has_image=False,
             intermediate_text_callback=intermediate_text_callback,
+            propagate_errors=source == "remote",
         )
         return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2201,10 +2208,12 @@ class TGAgentCLI:
             except Exception as exc:
                 self._bridge_store.fail_request(
                     request,
-                    final_content=f"执行失败：{exc}",
+                    final_content=f"Execution failed: {exc}",
                     error_code="LOCAL_BRIDGE_EXECUTION_ERROR",
                     error_message=str(exc),
                 )
+                if request.source == "remote" or request.remote_response_required:
+                    continue
                 raise
 
             if request.source == "remote" and request.content.strip() == "/reset":

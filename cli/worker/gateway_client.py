@@ -102,15 +102,24 @@ class WorkerGatewayClient:
         self,
         worker_id: str,
         final_content: str,
+        final_status: str = "completed",
+        error_code: str | None = None,
+        error_message: str | None = None,
     ) -> bool:
         """Submit the final response for one delivery."""
         logger.info(f"Completing delivery for worker_id={worker_id}")
+        payload: dict[str, object] = {
+            "worker_id": worker_id,
+            "final_content": final_content,
+            "final_status": final_status,
+        }
+        if error_code is not None:
+            payload["error_code"] = error_code
+        if error_message is not None:
+            payload["error_message"] = error_message
         response = await self._post_with_auth_refresh(
             "/api/worker/complete",
-            {
-                "worker_id": worker_id,
-                "final_content": final_content,
-            },
+            payload,
         )
         return bool(response.json().get("ok", False))
 
@@ -151,11 +160,6 @@ class WorkerGatewayClient:
         logger.info(f"Uploading proactive attachment for worker_id={worker_id}, file_name={file_name}")
         response = await self._client.post(
             "/api/worker/upload_attachment",
-            data={
-                "worker_id": worker_id,
-                "mime_type": mime_type,
-                "file_size": file_size,
-            },
             files={
                 "file": (file_name, file_bytes, mime_type),
             },
