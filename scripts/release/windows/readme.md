@@ -136,7 +136,7 @@ scripts/release/windows/assets/crab.ico
 推荐命令：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\release\windows\build_wheelhouse.ps1 -PythonExecutable D:\python\python.exe -Clean
+powershell -ExecutionPolicy Bypass -File ./scripts/release/windows/build_wheelhouse.ps1 -PythonExecutable D:/python/python.exe -Clean
 ```
 
 说明：

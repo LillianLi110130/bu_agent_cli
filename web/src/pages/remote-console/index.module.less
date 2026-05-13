@@ -57,6 +57,12 @@
   margin: 0 auto 12px;
 }
 
+.statusActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .connectionBadge {
   display: inline-flex;
   align-items: center;
@@ -72,6 +78,24 @@
 .connectionText {
   color: @text-secondary;
   font-size: 13px;
+}
+
+.launchButton {
+  height: 38px;
+  padding: 0 16px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #0f766e;
+  font-weight: 600;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+}
+
+.launchButton:hover,
+.launchButton:focus {
+  color: #0b5e58 !important;
+  border-color: rgba(15, 118, 110, 0.28) !important;
+  background: rgba(255, 255, 255, 0.94) !important;
 }
 
 .alertBanner {

@@ -21,8 +21,18 @@ function isAbortError(error: unknown) {
     : error instanceof Error && error.name === 'AbortError';
 }
 
+function createClientId(prefix: string) {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) {
+    return `${prefix}-${randomUuid}`;
+  }
+
+  const fallbackRandom = Math.random().toString(36).slice(2, 10);
+  return `${prefix}-${Date.now().toString(36)}-${fallbackRandom}`;
+}
+
 function buildSessionTitle(index: number) {
-  return index === 0 ? '当前对话' : `当前对话 ${index + 1}`;
+  return index === 0 ? '新对话' : `新对话 ${index + 1}`;
 }
 
 function buildSystemMessage(
@@ -30,10 +40,10 @@ function buildSystemMessage(
   status: SubmitStatus,
   content: string,
   createdAt: string
-) {
+): ConversationMessage {
   return {
     id: `${status}-${messageKey}`,
-    role: 'system' as const,
+    role: 'system',
     content,
     createdAt,
     status
@@ -45,23 +55,27 @@ function buildAssistantMessage(
   content: string,
   createdAt: string,
   status: SubmitStatus = 'completed'
-) {
+): ConversationMessage {
   return {
     id: `assistant-${messageKey}`,
-    role: 'assistant' as const,
+    role: 'assistant',
     content,
     createdAt,
     status
   };
 }
 
-function buildErrorMessage(messageKey: string, content: string, createdAt: string) {
+function buildErrorMessage(
+  messageKey: string,
+  content: string,
+  createdAt: string
+): ConversationMessage {
   return {
     id: `error-${messageKey}`,
-    role: 'error' as const,
+    role: 'error',
     content,
     createdAt,
-    status: 'failed' as const
+    status: 'failed'
   };
 }
 
@@ -106,7 +120,7 @@ export function useRemoteConsole() {
   const [messages, setMessages] = useState<ConversationMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sessionIndex, setSessionIndex] = useState(0);
-  const [sessionId, setSessionId] = useState(`web-session-${crypto.randomUUID()}`);
+  const [sessionId, setSessionId] = useState(() => createClientId('web-session'));
   const [workerSummary, setWorkerSummary] = useState<WorkerSummary>({
     workerId: DEFAULT_WORKER_ID,
     isOnline: undefined
@@ -117,8 +131,9 @@ export function useRemoteConsole() {
     submitStatus: 'idle',
     useMock: import.meta.env.VITE_REMOTE_CONSOLE_USE_MOCK === 'true'
   });
-
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isAwaitingLocalLaunch, setIsAwaitingLocalLaunch] = useState(false);
+
   const streamAbortRef = useRef<AbortController | null>(null);
   const activeRunKeyRef = useRef<string | null>(null);
 
@@ -128,6 +143,13 @@ export function useRemoteConsole() {
       startTransition(() => {
         setWorkerSummary(summary);
       });
+      setViewState((current) => ({
+        ...current,
+        lastError:
+          current.lastError === '当前无法连接 Python server，请先确认服务端已经启动。'
+            ? undefined
+            : current.lastError
+      }));
     } catch {
       startTransition(() => {
         setWorkerSummary({
@@ -147,13 +169,33 @@ export function useRemoteConsole() {
   }, [refreshWorkerSummary]);
 
   useEffect(() => {
+    if (workerSummary.isOnline === true && isAwaitingLocalLaunch) {
+      setIsAwaitingLocalLaunch(false);
+      void antdMessage.success('已检测到本地 Crab 在线。');
+    }
+  }, [isAwaitingLocalLaunch, workerSummary.isOnline]);
+
+  useEffect(() => {
+    const pollingIntervalMs =
+      workerSummary.isOnline === true && !isAwaitingLocalLaunch ? 20000 : 1500;
+
+    const timer = window.setInterval(() => {
+      void refreshWorkerSummary();
+    }, pollingIntervalMs);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [isAwaitingLocalLaunch, refreshWorkerSummary, workerSummary.isOnline]);
+
+  useEffect(() => {
     return () => {
       streamAbortRef.current?.abort();
     };
   }, []);
 
   const createSession = useCallback(() => {
-    const nextSessionId = `web-session-${crypto.randomUUID()}`;
+    const nextSessionId = createClientId('web-session');
     setSessionIndex((current) => current + 1);
     setSessionId(nextSessionId);
     setMessages([]);
@@ -185,13 +227,20 @@ export function useRemoteConsole() {
     setMessages((current) => [
       ...current,
       buildSystemMessage(
-        `stream-stop-${crypto.randomUUID()}`,
+        createClientId('stream-stop'),
         'idle',
-        '已停止当前页面接收，本地任务可能仍在继续执行。',
+        '已停止当前页面接收。本地任务可能仍在继续执行。',
         new Date().toISOString()
       )
     ]);
   }, []);
+
+  const launchLocalCrab = useCallback(() => {
+    setIsAwaitingLocalLaunch(true);
+    void refreshWorkerSummary();
+    void antdMessage.info('如果浏览器弹出确认，请允许打开本地应用。');
+    window.location.href = 'crab://open';
+  }, [refreshWorkerSummary]);
 
   const handleStreamEvent = useCallback((requestEvent: RequestEvent) => {
     const eventTime = requestEvent.finishedAt ?? requestEvent.ts ?? new Date().toISOString();
@@ -206,7 +255,7 @@ export function useRemoteConsole() {
       setMessages((current) =>
         appendMessageIfMissing(
           current,
-          buildSystemMessage(messageKey, 'submitted', '消息已提交到服务端。', eventTime)
+          buildSystemMessage(messageKey, 'submitted', '消息已提交，等待本地终端接收。', eventTime)
         )
       );
       return;
@@ -221,7 +270,7 @@ export function useRemoteConsole() {
       setMessages((current) =>
         appendMessageIfMissing(
           current,
-          buildSystemMessage(messageKey, 'processing', '本地终端已开始处理当前消息。', eventTime)
+          buildSystemMessage(messageKey, 'processing', '本地终端已开始处理。', eventTime)
         )
       );
       return;
@@ -232,6 +281,7 @@ export function useRemoteConsole() {
       if (!nextChunk) {
         return;
       }
+
       setViewState((current) => ({
         ...current,
         submitStatus: 'processing',
@@ -268,7 +318,7 @@ export function useRemoteConsole() {
       return;
     }
 
-    const errorMessage = requestEvent.errorMessage ?? '当前请求处理失败。';
+    const errorMessage = requestEvent.errorMessage ?? '处理失败，请稍后重试。';
     activeRunKeyRef.current = null;
     setViewState((current) => ({
       ...current,
@@ -291,12 +341,12 @@ export function useRemoteConsole() {
 
       const createdAt = new Date().toISOString();
       const optimisticUserMessage: ConversationMessage = {
-        id: `user-${crypto.randomUUID()}`,
+        id: createClientId('user'),
         role: 'user',
         content: trimmedContent,
         createdAt
       };
-      const runKey = crypto.randomUUID();
+      const runKey = createClientId('run');
 
       setIsSubmitting(true);
       setDraft('');
@@ -306,6 +356,7 @@ export function useRemoteConsole() {
         submitStatus: 'submitting',
         lastError: undefined
       }));
+
       let abortController: AbortController | null = null;
       activeRunKeyRef.current = runKey;
 
@@ -333,7 +384,8 @@ export function useRemoteConsole() {
         if (isAbortError(error)) {
           return;
         }
-        const errorMessage = error instanceof Error ? error.message : '当前请求处理失败。';
+
+        const errorMessage = error instanceof Error ? error.message : '提交失败，请稍后重试。';
         activeRunKeyRef.current = null;
         setViewState((current) => ({
           ...current,
@@ -356,14 +408,18 @@ export function useRemoteConsole() {
   );
 
   return {
+    canLaunchLocalCrab: workerSummary.isOnline === false,
     createSession,
     draft,
     emptyStateSuggestions: EMPTY_STATE_SUGGESTIONS,
     canStopStream:
       viewState.submitStatus === 'submitted' || viewState.submitStatus === 'processing',
     isComposerDisabled:
-      isSubmitting || viewState.submitStatus === 'submitted' || viewState.submitStatus === 'processing',
+      isSubmitting ||
+      viewState.submitStatus === 'submitted' ||
+      viewState.submitStatus === 'processing',
     isSubmitting,
+    launchLocalCrab,
     messages,
     sessionTitle: buildSessionTitle(sessionIndex),
     setDraft,

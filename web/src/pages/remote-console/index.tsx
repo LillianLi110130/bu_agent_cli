@@ -1,4 +1,4 @@
-import { Alert, Badge, Typography } from 'antd';
+import { Alert, Badge, Button, Typography } from 'antd';
 
 import { ComposerPanel } from './components/ComposerPanel';
 import { ConversationView } from './components/ConversationView';
@@ -39,9 +39,16 @@ export function RemoteConsolePage() {
 
       <main className={styles.chatStage}>
         <div className={styles.statusSlot}>
-          <div className={styles.connectionBadge}>
-            <Badge status={onlineStatus.badgeStatus} />
-            <Text className={styles.connectionText}>{onlineStatus.label}</Text>
+          <div className={styles.statusActions}>
+            <div className={styles.connectionBadge}>
+              <Badge status={onlineStatus.badgeStatus} />
+              <Text className={styles.connectionText}>{onlineStatus.label}</Text>
+            </div>
+            {controller.canLaunchLocalCrab ? (
+              <Button className={styles.launchButton} onClick={controller.launchLocalCrab}>
+                启动本地 Crab
+              </Button>
+            ) : null}
           </div>
         </div>
 

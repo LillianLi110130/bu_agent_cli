@@ -1,5 +1,7 @@
 import { Button, Skeleton, Typography } from 'antd';
 import { useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import type { ConversationMessage, SubmitStatus } from '../types';
 import styles from './ConversationView.module.less';
@@ -25,7 +27,9 @@ function renderMessageBody(message: ConversationMessage) {
         <Text className={styles.assistantLabel}>
           {message.status === 'processing' ? '正在回复' : '助手'}
         </Text>
-        <Paragraph className={styles.messageCopy}>{message.content}</Paragraph>
+        <div className={styles.markdownBody}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+        </div>
         <Text className={styles.messageTime}>{formatTimestamp(message.createdAt)}</Text>
       </div>
     );
