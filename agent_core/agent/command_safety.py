@@ -167,8 +167,42 @@ DANGEROUS_COMMAND_RULES: tuple[CommandSafetyRule, ...] = (
         "终止 agent 相关进程",
     ),
     _rule(
+        "delete_tg_agent_dir_rm",
+        r"\brm\b(?=[^;&|]*(?:-[^\s;|&]*r|--recursive\b))"
+        r"[^;&|]*\s(?:--\s+)?[\"']?(?:[^\"'\s;&|]+[\\/])?\.tg_agent[\\/]?[\"']?"
+        r"(?:\s|$|[;&|])",
+        "Command deletes the agent runtime/state directory.",
+        "self_protection",
+        "critical",
+        "block",
+        "删除 .tg_agent",
+    ),
+    _rule(
+        "delete_tg_agent_dir_cmd",
+        r"\b(?:rmdir|rd)\b(?=[^;&|]*/s\b)"
+        r"[^;&|]*\s[\"']?(?:[^\"'\s;&|]+[\\/])?\.tg_agent[\\/]?[\"']?"
+        r"(?:\s|$|[;&|])",
+        "Command deletes the agent runtime/state directory.",
+        "self_protection",
+        "critical",
+        "block",
+        "删除 .tg_agent",
+    ),
+    _rule(
+        "delete_tg_agent_dir_powershell",
+        r"\b(?:remove-item|rm|del|erase|rd|rmdir)\b"
+        r"(?=[^;&|]*(?:-recurse\b|\brecurse\b|/s\b))"
+        r"[^;&|]*[\"']?(?:[^\"'\s;&|]+[\\/])?\.tg_agent[\\/]?[\"']?"
+        r"(?:\s|$|[;&|])",
+        "Command deletes the agent runtime/state directory.",
+        "self_protection",
+        "critical",
+        "block",
+        "删除 .tg_agent",
+    ),
+    _rule(
         "rm_recursive",
-        r"\brm\s+-[^\s;|&]*r[^\s;|&]*\s+\S+",
+        r"\brm\b(?=[^;&|]*(?:-[^\s;|&]*r|--recursive\b))[^;&|]*\s+\S+",
         "Recursive deletion can remove user files or project state.",
         "filesystem",
         "high",
@@ -177,8 +211,9 @@ DANGEROUS_COMMAND_RULES: tuple[CommandSafetyRule, ...] = (
     ),
     _rule(
         "powershell_recursive_delete",
-        r"\b(remove-item|rm|del|erase|rd|rmdir)\b(?=.*\b(recurse|/s)\b)(?=.*\b(force|/q|/f)\b)",
-        "Recursive forced deletion can remove user files or project state.",
+        r"\b(remove-item|rm|del|erase|rd|rmdir)\b"
+        r"(?=[^;&|]*(?:-recurse\b|\brecurse\b|/s\b))",
+        "Recursive deletion can remove user files or project state.",
         "filesystem",
         "high",
         "ask",
@@ -222,7 +257,7 @@ DANGEROUS_COMMAND_RULES: tuple[CommandSafetyRule, ...] = (
     ),
     _rule(
         "git_push_force",
-        r"\bgit\s+push\b.*(?:--force\b|-[^\s;|&]*f)",
+        r"\bgit\s+push\b(?=[^;&|]*(?:--force(?:-with-lease)?\b|\s-f(?:\s|$|[;&|])))",
         "git force push may overwrite remote history.",
         "source_control",
         "high",
