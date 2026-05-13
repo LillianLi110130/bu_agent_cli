@@ -78,6 +78,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import BashLexer
 from rich.console import Console, Group
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
@@ -1578,6 +1579,7 @@ class TGAgentCLI:
                 border_style="bright_blue",
             )
         )
+
         self._console.print()
 
     async def _handle_slash_command(self, text: str, *, source: str = "local") -> bool:
@@ -2046,7 +2048,7 @@ class TGAgentCLI:
 
         cancel_event = asyncio.Event()
         pending_intermediate_text: list[str] = []
-        streamed_text_started = False
+        assistant_text_parts: list[str] = []
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2057,13 +2059,10 @@ class TGAgentCLI:
             if content:
                 intermediate_text_callback(content)
 
-        def render_stream_text(text: str) -> None:
-            nonlocal streamed_text_started
-            if enable_interactive_terminal_ui:
-                self._console.print(text, end="")
-            else:
-                self._write_stream_chunk(text)
-            streamed_text_started = True
+        def print_markdown_response(content: str | None) -> None:
+            if not content:
+                return
+            self._console.print(Markdown(content))
 
         # Background task to listen for 'q' key
         async def listen_for_cancel():
@@ -2220,28 +2219,27 @@ class TGAgentCLI:
                 elif isinstance(event, TextDeltaEvent):
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.delta)
+                    assistant_text_parts.append(event.delta)
                     self._stop_loading(self._loading)
                     self._loading = None
-                    render_stream_text(event.delta)
 
                 elif isinstance(event, TextEvent):
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.content)
+                    assistant_text_parts.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
-                    self._console.print(event.content, end="")
+                    logger.info(event.content)
 
                 elif isinstance(event, FinalResponseEvent):
                     pending_intermediate_text.clear()
                     self._stop_loading(self._loading)
                     self._loading = None
-                    final_response = event.content
-                    if enable_interactive_terminal_ui:
-                        self._console.print()
-                        self._console.print()
-                    elif streamed_text_started:
-                        sys.stdout.write("\n\n")
-                        sys.stdout.flush()
+                    markdown_content = event.content or "".join(assistant_text_parts)
+                    final_response = markdown_content
+                    self._console.print()
+                    print_markdown_response(markdown_content)
+                    self._console.print()
 
         except Exception as e:
             self._stop_loading(self._loading)
@@ -2927,49 +2925,63 @@ class TGAgentCLI:
             justify="center",
         )
 
-        version_text = Text(f"v{get_cli_version()}", style="dim #8ecae6", justify="center")
+        details = Text()
+        detail_rows: list[list[tuple[str, str]]] = [
+            [("工作目录：", "dim"), (str(self._ctx.working_dir), "bold white")],
+            [
+                ("当前模型：", "dim"),
+                (str(self._agent.llm.model), "bold #ffd166"),
+                ("，", "white"),
+                ("/model", "bold cyan"),
+                (" 切换模型", "white"),
+            ],
+            [
+                ("@ + Tab", "bold cyan"),
+                ("  查看技能，", "white"),
+                ('@"<path>"<message>', "bold #9cd7ff"),
+                (" 发送图片", "white"),
+            ],
+            [
+                ("/help", "bold cyan"),
+                (" 查看帮助，", "white"),
+                ("Ctrl+D", "bold #ffd166"),
+                (" 或 ", "white"),
+                ("/exit", "bold cyan"),
+                (" 退出", "white"),
+            ],
+        ]
+        for index, row in enumerate(detail_rows):
+            if index:
+                details.append("\n")
+            for text, style in row:
+                details.append(text, style=style)
 
-        tips = Text()
-        tips.append("Enter", style="bold white")
-        tips.append(" 发送消息，", style="white")
-        tips.append("/ + Tab", style="bold cyan")
-        tips.append(" 查看命令\n", style="white")
-        tips.append("@ + Tab", style="bold cyan")
-        tips.append(" 查看技能，", style="white")
-        tips.append('@"<path>"<message>', style="bold #9cd7ff")
-        tips.append(" 发送图片\n", style="white")
-        tips.append("Ctrl+D", style="bold #ffd166")
-        tips.append(" 或 ", style="dim")
-        tips.append("/exit", style="bold cyan")
-        tips.append(" 退出，准备好了就直接开工。", style="dim")
-
-        banner = Group(title, subtitle, version_text, Text(""), tips)
+        banner = Group(title, subtitle, Text(""), details)
 
         self._console.print(
             Panel(
                 banner,
                 title="[bold #ffd166]Welcome Aboard[/bold #ffd166]",
-                subtitle="[dim]scuttle mode engaged[/dim]",
+                subtitle="[dim]ready when you are[/dim]",
                 border_style="#ff7a59",
                 padding=(1, 2),
             )
         )
 
-        self._console.print()
-        self._console.print(f"[dim]工作目录：[/] {self._ctx.working_dir}")
-        if self._session_runtime is not None:
-            self._console.print(f"[dim]CLI 会话目录：[/] {self._session_runtime.rollout_dir}")
-        self._console.print(f"[dim]模型：[/] {self._agent.llm.model}")
+        version_notes = """**当前版本：** `v0.7.0`  `2026-05-11`
+
+- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
+- ✨ 优化edit工具
+- 🐞 修复模型响应内容被截断的阻断问题
+- 🐞 上下文压缩改为流式
+"""
         self._console.print(
-            f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
+            Panel(
+                Markdown(version_notes),
+                border_style="#5aa9e6",
+                padding=(1, 2),
+            )
         )
-        self._console.print(f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部")
-        self._console.print(f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部")
-        self._console.print(
-            "[dim]审批模式：[/] 已关闭（使用 [cyan]/approval on[/cyan] 可开启逐条审批）"
-        )
-        if self._model_presets:
-            self._console.print(f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}")
         self._console.print()
 
     def _print_help(self):
