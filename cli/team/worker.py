@@ -409,15 +409,13 @@ class TeamWorker:
         body: str,
         type: str = "message",
         metadata: dict | None = None,
-        reply_to: str | None = None,
     ) -> None:
-        self.messenger.send_message(
+        self.messenger.deliver(
             sender=self.member_id,
             recipient=recipient,
             type=type,
             body=body,
             metadata=metadata,
-            reply_to=reply_to,
         )
 
     def _write_heartbeat(self, status: str, **extra) -> None:

@@ -26,7 +26,7 @@ class TeamMessenger:
         self.mailbox = Mailbox(team_dir)
         self._append_event = append_event
 
-    def send_message(
+    def deliver(
         self,
         *,
         sender: str,
@@ -34,16 +34,14 @@ class TeamMessenger:
         body: str,
         type: str = "message",
         metadata: dict[str, Any] | None = None,
-        reply_to: str | None = None,
     ) -> TeamMessage:
-        message = self.mailbox.send(
+        message = self.mailbox.write_message(
             team_id=self.team_id,
             sender=sender,
             recipient=recipient,
             type=type,
             body=body,
             metadata=metadata,
-            reply_to=reply_to,
         )
         if self._append_event is not None:
             self._append_event("message_sent", sender, message.to_dict())

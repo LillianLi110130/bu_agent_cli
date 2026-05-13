@@ -151,7 +151,6 @@ class TeamMessage:
     type: str
     body: str
     metadata: dict[str, Any] = field(default_factory=dict)
-    reply_to: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
     read_at: str | None = None
 
@@ -166,7 +165,6 @@ class TeamMessage:
             type=normalize_message_type(str(payload.get("type") or "message")),
             body=str(payload.get("body") or ""),
             metadata=metadata if isinstance(metadata, dict) else {},
-            reply_to=payload.get("reply_to"),
             created_at=str(payload.get("created_at") or utc_now_iso()),
             read_at=payload.get("read_at"),
         )

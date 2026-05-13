@@ -158,7 +158,6 @@ async def team_send_message(
     sender: str = "lead",
     type: str = "message",
     metadata: dict | None = None,
-    reply_to: str | None = None,
 ) -> str:
     runtime, error = _runtime_or_error(ctx)
     if error is not None:
@@ -170,7 +169,6 @@ async def team_send_message(
         body=body,
         type=type,
         metadata=metadata,
-        reply_to=reply_to,
     )
     return json.dumps(message.to_dict(), ensure_ascii=False, indent=2)
 

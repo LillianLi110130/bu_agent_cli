@@ -42,6 +42,33 @@
       gap: 16px;
     }
 
+    .team-heading {
+      min-width: 0;
+      max-width: 780px;
+    }
+
+    .team-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .team-title-row h1 {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .team-goal {
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.35;
+      max-width: 760px;
+      overflow-wrap: anywhere;
+    }
+
     h1, h2, h3 {
       margin: 0;
       letter-spacing: 0;
@@ -64,7 +91,7 @@
       margin-bottom: 8px;
     }
 
-    button, input::file-selector-button {
+    button, select {
       border: 1px solid var(--line);
       background: #ffffff;
       color: var(--text);
@@ -86,10 +113,6 @@
       cursor: not-allowed;
     }
 
-    input[type="file"] {
-      max-width: 320px;
-    }
-
     .muted {
       color: var(--muted);
     }
@@ -104,6 +127,30 @@
       align-items: center;
       gap: 10px;
       flex-wrap: wrap;
+    }
+
+    .view-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .view-toggle button {
+      border: 0;
+      border-radius: 0;
+      min-height: 32px;
+      border-right: 1px solid var(--line);
+    }
+
+    .view-toggle button:last-child {
+      border-right: 0;
+    }
+
+    .view-toggle button.active {
+      background: var(--blue);
+      color: #ffffff;
     }
 
     .layout {
@@ -258,6 +305,83 @@
       overflow: auto;
     }
 
+    .chat-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(420px, 1fr) minmax(260px, 360px);
+      gap: 14px;
+      padding: 14px;
+      min-height: calc(100vh - 67px);
+    }
+
+    .conversation-list {
+      max-height: calc(100vh - 125px);
+      overflow: auto;
+    }
+
+    .chat-thread {
+      min-height: 480px;
+      max-height: calc(100vh - 125px);
+      overflow: auto;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+
+    .message-row {
+      display: flex;
+      margin-bottom: 10px;
+    }
+
+    .message-row.left {
+      justify-content: flex-start;
+    }
+
+    .message-row.right {
+      justify-content: flex-end;
+    }
+
+    .message-bubble {
+      max-width: min(680px, 78%);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #ffffff;
+    }
+
+    .message-row.right .message-bubble {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+    }
+
+    .message-body {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+    }
+
+    .detail-block {
+      margin-top: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      padding: 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.5;
+    }
+
+    .detail-block.error {
+      background: #fff7ed;
+      border-color: #fed7aa;
+      color: #9a3412;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
     .empty {
       color: var(--muted);
       border: 1px dashed var(--line);
@@ -271,6 +395,10 @@
         grid-template-columns: 1fr;
       }
 
+      .chat-layout {
+        grid-template-columns: 1fr;
+      }
+
       .summary {
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
@@ -279,22 +407,26 @@
 </head>
 <body>
   <header>
-    <div>
-      <h1>TgAgent Team Dashboard</h1>
-      <div id="teamMeta" class="muted">Choose a team directory to begin.</div>
+    <div class="team-heading">
+      <div class="team-title-row">
+        <h1 id="teamTitle">TgAgent Team Dashboard</h1>
+        <span id="teamStatusBadge" class="badge" hidden></span>
+      </div>
+      <div id="teamMeta" class="team-goal">Start with /team dashboard.</div>
     </div>
     <div class="toolbar">
-      <button id="chooseDir" class="primary">Choose Team Directory</button>
-      <label>
-        <input id="folderInput" type="file" webkitdirectory multiple hidden>
-        <button id="folderFallback" type="button">Choose Folder Snapshot</button>
-      </label>
-      <button id="refresh" disabled>Refresh</button>
-      <span id="mode" class="muted mono"></span>
+      <div class="view-toggle" aria-label="Dashboard view">
+        <button id="overviewTab" class="active" type="button">Overview</button>
+        <button id="chatTab" type="button">Chat</button>
+      </div>
+      <select id="teamSelect" disabled>
+        <option value="">No team selected</option>
+      </select>
+      <button id="refresh" class="primary" disabled>Refresh</button>
     </div>
   </header>
 
-  <main class="layout">
+  <main id="overviewView" class="layout">
     <div class="stack">
       <section>
         <h2>Summary</h2>
@@ -304,25 +436,27 @@
         <h2>Members</h2>
         <div id="members"></div>
       </section>
-    </div>
-
-    <section>
-      <h2>Tasks</h2>
-      <div id="tasks" class="tasks-grid"></div>
-    </section>
-
-    <div class="stack">
-      <section>
-        <h2>Lead Inbox</h2>
-        <div id="inbox"></div>
-      </section>
-      <section>
-        <h2>Warnings</h2>
-        <div id="warnings"></div>
-      </section>
       <section>
         <h2>Member Detail</h2>
         <div id="detail" class="empty">Select a member.</div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section>
+        <h2>Tasks</h2>
+        <div id="tasks" class="tasks-grid"></div>
+      </section>
+      <section>
+        <h2>Task Detail</h2>
+        <div id="taskDetail" class="empty">Select a task.</div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section>
+        <h2>Warnings</h2>
+        <div id="warnings"></div>
       </section>
       <section>
         <h2>Recent Events</h2>
@@ -331,204 +465,174 @@
     </div>
   </main>
 
+  <main id="chatView" class="chat-layout" hidden>
+    <section>
+      <h2>Conversations</h2>
+      <div id="conversationList" class="conversation-list"></div>
+    </section>
+    <section>
+      <h2 id="chatTitle">Chat</h2>
+      <div id="chatThread" class="chat-thread"></div>
+    </section>
+    <section>
+      <h2>Message Detail</h2>
+      <div id="messageDetail" class="empty">Select a message.</div>
+    </section>
+  </main>
+
   <script>
     const state = {
-      mode: "none",
-      directoryHandle: null,
-      fileList: null,
+      teams: [],
+      selectedTeamPrefix: "",
       selectedMember: null,
+      selectedTaskId: null,
+      selectedView: "overview",
+      chatParticipant: "lead",
+      selectedMessageId: null,
       snapshot: null,
+      chat: { participants: [], messages: [] },
+      renderKeys: {},
       refreshTimer: null
     };
 
     const $ = (id) => document.getElementById(id);
 
-    $("chooseDir").addEventListener("click", chooseLiveDirectory);
-    $("folderFallback").addEventListener("click", () => $("folderInput").click());
-    $("folderInput").addEventListener("change", (event) => {
-      state.mode = "snapshot";
-      state.fileList = Array.from(event.target.files || []);
-      state.directoryHandle = null;
-      $("refresh").disabled = false;
-      $("mode").textContent = "snapshot folder mode";
-      loadAndRender();
+    $("overviewTab").addEventListener("click", () => setView("overview"));
+    $("chatTab").addEventListener("click", () => setView("chat"));
+    $("teamSelect").addEventListener("change", async () => {
+      state.selectedTeamPrefix = $("teamSelect").value;
+      state.selectedMember = null;
+      state.selectedTaskId = null;
+      state.selectedMessageId = null;
+      await loadServerSnapshot();
     });
-    $("refresh").addEventListener("click", loadAndRender);
-
-    async function chooseLiveDirectory() {
-      if (!window.showDirectoryPicker) {
-        alert("This browser does not support live directory access. Use folder snapshot mode.");
-        return;
-      }
-      state.directoryHandle = await window.showDirectoryPicker({ mode: "read" });
-      state.fileList = null;
-      state.mode = "live";
-      $("refresh").disabled = false;
-      $("mode").textContent = "live file-system mode";
-      if (state.refreshTimer) clearInterval(state.refreshTimer);
-      state.refreshTimer = setInterval(loadAndRender, 1500);
-      await loadAndRender();
+    $("refresh").addEventListener("click", refreshCurrent);
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      initServerMode();
+    } else {
+      clearDashboard("Please open this dashboard through /team dashboard.");
     }
 
-    async function loadAndRender() {
+    async function refreshCurrent() {
+      await loadServerTeams({ keepSelection: true });
+      await loadServerSnapshot();
+    }
+
+    async function initServerMode() {
+      $("refresh").disabled = false;
+      await loadServerTeams({ keepSelection: false });
+      await loadServerSnapshot();
+      if (state.refreshTimer) clearInterval(state.refreshTimer);
+      state.refreshTimer = setInterval(refreshCurrent, 1000);
+    }
+
+    async function loadServerTeams({ keepSelection }) {
       try {
-        const files = state.mode === "live"
-          ? await readDirectoryHandle(state.directoryHandle)
-          : await readFileList(state.fileList);
-        state.snapshot = buildSnapshot(files);
+        const payload = await fetchJson("/api/teams");
+        state.teams = (payload.teams || []).map((team) => ({
+          prefix: team.team_id,
+          label: `${team.team_id}${team.is_active ? " (active)" : ""}`,
+          isActive: Boolean(team.is_active)
+        }));
+        const active = state.teams.find((team) => team.isActive);
+        if (!keepSelection || !state.teams.some((team) => team.prefix === state.selectedTeamPrefix)) {
+          state.selectedTeamPrefix = active?.prefix || state.teams[0]?.prefix || "";
+        }
+        renderTeamOptions();
+        if (!state.teams.length) {
+          clearDashboard("No teams found under the dashboard server teams root.");
+        }
+      } catch (error) {
+        console.error(error);
+        clearDashboard(`Failed to load teams from dashboard server: ${error.message || error}`);
+      }
+    }
+
+    async function loadServerSnapshot() {
+      if (!state.selectedTeamPrefix) return;
+      try {
+        const teamId = encodeURIComponent(state.selectedTeamPrefix);
+        const [snapshot, events, chat] = await Promise.all([
+          fetchJson(`/api/teams/${teamId}/snapshot`),
+          fetchJson(`/api/teams/${teamId}/events?limit=120`),
+          fetchJson(`/api/teams/${teamId}/chat`)
+        ]);
+        state.snapshot = normalizeServerSnapshot(snapshot, events.events || []);
+        state.chat = chat;
+        ensureChatParticipant();
         render(state.snapshot);
       } catch (error) {
         console.error(error);
-        $("teamMeta").textContent = `Failed to read team directory: ${error.message || error}`;
+        clearDashboard(`Failed to load team snapshot: ${error.message || error}`);
       }
     }
 
-    async function readDirectoryHandle(rootHandle) {
-      const files = new Map();
-      async function walk(handle, prefix) {
-        for await (const [name, entry] of handle.entries()) {
-          const path = prefix ? `${prefix}/${name}` : name;
-          if (entry.kind === "directory") {
-            await walk(entry, path);
-          } else if (entry.kind === "file") {
-            const file = await entry.getFile();
-            files.set(path, await file.text());
-          }
-        }
+    async function fetchJson(path) {
+      const response = await fetch(path, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || response.statusText);
       }
-      await walk(rootHandle, "");
-      return files;
+      return payload;
     }
 
-    async function readFileList(fileList) {
-      const files = new Map();
-      for (const file of fileList || []) {
-        const relative = normalizeSnapshotPath(file.webkitRelativePath || file.name);
-        files.set(relative, await file.text());
-      }
-      return files;
-    }
-
-    function normalizeSnapshotPath(path) {
-      const parts = path.split("/").filter(Boolean);
-      if (parts.length > 1) parts.shift();
-      return parts.join("/");
-    }
-
-    function readJson(files, path, fallback) {
-      if (!files.has(path)) return fallback;
-      try {
-        return JSON.parse(files.get(path));
-      } catch {
-        return fallback;
-      }
-    }
-
-    function readJsonByPrefix(files, prefix) {
-      const items = [];
-      for (const [path, text] of files.entries()) {
-        if (!path.startsWith(prefix) || !path.endsWith(".json")) continue;
-        try {
-          items.push({ path, data: JSON.parse(text) });
-        } catch {
-          items.push({ path, data: null, malformed: true });
-        }
-      }
-      return items;
-    }
-
-    function readJsonl(files, path, limit = 80) {
-      if (!files.has(path)) return [];
-      const records = [];
-      for (const line of files.get(path).split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        try {
-          records.push(JSON.parse(trimmed));
-        } catch {
-          records.push({ type: "malformed_event", payload: { line: trimmed } });
-        }
-      }
-      return records.slice(-limit).reverse();
-    }
-
-    function buildSnapshot(files) {
-      const config = readJson(files, "config.json", {});
-      const teamState = readJson(files, "state.json", {});
-      const members = (readJson(files, "members.json", { members: [] }).members || []);
-      const tasks = (readJson(files, "tasks.json", { tasks: [] }).tasks || []);
-      const heartbeats = new Map(
-        readJsonByPrefix(files, "heartbeats/")
-          .map((entry) => [basename(entry.path, ".json"), entry.data])
-      );
-      const leadInbox = readJsonByPrefix(files, "mailboxes/lead/inbox/")
-        .filter((entry) => entry.data)
-        .map((entry) => entry.data)
-        .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
-      const events = readJsonl(files, "events.jsonl", 120);
-      const taskById = new Map(tasks.map((task) => [task.task_id, task]));
-      const warnings = [];
-      const enrichedMembers = members.map((member) => {
-        const heartbeat = heartbeats.get(member.member_id) || null;
-        const status = heartbeat?.status || member.status || "running";
-        const heartbeatTime = heartbeat?.updated_at || member.last_heartbeat_at || member.updated_at;
-        const age = ageSeconds(heartbeatTime);
-        const isStale = age !== null && age > 300 && !["stopped", "failed"].includes(status);
-        const taskId = heartbeat?.task_id || null;
-        const currentTask = taskId
-          ? taskById.get(taskId) || null
-          : tasks.find((task) => task.claimed_by === member.member_id && task.status === "in_progress")
-            || tasks.find((task) => task.assigned_to === member.member_id && task.status === "in_progress")
-            || null;
-        const displayStatus = isStale ? "stale" : status;
-        if (displayStatus === "stale") warnings.push(`${member.member_id} heartbeat is stale`);
-        if (displayStatus === "failed") warnings.push(`${member.member_id} failed`);
-        return { ...member, heartbeat, display_status: displayStatus, heartbeat_age_seconds: age, current_task: currentTask };
+    function renderTeamOptions() {
+      const key = JSON.stringify({
+        selected: state.selectedTeamPrefix,
+        teams: state.teams.map((team) => [team.prefix, team.label])
       });
-      for (const task of tasks) {
-        if (task.status === "blocked") warnings.push(`${task.task_id} is blocked: ${task.title}`);
+      if (state.renderKeys.teamOptions === key) return;
+      state.renderKeys.teamOptions = key;
+      if (!state.teams.length) {
+        $("teamSelect").innerHTML = `<option value="">No teams found</option>`;
+        $("teamSelect").disabled = true;
+        return;
       }
+      $("teamSelect").innerHTML = state.teams.map((team) => `
+        <option value="${escapeAttr(team.prefix)}" ${team.prefix === state.selectedTeamPrefix ? "selected" : ""}>
+          ${escapeHtml(team.label)}
+        </option>
+      `).join("");
+      $("teamSelect").disabled = state.teams.length <= 1;
+    }
+
+    function clearDashboard(message) {
+      $("teamTitle").textContent = "TgAgent Team Dashboard";
+      $("teamStatusBadge").hidden = true;
+      $("teamStatusBadge").textContent = "";
+      $("teamStatusBadge").className = "badge";
+      $("teamMeta").textContent = message;
+      $("summary").innerHTML = "";
+      $("members").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+      $("tasks").innerHTML = "";
+      $("warnings").innerHTML = "";
+      $("taskDetail").className = "empty";
+      $("taskDetail").textContent = "Select a task.";
+      $("detail").className = "empty";
+      $("detail").textContent = "Select a member.";
+      $("events").innerHTML = "";
+      $("conversationList").innerHTML = "";
+      $("chatThread").innerHTML = "";
+      $("messageDetail").className = "empty";
+      $("messageDetail").textContent = "Select a message.";
+      state.renderKeys = {};
+    }
+
+    function normalizeServerSnapshot(snapshot, events) {
       return {
-        config,
-        state: teamState,
-        members: enrichedMembers,
-        tasks,
-        leadInbox,
-        events,
-        warnings,
-        summary: summarize(enrichedMembers, tasks, leadInbox)
+        config: snapshot.team || {},
+        state: snapshot.state || {},
+        members: snapshot.members || [],
+        tasks: snapshot.tasks || [],
+        leadInbox: snapshot.lead_inbox || [],
+        events: events || [],
+        warnings: (snapshot.warnings || []).map((warning) => warning.message || String(warning)),
+        summary: {
+          members: (snapshot.summary || {}).members || {},
+          tasks: (snapshot.summary || {}).tasks || {},
+          lead_inbox_unread: (snapshot.summary || {}).unread_lead_inbox_count || 0
+        }
       };
-    }
-
-    function summarize(members, tasks, leadInbox) {
-      const memberCounts = countBy(members, (item) => item.display_status || "unknown");
-      const taskCounts = countBy(tasks, (item) => item.status || "unknown");
-      return {
-        members: memberCounts,
-        tasks: taskCounts,
-        lead_inbox_unread: leadInbox.length
-      };
-    }
-
-    function countBy(items, fn) {
-      const counts = {};
-      for (const item of items) {
-        const key = fn(item);
-        counts[key] = (counts[key] || 0) + 1;
-      }
-      return counts;
-    }
-
-    function basename(path, suffix) {
-      const name = path.split("/").pop() || path;
-      return suffix && name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
-    }
-
-    function ageSeconds(iso) {
-      if (!iso) return null;
-      const timestamp = Date.parse(iso);
-      if (Number.isNaN(timestamp)) return null;
-      return Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
     }
 
     function formatAge(seconds) {
@@ -541,14 +645,34 @@
 
     function render(snapshot) {
       const teamId = snapshot.config.team_id || "(unknown team)";
-      $("teamMeta").textContent = `${teamId} / ${snapshot.config.status || "-"} / ${snapshot.config.goal || ""}`;
+      const status = snapshot.config.status || "-";
+      $("teamTitle").textContent = teamId;
+      $("teamStatusBadge").hidden = false;
+      $("teamStatusBadge").className = `badge ${escapeAttr(status)}`;
+      $("teamStatusBadge").textContent = labelFor(status);
+      $("teamMeta").textContent = snapshot.config.goal || "";
+      renderView();
       renderSummary(snapshot);
       renderMembers(snapshot);
       renderTasks(snapshot);
-      renderInbox(snapshot.leadInbox);
       renderWarnings(snapshot.warnings);
+      renderTaskDetail(snapshot);
       renderDetail(snapshot);
       renderEvents(snapshot.events);
+      renderChat();
+    }
+
+    function setView(view) {
+      state.selectedView = view;
+      renderView();
+    }
+
+    function renderView() {
+      const isChat = state.selectedView === "chat";
+      $("overviewView").hidden = isChat;
+      $("chatView").hidden = !isChat;
+      $("overviewTab").classList.toggle("active", !isChat);
+      $("chatTab").classList.toggle("active", isChat);
     }
 
     function renderSummary(snapshot) {
@@ -608,12 +732,19 @@
           ${groups[status].length ? groups[status].map(renderTask).join("") : `<div class="empty">None</div>`}
         </div>
       `).join("");
+      $("tasks").querySelectorAll("[data-task]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedTaskId = node.getAttribute("data-task");
+          render(snapshot);
+        });
+      });
     }
 
     function renderTask(task) {
       const owner = task.assigned_to || task.claimed_by || "-";
+      const selected = state.selectedTaskId === task.task_id ? " selected" : "";
       return `
-        <div class="item">
+        <div class="item clickable${selected}" data-task="${escapeAttr(task.task_id || "")}">
           <div class="row">
             <div class="title">${escapeHtml(task.title || task.task_id)}</div>
             ${badge(task.status)}
@@ -625,28 +756,34 @@
       `;
     }
 
-    function renderInbox(messages) {
-      const container = $("inbox");
-      if (!messages.length) {
-        container.innerHTML = `<div class="empty">No unread lead messages.</div>`;
-        return;
-      }
-      container.innerHTML = messages.map((message) => `
-        <div class="item">
-          <div class="row">
-            <div class="title">${escapeHtml(message.sender || "unknown")}</div>
-            ${badge(message.type || "message")}
-          </div>
-          <div class="subtitle mono">${escapeHtml(message.message_id || "")}</div>
-          <div class="subtitle">${escapeHtml(message.body || "")}</div>
-        </div>
-      `).join("");
-    }
-
     function renderWarnings(warnings) {
       $("warnings").innerHTML = warnings.length
         ? warnings.map((warning) => `<div class="item">${escapeHtml(warning)}</div>`).join("")
         : `<div class="empty">No warnings.</div>`;
+    }
+
+    function renderTaskDetail(snapshot) {
+      const task = snapshot.tasks.find((item) => item.task_id === state.selectedTaskId);
+      if (!task) {
+        $("taskDetail").className = "empty";
+        $("taskDetail").textContent = "Select a task.";
+        return;
+      }
+      $("taskDetail").className = "";
+      $("taskDetail").innerHTML = `
+        <h3>${escapeHtml(task.title || task.task_id)}</h3>
+        <div class="subtitle mono">${escapeHtml(task.task_id || "-")}</div>
+        <div class="subtitle">status: ${escapeHtml(task.status || "-")}</div>
+        <div class="subtitle">assigned: ${escapeHtml(task.assigned_to || "-")}</div>
+        <div class="subtitle">claimed: ${escapeHtml(task.claimed_by || "-")}</div>
+        ${task.depends_on?.length ? `<div class="subtitle">depends on: ${escapeHtml(task.depends_on.join(", "))}</div>` : ""}
+        ${task.write_scope?.length ? `<div class="subtitle">scope: ${escapeHtml(task.write_scope.join(", "))}</div>` : ""}
+        ${task.description ? `<h3 style="margin-top:12px;">Description</h3><div class="detail-block">${escapeHtml(task.description)}</div>` : ""}
+        ${task.result ? `<h3 style="margin-top:12px;">Result</h3><div class="detail-block">${escapeHtml(task.result)}</div>` : ""}
+        ${task.error ? `<h3 style="margin-top:12px;">Error</h3><div class="detail-block error">${escapeHtml(task.error)}</div>` : ""}
+        <h3 style="margin-top:12px;">Task JSON</h3>
+        <pre>${escapeHtml(JSON.stringify(task, null, 2))}</pre>
+      `;
     }
 
     function renderDetail(snapshot) {
@@ -671,6 +808,15 @@
 
     function renderEvents(events) {
       const container = $("events");
+      const key = JSON.stringify(events.map((event) => [
+        event.event_id,
+        event.offset,
+        event.type || event.event_type,
+        event.actor || event.member_id,
+        event.created_at || event.timestamp
+      ]));
+      if (state.renderKeys.events === key) return;
+      state.renderKeys.events = key;
       if (!events.length) {
         container.innerHTML = `<div class="empty">No events.</div>`;
         return;
@@ -690,6 +836,122 @@
           </div>
         `;
       }).join("");
+    }
+
+    function ensureChatParticipant() {
+      const participants = state.chat.participants || [];
+      if (participants.some((item) => item.id === state.chatParticipant)) return;
+      const lead = participants.find((item) => item.id === "lead");
+      state.chatParticipant = lead?.id || state.chat.default_participant || participants[0]?.id || "team-log";
+    }
+
+    function renderChat() {
+      renderConversationList();
+      renderChatThread();
+      renderMessageDetail();
+    }
+
+    function renderConversationList() {
+      const participants = state.chat.participants || [];
+      const container = $("conversationList");
+      if (!participants.length) {
+        container.innerHTML = `<div class="empty">No conversations.</div>`;
+        return;
+      }
+      container.innerHTML = participants.map((participant) => {
+        const selected = participant.id === state.chatParticipant ? " selected" : "";
+        const unread = participant.unread_count ? `<span class="badge message_pending">${participant.unread_count}</span>` : "";
+        return `
+          <div class="item clickable${selected}" data-chat-participant="${escapeAttr(participant.id)}">
+            <div class="row">
+              <div class="title">${escapeHtml(participant.label || participant.id)}</div>
+              ${unread}
+            </div>
+            <div class="subtitle">${escapeHtml(participant.message_count || 0)} messages</div>
+          </div>
+        `;
+      }).join("");
+      container.querySelectorAll("[data-chat-participant]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.chatParticipant = node.getAttribute("data-chat-participant");
+          state.selectedMessageId = null;
+          renderChat();
+        });
+      });
+    }
+
+    function renderChatThread() {
+      const participant = state.chatParticipant || "lead";
+      const messages = visibleChatMessages(participant);
+      $("chatTitle").textContent = labelForParticipant(participant);
+      const container = $("chatThread");
+      if (!messages.length) {
+        container.innerHTML = `<div class="empty">No messages.</div>`;
+        return;
+      }
+      container.innerHTML = messages.map((message) => {
+        const side = chatBubbleSide(message, participant);
+        const selected = state.selectedMessageId === message.message_id ? " selected" : "";
+        return `
+          <div class="message-row ${side}">
+            <div class="message-bubble item clickable${selected}" data-message-id="${escapeAttr(message.message_id || "")}">
+              <div class="row">
+                <div class="title">${escapeHtml(message.sender || "unknown")} -> ${escapeHtml(message.recipient || "unknown")}</div>
+                ${badge(message.type || "message")}
+              </div>
+              <div class="subtitle mono">${escapeHtml(formatTimestamp(message.created_at))}</div>
+              <div class="message-body">${escapeHtml(message.body || "")}</div>
+              ${message.metadata?.task_id ? `<div class="subtitle mono">task: ${escapeHtml(message.metadata.task_id)}</div>` : ""}
+            </div>
+          </div>
+        `;
+      }).join("");
+      container.querySelectorAll("[data-message-id]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedMessageId = node.getAttribute("data-message-id");
+          renderChat();
+        });
+      });
+    }
+
+    function renderMessageDetail() {
+      const message = (state.chat.messages || []).find((item) => item.message_id === state.selectedMessageId);
+      if (!message) {
+        $("messageDetail").className = "empty";
+        $("messageDetail").textContent = "Select a message.";
+        return;
+      }
+      $("messageDetail").className = "";
+      $("messageDetail").innerHTML = `
+        <h3>${escapeHtml(message.sender || "unknown")} -> ${escapeHtml(message.recipient || "unknown")}</h3>
+        <div class="subtitle">type: ${escapeHtml(message.type || "message")}</div>
+        <div class="subtitle">created: ${escapeHtml(message.created_at || "-")}</div>
+        <h3 style="margin-top:12px;">Message JSON</h3>
+        <pre>${escapeHtml(JSON.stringify(message, null, 2))}</pre>
+      `;
+    }
+
+    function visibleChatMessages(participant) {
+      const messages = state.chat.messages || [];
+      if (participant === "team-log") return messages;
+      return messages.filter((message) => message.sender === participant || message.recipient === participant);
+    }
+
+    function chatBubbleSide(message, participant) {
+      if (participant === "team-log") return message.sender === "lead" ? "right" : "left";
+      return message.sender === participant ? "right" : "left";
+    }
+
+    function labelForParticipant(participant) {
+      if (participant === "team-log") return "Team Log";
+      return `${participant} chat`;
+    }
+
+    function formatTimestamp(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
     }
 
     function badge(value) {

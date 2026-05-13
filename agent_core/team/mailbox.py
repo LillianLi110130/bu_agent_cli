@@ -21,7 +21,7 @@ class Mailbox:
         (self._box(member_id) / "inbox").mkdir(parents=True, exist_ok=True)
         (self._box(member_id) / "read").mkdir(parents=True, exist_ok=True)
 
-    def send(
+    def write_message(
         self,
         *,
         team_id: str,
@@ -30,7 +30,6 @@ class Mailbox:
         type: str,
         body: str,
         metadata: dict | None = None,
-        reply_to: str | None = None,
     ) -> TeamMessage:
         self.ensure(recipient)
         message = TeamMessage(
@@ -41,7 +40,6 @@ class Mailbox:
             type=normalize_message_type(type),
             body=body,
             metadata=dict(metadata or {}),
-            reply_to=reply_to,
         )
         path = self._box(recipient) / "inbox" / f"{message.message_id}.json"
         atomic_write_json(path, message.to_dict())

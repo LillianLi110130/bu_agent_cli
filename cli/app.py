@@ -1835,6 +1835,10 @@ class TGAgentCLI:
                     self._console.print(f"[red]{message}[/red]")
                     self._store_command_final_content(message)
                     return True
+                TeamSlashHandler(
+                    runtime=self._ctx.team_runtime,
+                    console=self._console,
+                ).start_dashboard([])
                 self._console.print("[cyan]进入 team lead 自动编排模式...[/cyan]")
                 prompt = build_team_auto_prompt(request)
                 final_content = await self._run_agent(prompt, has_image=False)
@@ -2674,7 +2678,7 @@ class TGAgentCLI:
             "- Treat `idle_notification` as a signal to inspect pending tasks and either assign more work or start completion/shutdown when the team is done.\n"
             "- Answer from available context when safe.\n"
             "- If the user must decide, ask the user one concise question before unblocking the teammate.\n"
-            "- Reply to the teammate with `team_send_message`, using type `message` for coordination or `clarification_response` for answers to blocker questions, and include `reply_to` with the original message_id.\n"
+            "- Reply to the teammate with `team_send_message`, using type `message` for coordination or `clarification_response` for answers to blocker questions.\n"
             "- Do not create a new team while handling this inbox trigger.\n"
         )
 

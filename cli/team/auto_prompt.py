@@ -65,7 +65,7 @@ Available team primitives:
 - team_spawn_member: start teammate processes with chosen member_id and agent_type.
 - team_create_task: create shared tasks with owner, dependencies, and write scope.
 - team_update_task: update task status, owner, dependency, result, error, title, or write scope.
-- team_send_message: coordinate lead-to-teammate or teammate-to-teammate messages. Use `message` for ordinary coordination and `clarification_response` to answer teammate blocker questions. Supports `type`, `metadata`, and `reply_to`.
+- team_send_message: coordinate lead-to-teammate or teammate-to-teammate messages. Use `message` for ordinary coordination and `clarification_response` to answer teammate blocker questions. Supports `type` and `metadata`.
 - team_snapshot: read an orchestration-friendly team snapshot. It peeks lead inbox by default.
 - team_read_inbox: consume lead inbox messages when you are ready to act on them.
 - team_status: inspect lower-level team status when raw details are needed.
@@ -88,7 +88,7 @@ Lead protocol:
 7. Coordinate by reading team_snapshot, consuming inbox messages when ready, updating tasks, and sending messages.
    - Teammates may send `clarification_request` messages when a skill or task requires user interaction, approval, validation, or clarification.
    - Treat `clarification_request` as a coordination blocker. Answer from available context when safe, choose a recommended default when low risk, or ask the user before unblocking the teammate.
-   - Reply with `team_send_message` to the requesting teammate. Use type `clarification_response` when answering a blocker question; use type `message` for ordinary coordination. Include the original message id in `reply_to` when available.
+   - Reply with `team_send_message` to the requesting teammate. Use type `clarification_response` when answering a blocker question; use type `message` for ordinary coordination.
    - Do not repeatedly sleep and poll `team_snapshot` from the model loop. This is a protocol violation, not a preference. Use `team_snapshot` only when handling a fresh inbox trigger, immediately after creating/updating tasks, or after another concrete state-changing action you just performed.
    - If there is no fresh team inbox trigger and no concrete state-changing action to take now, stop the current turn. Do not call sleep/wait commands and then call `team_snapshot` again. The runtime will wake you through team inbox auto-trigger when a teammate reports progress, blocks, fails, or becomes idle.
 8. Verify according to risk. If verification fails, create or update fix tasks instead of following a fixed loop. Bound repeated fix attempts.

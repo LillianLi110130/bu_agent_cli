@@ -31,6 +31,12 @@ from cli.team.auto_prompt import (
 )
 from cli.team.factory import create_team_member_agent
 from cli.team.handler import TeamSlashHandler
+from cli.team.dashboard_server import (
+    build_chat_payload,
+    build_events_payload,
+    build_snapshot_payload,
+    build_teams_payload,
+)
 from cli.team.event_log import TeamAgentEventLogHook
 from cli.team.heartbeat import TeamHeartbeatHook
 from cli.team.inbox import TeamInboxAttachmentHook, TeamInboxBuffer
@@ -706,22 +712,133 @@ def test_team_slash_handler_rejects_start_alias(tmp_path: Path) -> None:
     assert runtime.list_teams() == []
 
 
-def test_team_slash_handler_ui_prints_static_dashboard_paths(tmp_path: Path) -> None:
+def test_team_slash_handler_rejects_removed_ui_command(tmp_path: Path) -> None:
     runtime = TeamRuntime(
         teams_root=tmp_path / "teams",
         workspace_root=tmp_path,
         popen_factory=_fake_popen,
     )
-    team = runtime.start_team(goal="Observe team")
+    runtime.start_team(goal="Observe team")
     console = Console(record=True, width=140)
     handler = TeamSlashHandler(runtime=runtime, console=console)
 
     asyncio.run(handler.handle(["ui"]))
 
     output = console.export_text()
-    assert "Team dashboard 是纯 HTML" in output
-    assert "team_dashboard.html" in output
-    assert str(runtime.store.team_dir(team.team_id)).replace("\n", "") in output.replace("\n", "")
+    assert "未知 /team 子命令：ui" in output
+    assert "dashboard" in output
+
+
+def test_team_dashboard_server_payloads_are_read_only(tmp_path: Path) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    team = runtime.start_team(goal="Observe team", name="observe")
+    runtime.spawn_member(team_id=team.team_id, member_id="frontend-dev", agent_type="executor")
+    task = runtime.create_task(
+        team_id=team.team_id,
+        title="Build UI",
+        description="Implement dashboard UI",
+        assigned_to="frontend-dev",
+    )
+    runtime.store.write_heartbeat(
+        team.team_id,
+        "frontend-dev",
+        {
+            "status": "working",
+            "task_id": task.task_id,
+            "updated_at": utc_now_iso(),
+        },
+    )
+    runtime.send_message(
+        team_id=team.team_id,
+        sender="frontend-dev",
+        recipient="lead",
+        body="Need API shape",
+        type="clarification_request",
+    )
+
+    teams_payload = build_teams_payload(runtime)
+    snapshot = build_snapshot_payload(runtime, team.team_id)
+    events = build_events_payload(runtime, team.team_id, limit=10)
+    chat = build_chat_payload(runtime, team.team_id)
+    unread_after_snapshot = runtime.read_lead_inbox(team.team_id, ack=False)
+
+    assert teams_payload["active_team_id"] == team.team_id
+    assert teams_payload["teams"][0]["member_count"] == 1
+    assert teams_payload["teams"][0]["unread_lead_inbox_count"] >= 1
+    assert snapshot["team"]["team_id"] == team.team_id
+    assert snapshot["members"][0]["display_status"] == "working"
+    assert snapshot["members"][0]["current_task_id"] == task.task_id
+    assert snapshot["summary"]["unread_lead_inbox_count"] >= 1
+    assert unread_after_snapshot
+    assert any(event["type"] == "message_sent" for event in events["events"])
+    assert chat["default_participant"] == "lead"
+    assert [item["id"] for item in chat["participants"]][-1] == "team-log"
+    assert any(item["id"] == "frontend-dev" for item in chat["participants"])
+    assert any(message["sender"] == "frontend-dev" and message["recipient"] == "lead" for message in chat["messages"])
+
+
+def test_team_dashboard_command_starts_background_server(tmp_path: Path, monkeypatch) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    runtime.start_team(goal="Observe team", name="observe")
+    console = Console(record=True, width=140)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+    fake_server = SimpleNamespace(
+        host="127.0.0.1",
+        port=8787,
+        url="http://127.0.0.1:8787/",
+        is_running=lambda: True,
+    )
+
+    def fake_start_dashboard_server(*, runtime, host, port):
+        return fake_server
+
+    monkeypatch.setattr("cli.team.handler.start_dashboard_server", fake_start_dashboard_server)
+
+    asyncio.run(handler.handle(["dashboard", "--port", "0"]))
+
+    output = console.export_text()
+    server = getattr(runtime, "_team_dashboard_server")
+    assert server is fake_server
+    assert server.is_running()
+    assert "已在后台启动" in output
+    assert "http://127.0.0.1:8787/" in output
+
+
+def test_team_create_starts_dashboard_server(tmp_path: Path, monkeypatch) -> None:
+    runtime = TeamRuntime(
+        teams_root=tmp_path / "teams",
+        workspace_root=tmp_path,
+        popen_factory=_fake_popen,
+    )
+    console = Console(record=True, width=140)
+    handler = TeamSlashHandler(runtime=runtime, console=console)
+    fake_server = SimpleNamespace(
+        host="127.0.0.1",
+        port=8787,
+        url="http://127.0.0.1:8787/",
+        is_running=lambda: True,
+    )
+
+    def fake_start_dashboard_server(*, runtime, host, port):
+        return fake_server
+
+    monkeypatch.setattr("cli.team.handler.start_dashboard_server", fake_start_dashboard_server)
+
+    asyncio.run(handler.handle(["create", "Observe", "team", "--name", "observe"]))
+
+    output = console.export_text()
+    assert runtime.get_active_team() is not None
+    assert getattr(runtime, "_team_dashboard_server") is fake_server
+    assert "已创建并切换到 team" in output
+    assert "Team dashboard 已在后台启动" in output
 
 
 def test_team_slash_handler_create_and_active_cockpit(tmp_path: Path) -> None:
@@ -1374,7 +1491,7 @@ def test_team_worker_send_message_uses_shared_messenger(tmp_path: Path) -> None:
     assert messages[0].type == "message"
 
 
-def test_team_send_message_tool_preserves_metadata_and_reply_to(tmp_path: Path) -> None:
+def test_team_send_message_tool_preserves_metadata(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     teams_root = tmp_path / "teams"
     workspace.mkdir()
@@ -1396,7 +1513,6 @@ def test_team_send_message_tool_preserves_metadata_and_reply_to(tmp_path: Path) 
                 "recommended": "REST",
                 "blocking": True,
             },
-            reply_to="msg-parent",
         )
     )
 
@@ -1404,7 +1520,7 @@ def test_team_send_message_tool_preserves_metadata_and_reply_to(tmp_path: Path) 
     assert payload["type"] == "clarification_request"
     assert payload["metadata"]["blocking"] is True
     assert payload["metadata"]["recommended"] == "REST"
-    assert payload["reply_to"] == "msg-parent"
+    assert "reply_to" not in payload
 
 
 def test_team_inbox_attachment_hook_adds_messages_before_llm_call() -> None:

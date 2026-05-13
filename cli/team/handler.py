@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
 from typing import Any
 
@@ -10,6 +9,13 @@ from agent_core.team import team_experiment_disabled_message
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+
+from cli.team.dashboard_server import (
+    DEFAULT_DASHBOARD_HOST,
+    DEFAULT_DASHBOARD_PORT,
+    DashboardServerHandle,
+    start_dashboard_server,
+)
 
 
 class TeamSlashHandler:
@@ -45,8 +51,8 @@ class TeamSlashHandler:
             self._tasks(rest)
         elif subcommand == "inbox":
             self._inbox(rest)
-        elif subcommand == "ui":
-            self._ui(rest)
+        elif subcommand == "dashboard":
+            self._dashboard(rest)
         elif subcommand == "send":
             self._send(rest)
         elif subcommand == "status":
@@ -76,6 +82,7 @@ class TeamSlashHandler:
             return
         self.console.print(f"[green]已创建并切换到 team：[/green]{team.team_id}")
         self.console.print(f"[dim]Goal:[/] {team.goal}")
+        self.start_dashboard([])
 
     def _list_teams(self) -> None:
         teams = self.runtime.list_teams()
@@ -171,22 +178,32 @@ class TeamSlashHandler:
                 f"{message.sender} -> lead [{message.type}]\n{message.body}"
             )
 
-    def _ui(self, args: list[str]) -> None:
-        team_id = self._resolve_team_id(args)
-        if team_id is None:
-            self._print_error_usage("用法：/team ui [team_id]")
+    def _dashboard(self, args: list[str]) -> None:
+        self.start_dashboard(args)
+
+    def start_dashboard(self, args: list[str] | None = None) -> None:
+        args = args or []
+        existing = getattr(self.runtime, "_team_dashboard_server", None)
+        if isinstance(existing, DashboardServerHandle) and existing.is_running():
+            self.console.print("[green]Team dashboard server 已在后台运行。[/green]")
+            self.console.print(f"[cyan]URL:[/cyan] {existing.url}")
+            return
+        host = self._option(args, "--host") or DEFAULT_DASHBOARD_HOST
+        port_text = self._option(args, "--port")
+        try:
+            port = int(port_text) if port_text else DEFAULT_DASHBOARD_PORT
+        except ValueError:
+            self._print_error_usage("用法：/team dashboard [--host <host>] [--port <port>]")
             return
         try:
-            self.runtime.status(team_id)
-        except FileNotFoundError:
-            self.console.print(f"[red]Team 不存在：{team_id}[/red]")
+            server = start_dashboard_server(runtime=self.runtime, host=host, port=port)
+        except OSError as exc:
+            self.console.print(f"[red]启动 Team dashboard server 失败：{exc}[/red]")
             return
-        html_path = (Path(__file__).resolve().parent / "dashboard" / "team_dashboard.html")
-        team_dir = self.runtime.store.team_dir(team_id)
-        self.console.print("[green]Team dashboard 是纯 HTML，不会启动后端，也不会标记 inbox 已读。[/green]")
-        self.console.print(f"[cyan]HTML:[/cyan] {html_path}")
-        self.console.print(f"[cyan]Team directory:[/cyan] {team_dir}")
-        self.console.print("[dim]在浏览器打开 HTML 后，选择上面的 Team directory。[/dim]")
+        setattr(self.runtime, "_team_dashboard_server", server)
+        self.console.print("[green]Team dashboard 已在后台启动，请在浏览器打开下面的地址查看团队状态。[/green]")
+        self.console.print(f"[cyan]URL:[/cyan] {server.url}")
+        self.console.print(f"[cyan]Teams root:[/cyan] {self.runtime.store.teams_root}")
 
     def _send(self, args: list[str]) -> None:
         resolved = self._resolve_team_args(args)
@@ -299,7 +316,7 @@ class TeamSlashHandler:
     def _print_usage(self) -> None:
         self._print_dim(
             "用法：/team auto <goal> [--name <name>] | create <goal> [--name <name>] | "
-            "list|spawn|task|tasks|members|inbox|ui|send|status|stop|shutdown"
+            "list|spawn|task|tasks|members|inbox|dashboard|send|status|stop|shutdown"
         )
 
     def _print_error_usage(self, text: str) -> None:

@@ -392,15 +392,13 @@ class TeamRuntime:
         sender: str = "lead",
         type: str = "message",
         metadata: dict[str, Any] | None = None,
-        reply_to: str | None = None,
     ) -> TeamMessage:
-        return self._messenger(team_id).send_message(
+        return self._messenger(team_id).deliver(
             sender=sender,
             recipient=recipient,
             body=body,
             type=type,
             metadata=metadata,
-            reply_to=reply_to,
         )
 
     def read_lead_inbox(self, team_id: str, *, ack: bool = True) -> list[TeamMessage]:
