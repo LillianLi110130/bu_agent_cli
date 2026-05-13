@@ -603,6 +603,7 @@ Notes:
   %USERPROFILE%\.tg_agent\.venv from that stable runtime.
 - crab and dependencies are installed offline from wheelhouse\.
 - deploy.bat also installs a `crab` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
+- deploy.bat registers the `crab://open` protocol for launching the local CLI from a browser.
 - deploy.bat removes stale crab/tg-agent command shim files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
 - If `crab` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
@@ -642,6 +643,7 @@ $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
 $BashCommandShim = Join-Path $BinDir "crab"
+$ProtocolLauncher = Join-Path $BinDir "crab-protocol-launcher.bat"
 $LegacyCommandExe = Join-Path $BinDir "crab.exe"
 $LegacyCommandScript = Join-Path $BinDir "crab-script.py"
 $LegacyTgAgentEntryShim = Join-Path $BinDir "tg-agent-entry.py"
@@ -793,6 +795,21 @@ public static class NativeMethods
     }
     catch {
     }
+}
+
+function Register-CrabProtocol {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ProtocolLauncherPath
+    )
+
+    $protocolKey = "HKCU:\Software\Classes\crab"
+    $commandKey = Join-Path $protocolKey "shell\open\command"
+
+    New-Item -Path $commandKey -Force | Out-Null
+    Set-Item -Path $protocolKey -Value "URL:crab Protocol"
+    Set-ItemProperty -Path $protocolKey -Name "URL Protocol" -Value "" -Force
+    Set-Item -Path $commandKey -Value "`"$ProtocolLauncherPath`" `"%1`""
 }
 
 function Get-CommandCandidates {
@@ -958,6 +975,39 @@ $bashCommandShimContent = @(
 ) -join "`n"
 Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
 
+$protocolLauncherContent = @(
+    '@echo off',
+    'setlocal',
+    'set "CRAB_URL=%~1"',
+    'if /I "%CRAB_URL:~0,11%"=="crab://open" goto launch',
+    'if /I "%CRAB_URL:~0,13%"=="crab://launch" goto launch',
+    'exit /b 1',
+    '',
+    ':launch',
+    'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
+    'set "COMMAND_SHIM=%INSTALL_ROOT%\bin\crab.cmd"',
+    'if not exist "%COMMAND_SHIM%" (',
+    '    echo crab is not installed.',
+    '    echo Run deploy.bat from the portable bundle first.',
+    '    exit /b 1',
+    ')',
+    'if exist "%USERPROFILE%\Desktop" (',
+    '    cd /d "%USERPROFILE%\Desktop"',
+    ') else (',
+    '    cd /d "%USERPROFILE%"',
+    ')',
+    'call "%COMMAND_SHIM%"',
+    'set "EXITCODE=%ERRORLEVEL%"',
+    'if not "%EXITCODE%"=="0" (',
+    '    echo.',
+    '    echo crab exited with code %EXITCODE%.',
+    '    echo Press any key to close this window.',
+    '    pause >nul',
+    ')',
+    'exit /b %EXITCODE%'
+) -join "`r`n"
+Set-Content -LiteralPath $ProtocolLauncher -Value $protocolLauncherContent -Encoding ASCII
+
 foreach ($legacyPath in @(
     $LegacyCommandExe,
     $LegacyCommandScript,
@@ -996,6 +1046,7 @@ $existingCrabCommands = @(
 
 $pathUpdated = Add-UserPathEntry -Entry $BinDir
 Notify-EnvironmentChange
+Register-CrabProtocol -ProtocolLauncherPath $ProtocolLauncher
 
 if (-not $SkipDesktopShortcut) {
     $desktopDir = Join-Path $UserProfileDir "Desktop"
@@ -1021,6 +1072,7 @@ Write-Host "[portable] installed runtime: $InstalledRuntimeDir"
 Write-Host "[portable] venv ready: $VenvDir"
 Write-Host "[portable] command shim: $CommandShim"
 Write-Host "[portable] bash shim: $BashCommandShim"
+Write-Host "[portable] protocol launcher: $ProtocolLauncher"
 if ($pathUpdated) {
     Write-Host "[portable] added to user PATH: $BinDir"
 }
@@ -1028,6 +1080,7 @@ else {
     Write-Host "[portable] user PATH already contains: $BinDir"
 }
 Write-Host "[portable] launcher: $LauncherPath"
+Write-Host "[portable] registered protocol: crab://open"
 Write-Host "[portable] open a new cmd window from Explorer and run: crab"
 Write-Host "[portable] in Git Bash, you can also run: crab"
 Write-Host "[portable] if crab is still not found, sign out and sign back in once."

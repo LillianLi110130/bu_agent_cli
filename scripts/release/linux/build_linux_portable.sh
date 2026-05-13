@@ -346,6 +346,7 @@ Notes:
 - deploy.sh creates \$HOME/.tg_agent/.venv using the bundled Python runtime.
 - crab and dependencies are installed offline from wheelhouse/.
 - deploy.sh also installs a crab command shim into \$HOME/.tg_agent/bin and updates shell profile files.
+- deploy.sh registers the crab://open protocol for launching the local CLI from a browser.
 - If crab already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing \$HOME/.tg_agent/.env and tg_crab_worker.json are preserved.
 - For the most portable Linux bundles, provide a python-build-standalone runtime with --python-runtime-dir.
@@ -396,10 +397,13 @@ venv_dir="${install_root}/.venv"
 bin_dir="${install_root}/bin"
 entry_shim="${bin_dir}/crab-entry.py"
 command_shim="${bin_dir}/crab"
+protocol_launcher="${bin_dir}/crab-protocol-launcher.sh"
 env_file="${install_root}/.env"
 worker_config="${install_root}/tg_crab_worker.json"
 packaged_env_file="${app_dir}/.env"
 packaged_worker_config="${app_dir}/tg_crab_worker.json"
+desktop_dir="${user_home}/.local/share/applications"
+protocol_desktop="${desktop_dir}/crab-protocol.desktop"
 profile_line='export PATH="$HOME/.tg_agent/bin:$PATH"'
 
 find_runtime_python() {
@@ -522,6 +526,36 @@ exec "${venv_python}" -u "${entry_shim}" "$@"
 SH
 chmod +x "${command_shim}"
 
+cat > "${protocol_launcher}" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+url="${1:-}"
+
+if [[ "${url}" != crab://open* && "${url}" != crab://launch* ]]; then
+  exit 1
+fi
+
+user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
+command_shim="${install_root}/bin/crab"
+
+if [[ ! -x "${command_shim}" ]]; then
+  echo "crab is not installed." >&2
+  echo "Run ./deploy.sh from the portable bundle first." >&2
+  exit 1
+fi
+
+if [[ -d "${user_home}/Desktop" ]]; then
+  cd "${user_home}/Desktop"
+else
+  cd "${user_home}"
+fi
+
+exec "${command_shim}"
+SH
+chmod +x "${protocol_launcher}"
+
 if [[ -f "${packaged_env_file}" && ! -f "${env_file}" ]]; then
     cp "${packaged_env_file}" "${env_file}"
 fi
@@ -533,6 +567,25 @@ fi
 if [[ ! -f "${launcher_path}" ]]; then
     echo "Launcher missing: ${launcher_path}" >&2
     exit 1
+fi
+
+mkdir -p "${desktop_dir}"
+cat > "${protocol_desktop}" <<EOF_DESKTOP
+[Desktop Entry]
+Name=Crab Protocol Handler
+Comment=Handle crab:// links
+Exec=${protocol_launcher} %u
+Type=Application
+Terminal=true
+MimeType=x-scheme-handler/crab;
+NoDisplay=true
+EOF_DESKTOP
+
+if command -v xdg-mime >/dev/null 2>&1; then
+    xdg-mime default "$(basename "${protocol_desktop}")" x-scheme-handler/crab || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "${desktop_dir}" >/dev/null 2>&1 || true
 fi
 
 profile_updated=0
@@ -556,12 +609,14 @@ done < <(get_command_candidates || true)
 echo "[portable] install root: ${install_root}"
 echo "[portable] venv ready: ${venv_dir}"
 echo "[portable] command shim: ${command_shim}"
+echo "[portable] protocol launcher: ${protocol_launcher}"
 if ((profile_updated)); then
     echo "[portable] added to shell profile PATH: ${user_home}/.tg_agent/bin"
 else
     echo "[portable] shell profile PATH already contains: ${user_home}/.tg_agent/bin"
 fi
 echo "[portable] launcher: ${launcher_path}"
+echo "[portable] registered protocol: crab://open"
 echo "[portable] open a new shell and run: crab"
 
 if ((${#existing_commands[@]} > 0)); then
