@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "awesome-subagents",
+  "version": "1.0.0",
+  "description": "常用专业 subagent 集合：前端、后端、调试与验证。",
+  "min_cli_version": "0.1.0",
+  "capabilities": {
+    "agents": true,
+    "commands": false,
+    "skills": false
+  }
+}

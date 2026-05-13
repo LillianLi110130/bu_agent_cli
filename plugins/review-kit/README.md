@@ -5,7 +5,6 @@ Built-in example plugin for the V2 plugin system.
 Resources included:
 
 - `@review-kit:code-review`
-- `review-kit:reviewer`
 - `/review-kit:review`
 - `/review-kit:summarize`
 

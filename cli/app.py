@@ -70,6 +70,7 @@ from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
+from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter
 from prompt_toolkit.formatted_text import HTML
@@ -77,6 +78,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.lexers import PygmentsLexer
 from pygments.lexers import BashLexer
 from rich.console import Console, Group
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
@@ -442,6 +444,8 @@ class TGAgentCLI:
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
     BRIDGE_POLL_INTERVAL_SECONDS = 0.1
+    TEAM_INBOX_POLL_INTERVAL_SECONDS = 1.0
+    TEAM_AUTO_TRIGGER_TYPES = LEAD_AUTO_TRIGGER_MESSAGE_TYPES
 
     def __init__(
         self,
@@ -530,6 +534,8 @@ class TGAgentCLI:
             "_memory_store",
             getattr(self._ctx, "memory_store", MemoryStore()),
         )
+        self._seen_team_inbox_message_ids: set[str] = set()
+        self._team_auto_trigger_queue: asyncio.Queue[str] = asyncio.Queue()
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
@@ -1578,6 +1584,7 @@ class TGAgentCLI:
                 border_style="bright_blue",
             )
         )
+
         self._console.print()
 
     async def _handle_slash_command(self, text: str, *, source: str = "local") -> bool:
@@ -1811,6 +1818,78 @@ class TGAgentCLI:
             )
             return await handler.handle(args)
 
+        if command_name == "team":
+            from agent_core.team import team_experiment_disabled_message
+            from cli.team.auto_prompt import (
+                TeamAutoParseError,
+                build_team_auto_prompt,
+                parse_team_auto_request,
+            )
+            from cli.team.handler import TeamSlashHandler
+
+            try:
+                team_args = TeamSlashHandler.parse_args_text(args_text)
+            except ValueError as exc:
+                self._console.print(f"[red]参数解析失败：{exc}[/red]")
+                return True
+            if team_args and team_args[0].lower() == "auto":
+                if self._ctx.team_runtime is None:
+                    message = team_experiment_disabled_message()
+                    self._console.print(f"[yellow]{message}[/yellow]")
+                    self._store_command_final_content(message)
+                    return True
+                try:
+                    request = parse_team_auto_request(team_args[1:])
+                except TeamAutoParseError as exc:
+                    message = f"用法：/team auto <goal> [--name <name>] ({exc})"
+                    self._console.print(f"[red]{message}[/red]")
+                    self._store_command_final_content(message)
+                    return True
+                TeamSlashHandler(
+                    runtime=self._ctx.team_runtime,
+                    console=self._console,
+                ).start_dashboard([])
+                self._console.print("[cyan]进入 team lead 自动编排模式...[/cyan]")
+                prompt = build_team_auto_prompt(request)
+                final_content = await self._run_agent(prompt, has_image=False)
+                self._store_command_final_content(final_content or "")
+                return True
+            if team_args and team_args[0].lower() == "inbox" and "--peek" not in team_args[1:]:
+                if self._ctx.team_runtime is None:
+                    message = team_experiment_disabled_message()
+                    self._console.print(f"[yellow]{message}[/yellow]")
+                    self._store_command_final_content(message)
+                    return True
+                team_id = team_args[1] if len(team_args) > 1 and not team_args[1].startswith("--") else None
+                team_id = team_id or self._ctx.team_runtime.get_active_team()
+                if team_id is None:
+                    message = "用法：/team inbox [team_id] [--peek]"
+                    self._console.print(f"[red]{message}[/red]")
+                    self._store_command_final_content(message)
+                    return True
+                messages = self._ctx.team_runtime.read_lead_inbox(team_id, ack=True)
+                if not messages:
+                    message = "lead inbox 为空。"
+                    self._console.print(f"[dim]{message}[/dim]")
+                    self._store_command_final_content(message)
+                    return True
+                self._console.print(
+                    f"[cyan]已读取 {len(messages)} 条 lead inbox 消息，提交给 lead 处理...[/cyan]"
+                )
+                prompt = self._build_team_inbox_auto_trigger_prompt(
+                    team_id=team_id,
+                    messages=messages,
+                )
+                final_content = await self._run_agent(prompt, has_image=False)
+                self._store_command_final_content(final_content or "")
+                return True
+
+            handler = TeamSlashHandler(
+                runtime=self._ctx.team_runtime,
+                console=self._console,
+            )
+            return await handler.handle(team_args)
+
         if command_name == "plugins":
             if self._plugin_manager is None:
                 self._console.print("[yellow]插件管理器未配置。[/yellow]")
@@ -1983,7 +2062,7 @@ class TGAgentCLI:
 
         cancel_event = asyncio.Event()
         pending_intermediate_text: list[str] = []
-        streamed_text_started = False
+        assistant_text_parts: list[str] = []
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -1994,13 +2073,10 @@ class TGAgentCLI:
             if content:
                 intermediate_text_callback(content)
 
-        def render_stream_text(text: str) -> None:
-            nonlocal streamed_text_started
-            if enable_interactive_terminal_ui:
-                self._console.print(text, end="")
-            else:
-                self._write_stream_chunk(text)
-            streamed_text_started = True
+        def print_markdown_response(content: str | None) -> None:
+            if not content:
+                return
+            self._console.print(Markdown(content))
 
         # Background task to listen for 'q' key
         async def listen_for_cancel():
@@ -2157,29 +2233,27 @@ class TGAgentCLI:
                 elif isinstance(event, TextDeltaEvent):
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.delta)
+                    assistant_text_parts.append(event.delta)
                     self._stop_loading(self._loading)
                     self._loading = None
-                    render_stream_text(event.delta)
 
                 elif isinstance(event, TextEvent):
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.content)
+                    assistant_text_parts.append(event.content)
                     self._stop_loading(self._loading)
                     self._loading = None
                     logger.info(event.content)
-                    render_stream_text(event.content)
 
                 elif isinstance(event, FinalResponseEvent):
                     pending_intermediate_text.clear()
                     self._stop_loading(self._loading)
                     self._loading = None
-                    final_response = event.content
-                    if enable_interactive_terminal_ui:
-                        self._console.print()
-                        self._console.print()
-                    elif streamed_text_started:
-                        sys.stdout.write("\n\n")
-                        sys.stdout.flush()
+                    markdown_content = event.content or "".join(assistant_text_parts)
+                    final_response = markdown_content
+                    self._console.print()
+                    print_markdown_response(markdown_content)
+                    self._console.print()
 
         except Exception as e:
             self._stop_loading(self._loading)
@@ -2519,6 +2593,125 @@ class TGAgentCLI:
             if not outcome.continue_running:
                 return False
 
+    async def _consume_team_inbox_auto_triggers(self) -> None:
+        """Watch active team lead inbox and enqueue safe automatic lead prompts."""
+        while True:
+            await asyncio.sleep(self.TEAM_INBOX_POLL_INTERVAL_SECONDS)
+            runtime = getattr(self._ctx, "team_runtime", None)
+            if runtime is None:
+                continue
+            try:
+                team_id = runtime.get_active_team()
+            except Exception:
+                continue
+            if not team_id:
+                continue
+
+            try:
+                messages = runtime.read_lead_inbox(team_id, ack=False)
+            except Exception:
+                continue
+
+            trigger_messages = [
+                message
+                for message in messages
+                if message.type in self.TEAM_AUTO_TRIGGER_TYPES
+                and message.message_id not in self._seen_team_inbox_message_ids
+            ]
+            if not trigger_messages:
+                continue
+
+            prompt = self._build_team_inbox_auto_trigger_prompt(
+                team_id=team_id,
+                messages=trigger_messages,
+            )
+            message_ids = [message.message_id for message in trigger_messages]
+            enqueued = False
+            if self._bridge_store is not None:
+                request_id = self._team_auto_trigger_request_id(team_id, message_ids)
+                if self._bridge_store.has_request(request_id):
+                    enqueued = True
+                else:
+                    self._bridge_store.enqueue_text(
+                        prompt,
+                        source="local",
+                        source_meta={
+                            "kind": "team_inbox_auto_trigger",
+                            "team_id": team_id,
+                            "message_ids": message_ids,
+                        },
+                        request_id=request_id,
+                        input_kind="text",
+                    )
+                    enqueued = True
+            else:
+                await self._team_auto_trigger_queue.put(prompt)
+                enqueued = True
+
+            if not enqueued:
+                continue
+
+            for message in trigger_messages:
+                self._seen_team_inbox_message_ids.add(message.message_id)
+            try:
+                runtime.ack_lead_messages(team_id, set(message_ids))
+            except Exception:
+                logger.exception("Failed to ack team inbox auto trigger messages")
+
+            preview = trigger_messages[0].body.strip().replace("\n", " ")
+            if len(preview) > 80:
+                preview = preview[:77] + "..."
+            self._console.print(
+                f"\n[bold cyan]Team inbox 自动触发[/bold cyan] "
+                f"[dim]team={team_id}, messages={len(trigger_messages)}[/dim]"
+            )
+            if preview:
+                self._console.print(f"[dim]{preview}[/dim]")
+
+    @staticmethod
+    def _team_auto_trigger_request_id(team_id: str, message_ids: list[str]) -> str:
+        digest = hashlib.sha256(
+            f"{team_id}:{','.join(sorted(message_ids))}".encode("utf-8")
+        ).hexdigest()[:16]
+        return f"team_inbox_{digest}"
+
+    @staticmethod
+    def _build_team_inbox_auto_trigger_prompt(*, team_id: str, messages: list[Any]) -> str:
+        from cli.team.auto_prompt import TEAM_LANGUAGE_RULES
+
+        payload = [message.to_dict() for message in messages]
+        return (
+            "[Team Inbox Auto Trigger]\n\n"
+            f"Active team: {team_id}\n\n"
+            f"{TEAM_LANGUAGE_RULES}\n\n"
+            "New lead inbox messages:\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
+            "Instructions:\n"
+            "- Treat `clarification_request` messages as coordination blockers.\n"
+            "- Treat `task_done_notification` as a signal to inspect team_snapshot and decide whether to assign follow-up work, verify, or finish.\n"
+            "- Treat `task_blocked_notification` as a signal to inspect the blocked task, reply with `message` or `clarification_response`, or reassign/fix the task.\n"
+            "- Treat `worker_failed` as a signal to inspect member state and decide whether to reassign work or spawn a replacement.\n"
+            "- Treat `idle_notification` as a signal to inspect pending tasks and either assign more work or start completion/shutdown when the team is done.\n"
+            "- Answer from available context when safe.\n"
+            "- If the user must decide, ask the user one concise question before unblocking the teammate.\n"
+            "- Reply to the teammate with `team_send_message`, using type `message` for coordination or `clarification_response` for answers to blocker questions.\n"
+            "- Do not create a new team while handling this inbox trigger.\n"
+        )
+
+    async def _drain_team_auto_trigger_queue(self) -> bool:
+        """Run queued team inbox auto triggers when no bridge queue is configured."""
+        while True:
+            try:
+                prompt = self._team_auto_trigger_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return True
+            try:
+                outcome = await self._execute_input_text(prompt, source="local")
+            finally:
+                self._team_auto_trigger_queue.task_done()
+            if not outcome.continue_running:
+                return False
+
     async def _consume_subagent_notifications(self) -> None:
         """Render delegated agent progress and completion notifications."""
         queue = self._ctx.subagent_events
@@ -2609,6 +2802,7 @@ class TGAgentCLI:
         await self._refresh_empty_context_budget_display()
 
         notification_task = asyncio.create_task(self._consume_subagent_notifications())
+        team_inbox_task = asyncio.create_task(self._consume_team_inbox_auto_triggers())
 
         try:
             if self._bridge_store is not None:
@@ -2688,14 +2882,37 @@ class TGAgentCLI:
                 await self._run_with_bridge_session(session)
                 return
 
+            prompt_task: asyncio.Task | None = None
             while True:
                 try:
-                    user_input = await session.prompt_async()
+                    if prompt_task is None:
+                        prompt_task = asyncio.create_task(session.prompt_async())
+
+                    done, _ = await asyncio.wait(
+                        {prompt_task},
+                        timeout=self.BRIDGE_POLL_INTERVAL_SECONDS,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if prompt_task not in done:
+                        should_continue = await self._drain_team_auto_trigger_queue()
+                        if not should_continue:
+                            prompt_task.cancel()
+                            try:
+                                await prompt_task
+                            except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                                pass
+                            break
+                        continue
+
+                    user_input = await prompt_task
                 except EOFError:
                     self._console.print("\n[yellow]再见！[/yellow]")
                     break
                 except KeyboardInterrupt:
+                    prompt_task = None
                     continue
+                finally:
+                    prompt_task = None
 
                 user_input = user_input.strip()
                 if not user_input:
@@ -2705,6 +2922,11 @@ class TGAgentCLI:
                 if not outcome.continue_running:
                     break
         finally:
+            team_inbox_task.cancel()
+            try:
+                await team_inbox_task
+            except asyncio.CancelledError:
+                pass
             notification_task.cancel()
             try:
                 await notification_task
@@ -2723,49 +2945,63 @@ class TGAgentCLI:
             justify="center",
         )
 
-        version_text = Text(f"v{get_cli_version()}", style="dim #8ecae6", justify="center")
+        details = Text()
+        detail_rows: list[list[tuple[str, str]]] = [
+            [("工作目录：", "dim"), (str(self._ctx.working_dir), "bold white")],
+            [
+                ("当前模型：", "dim"),
+                (str(self._agent.llm.model), "bold #ffd166"),
+                ("，", "white"),
+                ("/model", "bold cyan"),
+                (" 切换模型", "white"),
+            ],
+            [
+                ("@ + Tab", "bold cyan"),
+                ("  查看技能，", "white"),
+                ('@"<path>"<message>', "bold #9cd7ff"),
+                (" 发送图片", "white"),
+            ],
+            [
+                ("/help", "bold cyan"),
+                (" 查看帮助，", "white"),
+                ("Ctrl+D", "bold #ffd166"),
+                (" 或 ", "white"),
+                ("/exit", "bold cyan"),
+                (" 退出", "white"),
+            ],
+        ]
+        for index, row in enumerate(detail_rows):
+            if index:
+                details.append("\n")
+            for text, style in row:
+                details.append(text, style=style)
 
-        tips = Text()
-        tips.append("Enter", style="bold white")
-        tips.append(" 发送消息，", style="white")
-        tips.append("/ + Tab", style="bold cyan")
-        tips.append(" 查看命令\n", style="white")
-        tips.append("@ + Tab", style="bold cyan")
-        tips.append(" 查看技能，", style="white")
-        tips.append('@"<path>"<message>', style="bold #9cd7ff")
-        tips.append(" 发送图片\n", style="white")
-        tips.append("Ctrl+D", style="bold #ffd166")
-        tips.append(" 或 ", style="dim")
-        tips.append("/exit", style="bold cyan")
-        tips.append(" 退出，准备好了就直接开工。", style="dim")
-
-        banner = Group(title, subtitle, version_text, Text(""), tips)
+        banner = Group(title, subtitle, Text(""), details)
 
         self._console.print(
             Panel(
                 banner,
                 title="[bold #ffd166]Welcome Aboard[/bold #ffd166]",
-                subtitle="[dim]scuttle mode engaged[/dim]",
+                subtitle="[dim]ready when you are[/dim]",
                 border_style="#ff7a59",
                 padding=(1, 2),
             )
         )
 
-        self._console.print()
-        self._console.print(f"[dim]工作目录：[/] {self._ctx.working_dir}")
-        if self._session_runtime is not None:
-            self._console.print(f"[dim]CLI 会话目录：[/] {self._session_runtime.rollout_dir}")
-        self._console.print(f"[dim]模型：[/] {self._agent.llm.model}")
+        version_notes = """**当前版本：** `v0.7.0`  `2026-05-11`
+
+- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
+- ✨ 优化edit工具
+- 🐞 修复模型响应内容被截断的阻断问题
+- 🐞 上下文压缩改为流式
+"""
         self._console.print(
-            f"[dim]工具：[/] bash, resolve_path, read, write, edit, glob, grep, todos"
+            Panel(
+                Markdown(version_notes),
+                border_style="#5aa9e6",
+                padding=(1, 2),
+            )
         )
-        self._console.print(f"[dim]Slash 命令：[/] 按 [cyan]/[/cyan] + [cyan]Tab[/cyan] 查看全部")
-        self._console.print(f"[dim]技能命令：[/] 按 [cyan]@[/cyan] + [cyan]Tab[/cyan] 查看全部")
-        self._console.print(
-            "[dim]审批模式：[/] 已关闭（使用 [cyan]/approval on[/cyan] 可开启逐条审批）"
-        )
-        if self._model_presets:
-            self._console.print(f"[dim]模型预设：[/] {', '.join(self._model_presets.keys())}")
         self._console.print()
 
     def _print_help(self):

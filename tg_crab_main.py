@@ -41,6 +41,12 @@ from agent_core.agent import (
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources
+from agent_core.team import (
+    TeamRuntime,
+    is_team_experiment_enabled,
+    team_experiment_disabled_message,
+)
+from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG, TERMINAL_TEAM_STATUSES
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.memory.review import MemoryReviewHook, MemoryReviewRunner
@@ -53,6 +59,7 @@ from agent_core.runtime_paths import (
     is_frozen_app,
     load_runtime_env,
     resolve_default_workspace,
+    tg_agent_home,
 )
 from agent_core.skill.discovery import default_skill_dirs
 from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
@@ -400,9 +407,19 @@ def _should_run_internal_worker(argv: list[str] | None = None) -> bool:
     return _INTERNAL_WORKER_FLAG in (argv or sys.argv[1:])
 
 
+def _should_run_internal_team_worker(argv: list[str] | None = None) -> bool:
+    """Return whether the current process should dispatch to a team worker."""
+    return TEAM_WORKER_INTERNAL_FLAG in (argv or sys.argv[1:])
+
+
 def _strip_internal_worker_flag(argv: list[str] | None = None) -> list[str]:
     """Return argv without the internal worker dispatch flag."""
     return [arg for arg in (argv or sys.argv[1:]) if arg != _INTERNAL_WORKER_FLAG]
+
+
+def _strip_internal_team_worker_flag(argv: list[str] | None = None) -> list[str]:
+    """Return argv without the internal team worker dispatch flag."""
+    return [arg for arg in (argv or sys.argv[1:]) if arg != TEAM_WORKER_INTERNAL_FLAG]
 
 
 def _build_worker_process_command(
@@ -586,6 +603,35 @@ async def _mark_worker_offline(
         await client.aclose()
 
 
+async def _shutdown_active_team_on_exit(ctx: SandboxContext) -> None:
+    """Best-effort shutdown for the active team owned by this CLI workspace."""
+    runtime = getattr(ctx, "team_runtime", None)
+    if runtime is None:
+        return
+
+    try:
+        active_team = runtime.get_active_team()
+    except Exception:
+        return
+    if not active_team:
+        return
+
+    try:
+        store = getattr(runtime, "store", None)
+        if store is not None:
+            config = store.load_config(active_team)
+            state = store.read_state(active_team)
+            if (
+                config.status in TERMINAL_TEAM_STATUSES
+                or not state.active
+            ):
+                return
+        runtime.shutdown_team(active_team)
+        console.print(f"[dim]已请求关闭 active team：[/] {active_team}")
+    except Exception as exc:
+        console.print(f"[yellow]关闭 active team 失败：{exc}[/yellow]")
+
+
 async def _close_llm_runtime(llm: Any) -> None:
     """Best-effort close for LLM runtimes that own async clients/transports."""
     close = getattr(llm, "close", None)
@@ -689,6 +735,11 @@ def create_agent(
         skill_registry=runtime.skill_registry,
     )
     ctx.subagent_executor = subagent_executor
+    if is_team_experiment_enabled():
+        ctx.team_runtime = TeamRuntime(
+            teams_root=tg_agent_home() / "teams",
+            workspace_root=ctx.root_dir,
+        )
 
     agent = Agent(
         llm=llm,
@@ -779,6 +830,7 @@ async def main():
     except KeyboardInterrupt:
         console.print("\n[yellow]再见！[/yellow]")
     finally:
+        await _shutdown_active_team_on_exit(ctx)
         if ctx.shell_task_manager is not None:
             await ctx.shell_task_manager.shutdown(cancel_running=True)
         if ctx.subagent_executor is not None:
@@ -793,6 +845,16 @@ async def main():
 
 def cli_main():
     """Console script entry point."""
+    if _should_run_internal_team_worker():
+        if not is_team_experiment_enabled():
+            console.print(f"[red]{team_experiment_disabled_message()}[/red]")
+            raise SystemExit(2)
+        from cli.team.worker import main as team_worker_main
+
+        sys.argv = [sys.argv[0], *_strip_internal_team_worker_flag()]
+        team_worker_main()
+        return
+
     if _should_run_internal_worker():
         from cli.worker.main import cli_main as worker_cli_main
 

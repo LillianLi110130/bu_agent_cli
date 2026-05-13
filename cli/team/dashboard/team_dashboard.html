@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TgAgent Team Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d8dde5;
+      --text: #1d2430;
+      --muted: #667085;
+      --blue: #2563eb;
+      --green: #16803c;
+      --amber: #b45309;
+      --red: #c2410c;
+      --purple: #7c3aed;
+      --gray: #64748b;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 14px;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .team-heading {
+      min-width: 0;
+      max-width: 780px;
+    }
+
+    .team-title-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .team-title-row h1 {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .team-goal {
+      color: var(--muted);
+      margin-top: 4px;
+      line-height: 1.35;
+      max-width: 760px;
+      overflow-wrap: anywhere;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    h2 {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    h3 {
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    button, select {
+      border: 1px solid var(--line);
+      background: #ffffff;
+      color: var(--text);
+      min-height: 34px;
+      border-radius: 6px;
+      padding: 0 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.primary {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #ffffff;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .view-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #ffffff;
+    }
+
+    .view-toggle button {
+      border: 0;
+      border-radius: 0;
+      min-height: 32px;
+      border-right: 1px solid var(--line);
+    }
+
+    .view-toggle button:last-child {
+      border-right: 0;
+    }
+
+    .view-toggle button.active {
+      background: var(--blue);
+      color: #ffffff;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) minmax(420px, 1fr) minmax(280px, 380px);
+      gap: 14px;
+      padding: 14px;
+      min-height: calc(100vh - 67px);
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      min-width: 0;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fbfcfe;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.1;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      margin-bottom: 8px;
+      background: #ffffff;
+      cursor: default;
+    }
+
+    .item.clickable {
+      cursor: pointer;
+    }
+
+    .item.clickable:hover {
+      border-color: #9db4e9;
+      background: #f8fbff;
+    }
+
+    .item.selected {
+      border-color: var(--blue);
+      background: #eff6ff;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .title {
+      font-weight: 700;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 3px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #eef2f7;
+      color: var(--gray);
+      white-space: nowrap;
+    }
+
+    .badge.working, .badge.in_progress { background: #dbeafe; color: var(--blue); }
+    .badge.idle, .badge.pending { background: #f1f5f9; color: var(--gray); }
+    .badge.completed, .badge.stopped { background: #dcfce7; color: var(--green); }
+    .badge.blocked, .badge.message_pending { background: #ffedd5; color: var(--amber); }
+    .badge.failed, .badge.stale { background: #fee2e2; color: var(--red); }
+    .badge.processing_messages { background: #ede9fe; color: var(--purple); }
+    .badge.starting, .badge.stopping { background: #fef3c7; color: var(--amber); }
+
+    .tasks-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 10px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .lane {
+      min-width: 180px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 10px;
+    }
+
+    .lane h3 {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #0f172a;
+      color: #dbeafe;
+      border-radius: 6px;
+      padding: 10px;
+      max-height: 260px;
+      overflow: auto;
+      font-size: 12px;
+    }
+
+    .timeline {
+      max-height: 360px;
+      overflow: auto;
+    }
+
+    .chat-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 280px) minmax(420px, 1fr) minmax(260px, 360px);
+      gap: 14px;
+      padding: 14px;
+      min-height: calc(100vh - 67px);
+    }
+
+    .conversation-list {
+      max-height: calc(100vh - 125px);
+      overflow: auto;
+    }
+
+    .chat-thread {
+      min-height: 480px;
+      max-height: calc(100vh - 125px);
+      overflow: auto;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+    }
+
+    .message-row {
+      display: flex;
+      margin-bottom: 10px;
+    }
+
+    .message-row.left {
+      justify-content: flex-start;
+    }
+
+    .message-row.right {
+      justify-content: flex-end;
+    }
+
+    .message-bubble {
+      max-width: min(680px, 78%);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #ffffff;
+    }
+
+    .message-row.right .message-bubble {
+      background: #eff6ff;
+      border-color: #bfdbfe;
+    }
+
+    .message-body {
+      margin-top: 8px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.45;
+    }
+
+    .detail-block {
+      margin-top: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fbfcfe;
+      padding: 10px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.5;
+    }
+
+    .detail-block.error {
+      background: #fff7ed;
+      border-color: #fed7aa;
+      color: #9a3412;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    .empty {
+      color: var(--muted);
+      border: 1px dashed var(--line);
+      border-radius: 6px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 1100px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .chat-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="team-heading">
+      <div class="team-title-row">
+        <h1 id="teamTitle">TgAgent Team Dashboard</h1>
+        <span id="teamStatusBadge" class="badge" hidden></span>
+      </div>
+      <div id="teamMeta" class="team-goal">Start with /team dashboard.</div>
+    </div>
+    <div class="toolbar">
+      <div class="view-toggle" aria-label="Dashboard view">
+        <button id="overviewTab" class="active" type="button">Overview</button>
+        <button id="chatTab" type="button">Chat</button>
+      </div>
+      <select id="teamSelect" disabled>
+        <option value="">No team selected</option>
+      </select>
+      <button id="refresh" class="primary" disabled>Refresh</button>
+    </div>
+  </header>
+
+  <main id="overviewView" class="layout">
+    <div class="stack">
+      <section>
+        <h2>Summary</h2>
+        <div id="summary" class="summary"></div>
+      </section>
+      <section>
+        <h2>Members</h2>
+        <div id="members"></div>
+      </section>
+      <section>
+        <h2>Member Detail</h2>
+        <div id="detail" class="empty">Select a member.</div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section>
+        <h2>Tasks</h2>
+        <div id="tasks" class="tasks-grid"></div>
+      </section>
+      <section>
+        <h2>Task Detail</h2>
+        <div id="taskDetail" class="empty">Select a task.</div>
+      </section>
+    </div>
+
+    <div class="stack">
+      <section>
+        <h2>Warnings</h2>
+        <div id="warnings"></div>
+      </section>
+      <section>
+        <h2>Recent Events</h2>
+        <div id="events" class="timeline"></div>
+      </section>
+    </div>
+  </main>
+
+  <main id="chatView" class="chat-layout" hidden>
+    <section>
+      <h2>Conversations</h2>
+      <div id="conversationList" class="conversation-list"></div>
+    </section>
+    <section>
+      <h2 id="chatTitle">Chat</h2>
+      <div id="chatThread" class="chat-thread"></div>
+    </section>
+    <section>
+      <h2>Message Detail</h2>
+      <div id="messageDetail" class="empty">Select a message.</div>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      teams: [],
+      selectedTeamPrefix: "",
+      selectedMember: null,
+      selectedTaskId: null,
+      selectedView: "overview",
+      chatParticipant: "lead",
+      selectedMessageId: null,
+      snapshot: null,
+      chat: { participants: [], messages: [] },
+      renderKeys: {},
+      refreshTimer: null
+    };
+
+    const $ = (id) => document.getElementById(id);
+
+    $("overviewTab").addEventListener("click", () => setView("overview"));
+    $("chatTab").addEventListener("click", () => setView("chat"));
+    $("teamSelect").addEventListener("change", async () => {
+      state.selectedTeamPrefix = $("teamSelect").value;
+      state.selectedMember = null;
+      state.selectedTaskId = null;
+      state.selectedMessageId = null;
+      await loadServerSnapshot();
+    });
+    $("refresh").addEventListener("click", refreshCurrent);
+    if (location.protocol === "http:" || location.protocol === "https:") {
+      initServerMode();
+    } else {
+      clearDashboard("Please open this dashboard through /team dashboard.");
+    }
+
+    async function refreshCurrent() {
+      await loadServerTeams({ keepSelection: true });
+      await loadServerSnapshot();
+    }
+
+    async function initServerMode() {
+      $("refresh").disabled = false;
+      await loadServerTeams({ keepSelection: false });
+      await loadServerSnapshot();
+      if (state.refreshTimer) clearInterval(state.refreshTimer);
+      state.refreshTimer = setInterval(refreshCurrent, 1000);
+    }
+
+    async function loadServerTeams({ keepSelection }) {
+      try {
+        const payload = await fetchJson("/api/teams");
+        state.teams = (payload.teams || []).map((team) => ({
+          prefix: team.team_id,
+          label: `${team.team_id}${team.is_active ? " (active)" : ""}`,
+          isActive: Boolean(team.is_active)
+        }));
+        const active = state.teams.find((team) => team.isActive);
+        if (!keepSelection || !state.teams.some((team) => team.prefix === state.selectedTeamPrefix)) {
+          state.selectedTeamPrefix = active?.prefix || state.teams[0]?.prefix || "";
+        }
+        renderTeamOptions();
+        if (!state.teams.length) {
+          clearDashboard("No teams found under the dashboard server teams root.");
+        }
+      } catch (error) {
+        console.error(error);
+        clearDashboard(`Failed to load teams from dashboard server: ${error.message || error}`);
+      }
+    }
+
+    async function loadServerSnapshot() {
+      if (!state.selectedTeamPrefix) return;
+      try {
+        const teamId = encodeURIComponent(state.selectedTeamPrefix);
+        const [snapshot, events, chat] = await Promise.all([
+          fetchJson(`/api/teams/${teamId}/snapshot`),
+          fetchJson(`/api/teams/${teamId}/events?limit=120`),
+          fetchJson(`/api/teams/${teamId}/chat`)
+        ]);
+        state.snapshot = normalizeServerSnapshot(snapshot, events.events || []);
+        state.chat = chat;
+        ensureChatParticipant();
+        render(state.snapshot);
+      } catch (error) {
+        console.error(error);
+        clearDashboard(`Failed to load team snapshot: ${error.message || error}`);
+      }
+    }
+
+    async function fetchJson(path) {
+      const response = await fetch(path, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.message || payload.error || response.statusText);
+      }
+      return payload;
+    }
+
+    function renderTeamOptions() {
+      const key = JSON.stringify({
+        selected: state.selectedTeamPrefix,
+        teams: state.teams.map((team) => [team.prefix, team.label])
+      });
+      if (state.renderKeys.teamOptions === key) return;
+      state.renderKeys.teamOptions = key;
+      if (!state.teams.length) {
+        $("teamSelect").innerHTML = `<option value="">No teams found</option>`;
+        $("teamSelect").disabled = true;
+        return;
+      }
+      $("teamSelect").innerHTML = state.teams.map((team) => `
+        <option value="${escapeAttr(team.prefix)}" ${team.prefix === state.selectedTeamPrefix ? "selected" : ""}>
+          ${escapeHtml(team.label)}
+        </option>
+      `).join("");
+      $("teamSelect").disabled = state.teams.length <= 1;
+    }
+
+    function clearDashboard(message) {
+      $("teamTitle").textContent = "TgAgent Team Dashboard";
+      $("teamStatusBadge").hidden = true;
+      $("teamStatusBadge").textContent = "";
+      $("teamStatusBadge").className = "badge";
+      $("teamMeta").textContent = message;
+      $("summary").innerHTML = "";
+      $("members").innerHTML = `<div class="empty">${escapeHtml(message)}</div>`;
+      $("tasks").innerHTML = "";
+      $("warnings").innerHTML = "";
+      $("taskDetail").className = "empty";
+      $("taskDetail").textContent = "Select a task.";
+      $("detail").className = "empty";
+      $("detail").textContent = "Select a member.";
+      $("events").innerHTML = "";
+      $("conversationList").innerHTML = "";
+      $("chatThread").innerHTML = "";
+      $("messageDetail").className = "empty";
+      $("messageDetail").textContent = "Select a message.";
+      state.renderKeys = {};
+    }
+
+    function normalizeServerSnapshot(snapshot, events) {
+      return {
+        config: snapshot.team || {},
+        state: snapshot.state || {},
+        members: snapshot.members || [],
+        tasks: snapshot.tasks || [],
+        leadInbox: snapshot.lead_inbox || [],
+        events: events || [],
+        warnings: (snapshot.warnings || []).map((warning) => warning.message || String(warning)),
+        summary: {
+          members: (snapshot.summary || {}).members || {},
+          tasks: (snapshot.summary || {}).tasks || {},
+          lead_inbox_unread: (snapshot.summary || {}).unread_lead_inbox_count || 0
+        }
+      };
+    }
+
+    function formatAge(seconds) {
+      if (seconds === null || seconds === undefined) return "-";
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m`;
+      return `${Math.floor(minutes / 60)}h`;
+    }
+
+    function render(snapshot) {
+      const teamId = snapshot.config.team_id || "(unknown team)";
+      const status = snapshot.config.status || "-";
+      $("teamTitle").textContent = teamId;
+      $("teamStatusBadge").hidden = false;
+      $("teamStatusBadge").className = `badge ${escapeAttr(status)}`;
+      $("teamStatusBadge").textContent = labelFor(status);
+      $("teamMeta").textContent = snapshot.config.goal || "";
+      renderView();
+      renderSummary(snapshot);
+      renderMembers(snapshot);
+      renderTasks(snapshot);
+      renderWarnings(snapshot.warnings);
+      renderTaskDetail(snapshot);
+      renderDetail(snapshot);
+      renderEvents(snapshot.events);
+      renderChat();
+    }
+
+    function setView(view) {
+      state.selectedView = view;
+      renderView();
+    }
+
+    function renderView() {
+      const isChat = state.selectedView === "chat";
+      $("overviewView").hidden = isChat;
+      $("chatView").hidden = !isChat;
+      $("overviewTab").classList.toggle("active", !isChat);
+      $("chatTab").classList.toggle("active", isChat);
+    }
+
+    function renderSummary(snapshot) {
+      const totalMembers = snapshot.members.length;
+      const totalTasks = snapshot.tasks.length;
+      $("summary").innerHTML = [
+        metric("Members", totalMembers),
+        metric("Tasks", totalTasks),
+        metric("Unread", snapshot.leadInbox.length),
+        metric("Warnings", snapshot.warnings.length)
+      ].join("");
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`;
+    }
+
+    function renderMembers(snapshot) {
+      const container = $("members");
+      if (!snapshot.members.length) {
+        container.innerHTML = `<div class="empty">No members registered.</div>`;
+        return;
+      }
+      container.innerHTML = snapshot.members.map((member) => {
+        const current = member.current_task ? `${member.current_task.task_id}: ${member.current_task.title}` : "No current task";
+        const selected = state.selectedMember === member.member_id ? " selected" : "";
+        return `
+          <div class="item clickable${selected}" data-member="${escapeAttr(member.member_id)}">
+            <div class="row">
+              <div class="title">${escapeHtml(member.member_id)}</div>
+              ${badge(member.display_status)}
+            </div>
+            <div class="subtitle">${escapeHtml(member.agent_type || "-")} / pid ${escapeHtml(member.pid || "-")} / ${formatAge(member.heartbeat_age_seconds)}</div>
+            <div class="subtitle">${escapeHtml(current)}</div>
+          </div>
+        `;
+      }).join("");
+      container.querySelectorAll("[data-member]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedMember = node.getAttribute("data-member");
+          render(snapshot);
+        });
+      });
+    }
+
+    function renderTasks(snapshot) {
+      const statuses = ["pending", "in_progress", "blocked", "completed"];
+      const groups = Object.fromEntries(statuses.map((status) => [status, []]));
+      for (const task of snapshot.tasks) {
+        const status = task.status || "pending";
+        if (!groups[status]) groups[status] = [];
+        groups[status].push(task);
+      }
+      $("tasks").innerHTML = statuses.map((status) => `
+        <div class="lane">
+          <h3><span>${labelFor(status)}</span><span class="badge ${status}">${groups[status].length}</span></h3>
+          ${groups[status].length ? groups[status].map(renderTask).join("") : `<div class="empty">None</div>`}
+        </div>
+      `).join("");
+      $("tasks").querySelectorAll("[data-task]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedTaskId = node.getAttribute("data-task");
+          render(snapshot);
+        });
+      });
+    }
+
+    function renderTask(task) {
+      const owner = task.assigned_to || task.claimed_by || "-";
+      const selected = state.selectedTaskId === task.task_id ? " selected" : "";
+      return `
+        <div class="item clickable${selected}" data-task="${escapeAttr(task.task_id || "")}">
+          <div class="row">
+            <div class="title">${escapeHtml(task.title || task.task_id)}</div>
+            ${badge(task.status)}
+          </div>
+          <div class="subtitle mono">${escapeHtml(task.task_id)}</div>
+          <div class="subtitle">owner: ${escapeHtml(owner)}</div>
+          ${task.error ? `<div class="subtitle">error: ${escapeHtml(task.error)}</div>` : ""}
+        </div>
+      `;
+    }
+
+    function renderWarnings(warnings) {
+      $("warnings").innerHTML = warnings.length
+        ? warnings.map((warning) => `<div class="item">${escapeHtml(warning)}</div>`).join("")
+        : `<div class="empty">No warnings.</div>`;
+    }
+
+    function renderTaskDetail(snapshot) {
+      const task = snapshot.tasks.find((item) => item.task_id === state.selectedTaskId);
+      if (!task) {
+        $("taskDetail").className = "empty";
+        $("taskDetail").textContent = "Select a task.";
+        return;
+      }
+      $("taskDetail").className = "";
+      $("taskDetail").innerHTML = `
+        <h3>${escapeHtml(task.title || task.task_id)}</h3>
+        <div class="subtitle mono">${escapeHtml(task.task_id || "-")}</div>
+        <div class="subtitle">status: ${escapeHtml(task.status || "-")}</div>
+        <div class="subtitle">assigned: ${escapeHtml(task.assigned_to || "-")}</div>
+        <div class="subtitle">claimed: ${escapeHtml(task.claimed_by || "-")}</div>
+        ${task.depends_on?.length ? `<div class="subtitle">depends on: ${escapeHtml(task.depends_on.join(", "))}</div>` : ""}
+        ${task.write_scope?.length ? `<div class="subtitle">scope: ${escapeHtml(task.write_scope.join(", "))}</div>` : ""}
+        ${task.description ? `<h3 style="margin-top:12px;">Description</h3><div class="detail-block">${escapeHtml(task.description)}</div>` : ""}
+        ${task.result ? `<h3 style="margin-top:12px;">Result</h3><div class="detail-block">${escapeHtml(task.result)}</div>` : ""}
+        ${task.error ? `<h3 style="margin-top:12px;">Error</h3><div class="detail-block error">${escapeHtml(task.error)}</div>` : ""}
+        <h3 style="margin-top:12px;">Task JSON</h3>
+        <pre>${escapeHtml(JSON.stringify(task, null, 2))}</pre>
+      `;
+    }
+
+    function renderDetail(snapshot) {
+      const member = snapshot.members.find((item) => item.member_id === state.selectedMember);
+      if (!member) {
+        $("detail").className = "empty";
+        $("detail").textContent = "Select a member.";
+        return;
+      }
+      $("detail").className = "";
+      $("detail").innerHTML = `
+        <h3>${escapeHtml(member.member_id)}</h3>
+        <div class="subtitle">agent: ${escapeHtml(member.agent_type || "-")}</div>
+        <div class="subtitle">status: ${escapeHtml(member.display_status || "-")}</div>
+        <div class="subtitle">heartbeat age: ${formatAge(member.heartbeat_age_seconds)}</div>
+        <h3 style="margin-top:12px;">Current Task</h3>
+        ${member.current_task ? renderTask(member.current_task) : `<div class="empty">No current task.</div>`}
+        <h3 style="margin-top:12px;">Heartbeat JSON</h3>
+        <pre>${escapeHtml(JSON.stringify(member.heartbeat || {}, null, 2))}</pre>
+      `;
+    }
+
+    function renderEvents(events) {
+      const container = $("events");
+      const key = JSON.stringify(events.map((event) => [
+        event.event_id,
+        event.offset,
+        event.type || event.event_type,
+        event.actor || event.member_id,
+        event.created_at || event.timestamp
+      ]));
+      if (state.renderKeys.events === key) return;
+      state.renderKeys.events = key;
+      if (!events.length) {
+        container.innerHTML = `<div class="empty">No events.</div>`;
+        return;
+      }
+      container.innerHTML = events.map((event) => {
+        const type = event.type || event.event_type || "event";
+        const actor = event.actor || event.member_id || "-";
+        const created = event.created_at || event.timestamp || "";
+        return `
+          <div class="item">
+            <div class="row">
+              <div class="title">${escapeHtml(type)}</div>
+              <span class="muted mono">${escapeHtml(actor)}</span>
+            </div>
+            <div class="subtitle">${escapeHtml(created)}</div>
+            <pre>${escapeHtml(JSON.stringify(event.payload || event, null, 2))}</pre>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function ensureChatParticipant() {
+      const participants = state.chat.participants || [];
+      if (participants.some((item) => item.id === state.chatParticipant)) return;
+      const lead = participants.find((item) => item.id === "lead");
+      state.chatParticipant = lead?.id || state.chat.default_participant || participants[0]?.id || "team-log";
+    }
+
+    function renderChat() {
+      renderConversationList();
+      renderChatThread();
+      renderMessageDetail();
+    }
+
+    function renderConversationList() {
+      const participants = state.chat.participants || [];
+      const container = $("conversationList");
+      if (!participants.length) {
+        container.innerHTML = `<div class="empty">No conversations.</div>`;
+        return;
+      }
+      container.innerHTML = participants.map((participant) => {
+        const selected = participant.id === state.chatParticipant ? " selected" : "";
+        const unread = participant.unread_count ? `<span class="badge message_pending">${participant.unread_count}</span>` : "";
+        return `
+          <div class="item clickable${selected}" data-chat-participant="${escapeAttr(participant.id)}">
+            <div class="row">
+              <div class="title">${escapeHtml(participant.label || participant.id)}</div>
+              ${unread}
+            </div>
+            <div class="subtitle">${escapeHtml(participant.message_count || 0)} messages</div>
+          </div>
+        `;
+      }).join("");
+      container.querySelectorAll("[data-chat-participant]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.chatParticipant = node.getAttribute("data-chat-participant");
+          state.selectedMessageId = null;
+          renderChat();
+        });
+      });
+    }
+
+    function renderChatThread() {
+      const participant = state.chatParticipant || "lead";
+      const messages = visibleChatMessages(participant);
+      $("chatTitle").textContent = labelForParticipant(participant);
+      const container = $("chatThread");
+      if (!messages.length) {
+        container.innerHTML = `<div class="empty">No messages.</div>`;
+        return;
+      }
+      container.innerHTML = messages.map((message) => {
+        const side = chatBubbleSide(message, participant);
+        const selected = state.selectedMessageId === message.message_id ? " selected" : "";
+        return `
+          <div class="message-row ${side}">
+            <div class="message-bubble item clickable${selected}" data-message-id="${escapeAttr(message.message_id || "")}">
+              <div class="row">
+                <div class="title">${escapeHtml(message.sender || "unknown")} -> ${escapeHtml(message.recipient || "unknown")}</div>
+                ${badge(message.type || "message")}
+              </div>
+              <div class="subtitle mono">${escapeHtml(formatTimestamp(message.created_at))}</div>
+              <div class="message-body">${escapeHtml(message.body || "")}</div>
+              ${message.metadata?.task_id ? `<div class="subtitle mono">task: ${escapeHtml(message.metadata.task_id)}</div>` : ""}
+            </div>
+          </div>
+        `;
+      }).join("");
+      container.querySelectorAll("[data-message-id]").forEach((node) => {
+        node.addEventListener("click", () => {
+          state.selectedMessageId = node.getAttribute("data-message-id");
+          renderChat();
+        });
+      });
+    }
+
+    function renderMessageDetail() {
+      const message = (state.chat.messages || []).find((item) => item.message_id === state.selectedMessageId);
+      if (!message) {
+        $("messageDetail").className = "empty";
+        $("messageDetail").textContent = "Select a message.";
+        return;
+      }
+      $("messageDetail").className = "";
+      $("messageDetail").innerHTML = `
+        <h3>${escapeHtml(message.sender || "unknown")} -> ${escapeHtml(message.recipient || "unknown")}</h3>
+        <div class="subtitle">type: ${escapeHtml(message.type || "message")}</div>
+        <div class="subtitle">created: ${escapeHtml(message.created_at || "-")}</div>
+        <h3 style="margin-top:12px;">Message JSON</h3>
+        <pre>${escapeHtml(JSON.stringify(message, null, 2))}</pre>
+      `;
+    }
+
+    function visibleChatMessages(participant) {
+      const messages = state.chat.messages || [];
+      if (participant === "team-log") return messages;
+      return messages.filter((message) => message.sender === participant || message.recipient === participant);
+    }
+
+    function chatBubbleSide(message, participant) {
+      if (participant === "team-log") return message.sender === "lead" ? "right" : "left";
+      return message.sender === participant ? "right" : "left";
+    }
+
+    function labelForParticipant(participant) {
+      if (participant === "team-log") return "Team Log";
+      return `${participant} chat`;
+    }
+
+    function formatTimestamp(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleString();
+    }
+
+    function badge(value) {
+      const raw = String(value || "unknown");
+      const cls = raw.replace(/[^a-zA-Z0-9_-]/g, "_");
+      return `<span class="badge ${escapeAttr(cls)}">${escapeHtml(labelFor(raw))}</span>`;
+    }
+
+    function labelFor(value) {
+      return String(value || "unknown").replaceAll("_", " ");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value).replaceAll("`", "&#96;");
+    }
+  </script>
+</body>
+</html>

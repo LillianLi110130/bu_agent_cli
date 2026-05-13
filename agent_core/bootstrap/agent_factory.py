@@ -13,6 +13,7 @@ from agent_core.agent.config import AgentConfig
 from agent_core.llm.base import BaseChatModel
 from agent_core.llm.factory import create_chat_model
 from agent_core.task import SubagentTaskManager
+from agent_core.team import TeamRuntime, is_team_experiment_enabled
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import default_skill_dirs, discover_skill_files
 from cli.im_bridge import get_bridge_store
@@ -200,6 +201,11 @@ def create_agent(
         context=ctx,
     )
     ctx.subagent_executor = subagent_executor
+    if is_team_experiment_enabled():
+        ctx.team_runtime = TeamRuntime(
+            teams_root=tg_agent_home() / "teams",
+            workspace_root=ctx.root_dir,
+        )
 
     agent = Agent(
         llm=llm,

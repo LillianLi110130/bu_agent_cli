@@ -37,18 +37,24 @@ class AgentCallRunner:
         request: "SubagentCallRequest",
     ) -> tuple[Agent, str]:
         if request.subagent_type:
-            return self._build_named_agent(parent_agent=parent_agent, request=request)
+            child = self.build_named_agent(
+                parent_agent=parent_agent,
+                agent_type=request.subagent_type,
+                runtime_role="subagent",
+            )
+            return child, request.prompt
         return self._build_fork_agent(parent_agent=parent_agent, request=request)
 
-    def _build_named_agent(
+    def build_named_agent(
         self,
         *,
         parent_agent: Agent,
-        request: "SubagentCallRequest",
-    ) -> tuple[Agent, str]:
-        config = self._registry.get_config(request.subagent_type)
+        agent_type: str,
+        runtime_role: str = "subagent",
+    ) -> Agent:
+        config = self._registry.get_config(agent_type)
         if config is None:
-            raise ValueError(f"Subagent '{request.subagent_type}' not found")
+            raise ValueError(f"Agent '{agent_type}' not found")
 
         llm = self._resolve_named_llm(parent_agent.llm, config.model)
         system_prompt = config.system_prompt
@@ -64,10 +70,10 @@ class AgentCallRunner:
             dependency_overrides=dict(parent_agent.dependency_overrides or {}),
             agent_config=config,
             hooks=list(parent_agent.hooks),
-            runtime_role="subagent",
+            runtime_role=runtime_role,
         )
         child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)
-        return child, request.prompt
+        return child
 
     def _build_fork_agent(
         self,
