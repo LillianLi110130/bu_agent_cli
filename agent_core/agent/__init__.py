@@ -2,14 +2,24 @@
 Agent module for running agentic loops with tool calling.
 """
 
+from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
+from agent_core.agent.command_safety import build_command_safety_approval_policy
 from agent_core.agent.compaction import (
     CompactionConfig,
     CompactionResult,
     CompactionService,
     CompactionWorkingState,
 )
-from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
+from agent_core.agent.config import AgentConfig, parse_agent_config
 from agent_core.agent.context import ContextManager
+from agent_core.agent.events import (
+    AgentEvent,
+    FinalResponseEvent,
+    TextEvent,
+    ThinkingEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from agent_core.agent.hitl import (
     HumanApprovalDecision,
     HumanApprovalRequest,
@@ -21,6 +31,7 @@ from agent_core.agent.hooks import (
     AgentHook,
     AuditHook,
     BashFileTaskGuardHook,
+    DangerousBashCommandGuardHook,
     ExcelReadGuardHook,
     FinishGuardHook,
     HookContext,
@@ -31,19 +42,10 @@ from agent_core.agent.hooks import (
     ToolPolicyHook,
 )
 from agent_core.agent.model_routing_hook import ModelRoutingHook
-from agent_core.agent.events import (
-    AgentEvent,
-    FinalResponseEvent,
-    TextEvent,
-    ThinkingEvent,
-    ToolCallEvent,
-    ToolResultEvent,
-)
 from agent_core.agent.registry import AgentRegistry, get_agent_registry
 from agent_core.agent.runtime_events import RuntimeEvent
 from agent_core.agent.runtime_state import AgentRunState
 from agent_core.agent.service import Agent, TaskComplete
-from agent_core.agent.config import AgentConfig, parse_agent_config
 
 __all__ = [
     "Agent",
@@ -66,6 +68,7 @@ __all__ = [
     "ToolPolicyHook",
     "AuditHook",
     "BashFileTaskGuardHook",
+    "DangerousBashCommandGuardHook",
     "ExcelReadGuardHook",
     "SubagentCompletionHook",
     "ModelRoutingHook",
@@ -75,6 +78,7 @@ __all__ = [
     "HumanInLoopHandler",
     "HumanApprovalHook",
     "build_default_approval_policy",
+    "build_command_safety_approval_policy",
     # Compaction
     "CompactionConfig",
     "CompactionResult",

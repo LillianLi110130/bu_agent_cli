@@ -3297,26 +3297,67 @@ class TGAgentCLI:
             f"[bold]审批原因：[/bold] {request.reason}\n"
             f"{command_preview_line}"
             f"[bold]参数：[/bold] {args_preview}\n"
-            "[dim]提示：如果后续想关闭审批，可在本轮结束后输入 /approval off。[/dim]",
+            f"{self._approval_hint(request)}",
             title="[bold yellow]需要审批[/bold yellow]",
             border_style="yellow",
         )
         self._console.print()
         self._console.print(panel)
 
+        if request.approval_kind == "safety":
+            session_label = request.session_approval_label or "该风险"
+            session_choice = f"本会话内允许执行 {session_label} 指令"
+            choice = await self._prompter.prompt_choice(
+                "请选择是否允许这次危险命令：",
+                choices=[
+                    "仅本次允许",
+                    session_choice,
+                    "拒绝",
+                ],
+                default="拒绝",
+            )
+            if choice == "仅本次允许":
+                self._console.print("[green]已批准，仅本次允许。[/green]")
+                self._console.print()
+                return HumanApprovalDecision(approved=True, scope="once")
+            if choice == session_choice:
+                self._console.print(
+                    f"[green]已批准，本会话内允许执行 {session_label} 指令。[/green]"
+                )
+                self._console.print()
+                return HumanApprovalDecision(approved=True, scope="session")
+
+            reason = await self._prompter.prompt_text("拒绝原因", optional=True)
+            self._console.print("[yellow]已拒绝。[/yellow]")
+            self._console.print()
+            return HumanApprovalDecision(
+                approved=False,
+                reason=reason or None,
+                scope="deny",
+            )
+
         approved = await self._prompter.prompt_yes_no(
-            "是否批准这次工具调用？如需后续关闭审批，可在本轮结束后使用 /approval off",
+            "是否仅本次允许这次工具调用？如需后续关闭审批，可在本轮结束后使用 /approval off",
             default=False,
         )
         if approved:
-            self._console.print("[green]已批准。[/green]")
+            self._console.print("[green]已批准，仅本次允许。[/green]")
             self._console.print()
-            return HumanApprovalDecision(approved=True)
+            return HumanApprovalDecision(approved=True, scope="once")
 
         reason = await self._prompter.prompt_text("拒绝原因", optional=True)
         self._console.print("[yellow]已拒绝。[/yellow]")
         self._console.print()
-        return HumanApprovalDecision(approved=False, reason=reason or None)
+        return HumanApprovalDecision(approved=False, reason=reason or None, scope="deny")
+
+    @staticmethod
+    def _approval_hint(request: HumanApprovalRequest) -> str:
+        if request.approval_kind == "safety":
+            return (
+                "[dim]提示：本会话内允许只覆盖当前命中的同类安全规则；"
+                "不会允许其他危险规则，也不会允许被硬拦截的命令。[/dim]"
+            )
+        return "[dim]提示：如果后续想关闭审批，可在本轮结束后输入 /approval off。[/dim]"
 
     def _print_slash_help(self):
         """Print slash command help information."""

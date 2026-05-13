@@ -34,9 +34,11 @@ from agent_core.agent import (
     AgentHook,
     AuditHook,
     BashFileTaskGuardHook,
+    DangerousBashCommandGuardHook,
     ExcelReadGuardHook,
     HumanApprovalHook,
     SubagentCompletionHook,
+    build_command_safety_approval_policy,
     build_default_approval_policy,
 )
 from agent_core.agent.config import AgentConfig
@@ -67,7 +69,7 @@ from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.task import SubagentTaskManager
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id, get_bridge_store
+from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.auth import (
@@ -678,7 +680,11 @@ def build_agent_hooks() -> list[AgentHook]:
     only adds optional extra hooks.
     """
     hooks: list[AgentHook] = [
-        HumanApprovalHook(policy=build_default_approval_policy()),
+        DangerousBashCommandGuardHook(),
+        HumanApprovalHook(
+            mandatory_policy=build_command_safety_approval_policy(),
+            policy=build_default_approval_policy(),
+        ),
         BashFileTaskGuardHook(),
         ExcelReadGuardHook(),
         SubagentCompletionHook(),
