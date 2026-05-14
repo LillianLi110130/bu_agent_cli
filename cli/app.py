@@ -71,12 +71,6 @@ from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import ThreadedCompleter
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.lexers import PygmentsLexer
-from pygments.lexers import BashLexer
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -473,6 +467,7 @@ class TGAgentCLI:
         self._step_number = 0
         self._loading: _SafeLoadingIndicator | None = None
         self._interactive_terminal_ui_enabled = True
+        self._fixed_input_tui_enabled = False
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
@@ -972,6 +967,9 @@ class TGAgentCLI:
 
     def _print_context_budget_status(self, snapshot: _CLIContextBudgetSnapshot) -> None:
         status_line = self._format_context_budget_status(snapshot)
+        if self._fixed_input_tui_enabled:
+            self._last_context_budget_status_line = status_line
+            return
         if status_line == self._last_context_budget_status_line:
             return
         self._last_context_budget_status_line = status_line
@@ -2033,6 +2031,7 @@ class TGAgentCLI:
         intermediate_text_callback: Callable[[str], None] | None = None,
         propagate_errors: bool = False,
         enable_interactive_terminal_ui: bool = True,
+        cancel_event: asyncio.Event | None = None,
     ) -> str | None:
         """Run the agent with user input and display events."""
         self._step_number = 0
@@ -2060,9 +2059,11 @@ class TGAgentCLI:
         # Create cancellation event for 'q' key
         import asyncio
 
-        cancel_event = asyncio.Event()
+        run_cancel_event = cancel_event or asyncio.Event()
+        owns_cancel_event = cancel_event is None
         pending_intermediate_text: list[str] = []
         assistant_text_parts: list[str] = []
+        streamed_text_started = False
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2090,11 +2091,11 @@ class TGAgentCLI:
                 try:
                     import msvcrt
 
-                    while not cancel_event.is_set():
+                    while not run_cancel_event.is_set():
                         if msvcrt.kbhit():  # Check if key is available
                             ch = msvcrt.getwch()  # Get wide char (Unicode)
                             if ch.lower() == "q":
-                                cancel_event.set()
+                                run_cancel_event.set()
                                 break
                         await asyncio.sleep(0.05)  # Small delay to prevent busy-wait
                 except (ImportError, AttributeError):
@@ -2114,12 +2115,12 @@ class TGAgentCLI:
                         # Not a TTY, skip
                         return
 
-                    while not cancel_event.is_set():
+                    while not run_cancel_event.is_set():
                         # Check if data is available on stdin
                         if select.select([sys.stdin], [], [], 0)[0]:
                             ch = sys.stdin.read(1)
                             if ch.lower() == "q":
-                                cancel_event.set()
+                                run_cancel_event.set()
                                 break
                         await asyncio.sleep(0.05)
                 except (ImportError, AttributeError, termios.error, OSError):
@@ -2136,14 +2137,18 @@ class TGAgentCLI:
         listener_task = asyncio.create_task(listen_for_cancel())
         try:
             # Pass cancel_event to agent for immediate cancellation
-            async for event in active_agent.query_stream(user_input, cancel_event=cancel_event):
+            async for event in active_agent.query_stream(
+                user_input,
+                cancel_event=run_cancel_event,
+            ):
                 # Cancellation is now handled inside query_stream for immediate response
                 # This check is for final confirmation
-                if cancel_event.is_set():
+                if run_cancel_event.is_set():
                     if self._ctx.subagent_executor is not None:
                         await self._ctx.subagent_executor.cancel_running_foreground_runs()
                     self._console.print()
-                    self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
+                    cancel_source = "Ctrl+C" if self._fixed_input_tui_enabled else "q 键"
+                    self._console.print(f"[yellow]用户已取消本次运行（{cancel_source}）[/yellow]")
                     break
 
                 if isinstance(event, _CLIContextBudgetSnapshot):
@@ -2263,7 +2268,8 @@ class TGAgentCLI:
                 raise
         finally:
             # Cancel the listener task
-            cancel_event.set()
+            if owns_cancel_event:
+                run_cancel_event.set()
             listener_task.cancel()
             try:
                 await listener_task
@@ -2414,6 +2420,7 @@ class TGAgentCLI:
         source: str = "local",
         parsed_remote_image=None,
         bridge_request: BridgeRequest | None = None,
+        cancel_event: asyncio.Event | None = None,
     ) -> _ExecutionOutcome:
         """Execute one normalized line of user input."""
         user_input = user_input.strip()
@@ -2461,7 +2468,10 @@ class TGAgentCLI:
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
                 propagate_errors=source == "remote",
-                enable_interactive_terminal_ui=source == "local",
+                enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(
+                    source
+                ),
+                cancel_event=cancel_event,
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2471,7 +2481,10 @@ class TGAgentCLI:
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
                 propagate_errors=source == "remote",
-                enable_interactive_terminal_ui=source == "local",
+                enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(
+                    source
+                ),
+                cancel_event=cancel_event,
             )
             return _ExecutionOutcome(final_content=final_content or "")
 
@@ -2518,9 +2531,14 @@ class TGAgentCLI:
             has_image=False,
             intermediate_text_callback=intermediate_text_callback,
             propagate_errors=source == "remote",
-            enable_interactive_terminal_ui=source == "local",
+            enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(source),
+            cancel_event=cancel_event,
         )
         return _ExecutionOutcome(final_content=final_content or "")
+
+    def _should_enable_interactive_terminal_ui(self, source: str) -> bool:
+        """Return whether raw terminal affordances like q-cancel can own stdin."""
+        return source == "local" and not self._fixed_input_tui_enabled
 
     async def _drain_bridge_queue(self) -> bool:
         """Consume queued bridge requests until no pending work remains."""
@@ -2792,12 +2810,15 @@ class TGAgentCLI:
                 except (asyncio.CancelledError, EOFError, KeyboardInterrupt):
                     pass
 
-    async def run(self):
-        """Run the interactive CLI."""
+    async def _run_prompt_session_legacy(self) -> None:
+        """Run the non-fullscreen prompt loop for non-interactive/test environments."""
         from prompt_toolkit import PromptSession
+        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+        from prompt_toolkit.completion import ThreadedCompleter, merge_completers
+        from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.key_binding import KeyBindings
         from prompt_toolkit.styles import Style
 
-        # Print welcome
         self._print_welcome()
         await self._refresh_empty_context_budget_display()
 
@@ -2810,7 +2831,6 @@ class TGAgentCLI:
                 if not should_continue:
                     return
 
-            # Create key bindings
             kb = KeyBindings()
 
             @kb.add("c-d")
@@ -2822,9 +2842,6 @@ class TGAgentCLI:
                 """Accept @ completion with Enter instead of submitting immediately."""
                 buffer = event.current_buffer
                 complete_state = buffer.complete_state
-
-                # When selecting @skill completion, Enter should apply completion
-                # and keep input in the prompt for the user to continue typing.
                 if complete_state and buffer.text.lstrip().startswith("@"):
                     completion = complete_state.current_completion
                     if completion is None and complete_state.completions:
@@ -2839,21 +2856,14 @@ class TGAgentCLI:
 
                 buffer.validate_and_handle()
 
-            # Mark as intentionally used
             _ = _exit
             _ = _enter
 
-            # Create slash command completer
             slash_completer = SlashCommandCompleter(self._slash_registry)
-            # Create at command completer
             at_completer = AtCommandCompleter(self._at_registry)
-            # Use merged completer to handle both / and @
-            from prompt_toolkit.completion import merge_completers
-
             merged_completer = merge_completers([slash_completer, at_completer])
             threaded_completer = ThreadedCompleter(merged_completer)
 
-            # Define style for better visual feedback
             style = Style.from_dict(
                 {
                     "completion-menu.completion": "bg:#008888 #ffffff",
@@ -2866,7 +2876,6 @@ class TGAgentCLI:
                 }
             )
 
-            # Create prompt session with completer
             session = PromptSession(
                 message=lambda: HTML("<ansiblue>>> </ansiblue>"),
                 key_bindings=kb,
@@ -2932,6 +2941,16 @@ class TGAgentCLI:
                 await notification_task
             except asyncio.CancelledError:
                 pass
+
+    async def run(self):
+        """Run the interactive CLI."""
+        from cli.tui_app import TGAgentTUI
+
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            await self._run_prompt_session_legacy()
+            return
+
+        await TGAgentTUI(self).run()
 
     def _print_welcome(self):
         """Print welcome message."""
