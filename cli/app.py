@@ -1860,7 +1860,11 @@ class TGAgentCLI:
                     self._console.print(f"[yellow]{message}[/yellow]")
                     self._store_command_final_content(message)
                     return True
-                team_id = team_args[1] if len(team_args) > 1 and not team_args[1].startswith("--") else None
+                team_id = (
+                    team_args[1]
+                    if len(team_args) > 1 and not team_args[1].startswith("--")
+                    else None
+                )
                 team_id = team_id or self._ctx.team_runtime.get_active_team()
                 if team_id is None:
                     message = "用法：/team inbox [team_id] [--peek]"
@@ -2276,9 +2280,6 @@ class TGAgentCLI:
         self._loading = None
         if enable_interactive_terminal_ui:
             self._console.print()
-        elif streamed_text_started:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
         if active_agent is self._agent:
             self._persist_current_session_state()
         return final_response
