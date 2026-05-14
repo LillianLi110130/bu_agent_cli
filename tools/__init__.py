@@ -26,14 +26,6 @@ from tools.todos import done, todo_read, todo_write
 from tools.web import web_fetch
 from tools.xlsx import read_excel
 
-# from tools.subagent_mp import (
-#     spawn_subagent,
-#     get_subagent_result,
-#     check_subagent_status,
-#     get_subagent_stats,
-#     launch_parallel_subagents,
-# )
-
 ALL_TOOLS = [
     bash,
     resolve_path,
