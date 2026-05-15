@@ -9,7 +9,7 @@ from pathlib import Path
 def read_text_with_fallback(path: Path) -> tuple[str, str]:
     """Read text using UTF-8 first, then a small set of locale-aware fallbacks."""
     errors: list[str] = []
-    for encoding in _candidate_encodings():
+    for encoding in candidate_encodings():
         try:
             return path.read_text(encoding=encoding), encoding
         except UnicodeDecodeError as exc:
@@ -25,7 +25,7 @@ def read_text_with_fallback(path: Path) -> tuple[str, str]:
     )
 
 
-def _candidate_encodings() -> list[str]:
+def candidate_encodings() -> list[str]:
     encodings = ["utf-8", "utf-8-sig"]
 
     preferred = locale.getpreferredencoding(False)
