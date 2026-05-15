@@ -227,7 +227,7 @@ async def test_glob_search_reports_truncated_results() -> None:
 
         result = await glob_search.func("*.txt", ctx=ctx)
 
-        assert result.startswith("Found 55 file(s), showing first 50:")
+        assert result.startswith("Found 50 file(s), showing first 50:")
         assert "... (truncated; refine pattern or path)" in result
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -272,6 +272,56 @@ async def test_grep_skips_ignored_patterns() -> None:
         result = await grep.func("needle", ctx=ctx)
 
         assert result == "No matches for: needle"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_grep_skips_binary_files() -> None:
+    workspace = _make_workspace()
+    binary_file = workspace / "blob.bin"
+    binary_file.write_bytes(b"\x00needle\x01\x02")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        result = await grep.func("needle", ctx=ctx)
+
+        assert result == "No matches for: needle"
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+@pytest.mark.anyio
+async def test_grep_reports_truncated_results() -> None:
+    workspace = _make_workspace()
+    target = workspace / "matches.txt"
+    target.write_text("\n".join(f"needle {index}" for index in range(55)), encoding="utf-8")
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        result = await grep.func("needle", ctx=ctx)
+
+        assert result.endswith("... (truncated)")
+        assert "matches.txt:1: needle 0" in result
+        assert "matches.txt:50: needle 49" in result
+    finally:
+        shutil.rmtree(workspace, ignore_errors=True)
+
+
+def test_sandbox_context_ignores_common_large_directories_by_default() -> None:
+    workspace = _make_workspace()
+    git_dir = workspace / ".git"
+    node_modules_dir = workspace / "node_modules"
+    git_dir.mkdir()
+    node_modules_dir.mkdir()
+
+    try:
+        ctx = SandboxContext.create(workspace)
+
+        assert ctx.is_ignored(git_dir)
+        assert ctx.is_ignored(node_modules_dir)
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
 

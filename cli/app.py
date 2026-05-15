@@ -74,6 +74,7 @@ from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.text import Text
 
 from cli.slash_commands import (
@@ -1535,6 +1536,193 @@ class TGAgentCLI:
         if loading:
             loading.stop()
 
+    def _try_format_json(self, value: str, *, compact_values: bool = False) -> str | None:
+        try:
+            parsed = json.loads(value)
+        except (TypeError, json.JSONDecodeError):
+            return None
+        if compact_values:
+            parsed = self._compact_tool_arg_value(parsed)
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+    def _syntax_block(self, code: str, lexer: str, *, line_numbers: bool = True) -> Syntax:
+        return Syntax(
+            code,
+            lexer,
+            theme="ansi_dark",
+            line_numbers=line_numbers,
+            word_wrap=True,
+            background_color="default",
+        )
+
+    def _truncate_tool_result_lines(self, value: str, *, max_lines: int = 5) -> tuple[str, int]:
+        lines = value.splitlines()
+        if len(lines) <= max_lines:
+            return value, 0
+        hidden_count = len(lines) - max_lines
+        return "\n".join(lines[:max_lines]), hidden_count
+
+    def _with_hidden_lines_note(self, renderable: Any, hidden_count: int) -> Any:
+        if hidden_count <= 0:
+            return renderable
+        return Group(
+            renderable,
+            Text(f"... ({hidden_count} more lines hidden)", style="dim"),
+        )
+
+    def _looks_like_structured_tool_text(self, value: str) -> bool:
+        markers = (
+            "Error:",
+            "Artifact file:",
+            "Artifact body",
+            "Example:",
+            "Do not repeat",
+            "If you need more detail",
+        )
+        return any(marker in value for marker in markers)
+
+    def _structured_tool_text(self, value: str) -> Text:
+        output = Text()
+        for index, line in enumerate(value.splitlines() or [value]):
+            if index:
+                output.append("\n")
+
+            stripped = line.strip()
+            if stripped.startswith("Error:"):
+                style = f"bold {self.COLOR_ERROR}"
+            elif stripped.startswith(("Artifact file:", "Artifact body")):
+                style = "bold #9cd7ff"
+            elif stripped.startswith("Example:"):
+                style = "bold #ffd166"
+            elif stripped.startswith("/") or "read(file_path=" in stripped:
+                style = "#9cd7ff"
+            elif stripped.startswith(("Do not repeat", "If you need more detail")):
+                style = "grey62"
+            else:
+                style = "#d8dee9"
+            output.append(line, style=style)
+        return output
+
+    def _compact_tool_arg_value(
+        self,
+        value: Any,
+        *,
+        max_string_lines: int = 5,
+        max_line_chars: int = 120,
+        max_string_chars: int = 240,
+    ) -> Any:
+        if isinstance(value, str):
+            lines = value.splitlines()
+            hidden_lines = max(0, len(lines) - max_string_lines)
+            if lines:
+                preview_lines = lines[:max_string_lines]
+                compacted_lines = [
+                    line if len(line) <= max_line_chars else f"{line[:max_line_chars].rstrip()}..."
+                    for line in preview_lines
+                ]
+                if hidden_lines:
+                    compacted_lines.append(f"... ({hidden_lines} more lines hidden)")
+                compacted = "\n".join(compacted_lines)
+            else:
+                compacted = value
+
+            if not hidden_lines and len(compacted) > max_string_chars:
+                return f"{compacted[:max_string_chars].rstrip()}..."
+            return compacted
+
+        if isinstance(value, dict):
+            return {
+                key: self._compact_tool_arg_value(
+                    item,
+                    max_string_lines=max_string_lines,
+                    max_line_chars=max_line_chars,
+                    max_string_chars=max_string_chars,
+                )
+                for key, item in value.items()
+            }
+
+        if isinstance(value, list):
+            return [
+                self._compact_tool_arg_value(
+                    item,
+                    max_string_lines=max_string_lines,
+                    max_line_chars=max_line_chars,
+                    max_string_chars=max_string_chars,
+                )
+                for item in value
+            ]
+
+        if isinstance(value, tuple):
+            return tuple(
+                self._compact_tool_arg_value(
+                    item,
+                    max_string_lines=max_string_lines,
+                    max_line_chars=max_line_chars,
+                    max_string_chars=max_string_chars,
+                )
+                for item in value
+            )
+
+        return value
+
+    def _print_tool_args(self, args: Any) -> None:
+        preview_args = self._compact_tool_arg_value(args)
+        args_json = json.dumps(preview_args, ensure_ascii=False, indent=2, default=str)
+        self._console.print(
+            Panel(
+                self._syntax_block(args_json, "json"),
+                border_style="grey74",
+                padding=(0, 1),
+            )
+        )
+
+    def _print_tool_result(self, result: Any, *, is_error: bool) -> None:
+        title = "Failed" if is_error else "Done"
+        border_style = self.COLOR_ERROR if is_error else "#9cd7ff"
+        title_style = f"bold {border_style}"
+        result_text = str(result)
+        json_text = self._try_format_json(result_text, compact_values=True)
+        renderable: Any
+        if json_text is not None:
+            preview, hidden_count = self._truncate_tool_result_lines(json_text)
+            renderable = self._with_hidden_lines_note(
+                self._syntax_block(preview, "json"),
+                hidden_count,
+            )
+        elif self._looks_like_structured_tool_text(result_text):
+            preview, hidden_count = self._truncate_tool_result_lines(result_text)
+            renderable = self._with_hidden_lines_note(
+                self._structured_tool_text(preview),
+                hidden_count,
+            )
+        else:
+            preview, hidden_count = self._truncate_tool_result_lines(result_text)
+            renderable = self._with_hidden_lines_note(
+                self._syntax_block(preview, "text", line_numbers=False),
+                hidden_count,
+            )
+
+        self._console.print(
+            Panel(
+                renderable,
+                title=f"[{title_style}]{title}[/]",
+                border_style=border_style,
+                padding=(0, 1),
+            )
+        )
+
+    def _print_tool_step_title(self, step_number: int, tool_name: str) -> None:
+        title = Text()
+        title.append("● ", style="bold #ff7a59")
+        title.append(f"步骤 {step_number}", style="bold #ff7a59")
+        title.append(" ", style="#ff7a59")
+        title.append(tool_name, style="bold #ff7a59")
+        self._console.print()
+        self._console.print(title)
+
+    def _print_response_title(self) -> None:
+        self._console.print(Text("✦ ", style="bold bright_magenta"), end="")
+
     @staticmethod
     def _is_delegate_tool(tool_name: str) -> bool:
         return tool_name in {"delegate", "delegate_parallel"}
@@ -2172,16 +2360,10 @@ class TGAgentCLI:
                         self._foreground_delegate_depth += 1
 
                     self._step_number += 1
-                    args_str = str(event.args)[:100]
-                    if len(str(event.args)) > 100:
-                        args_str += "..."
-                    self._console.print()
-                    self._console.print(
-                        f"[{self.COLOR_TOOL_CALL}]步骤 {self._step_number}：[/] "
-                        f"[bold]{event.tool}[/]"
-                    )
-                    self._console.print(f"  [dim]参数：{args_str}[/]")
-                    self._console.print("  [dim]（按 q 可取消）[/dim]")
+                    self._print_tool_step_title(self._step_number, event.tool)
+                    self._print_tool_args(event.args)
+                    if enable_interactive_terminal_ui:
+                        self._console.print("[dim]按 q 可取消[/dim]")
 
                     if not self._is_delegate_tool(event.tool):
                         # Start loading while the tool runs.
@@ -2191,16 +2373,7 @@ class TGAgentCLI:
                     self._stop_loading(self._loading)
                     self._loading = None
 
-                    result = str(event.result)
-                    if event.is_error:
-                        self._console.print(f"  [{self.COLOR_ERROR}]错误：{result[:200]}[/]")
-                    else:
-                        if len(result) > 300:
-                            self._console.print(
-                                f"  [{self.COLOR_TOOL_RESULT}]结果：{result[:300]}...[/]"
-                            )
-                        else:
-                            self._console.print(f"  [{self.COLOR_TOOL_RESULT}]结果：{result}[/]")
+                    self._print_tool_result(event.result, is_error=event.is_error)
 
                     if self._is_delegate_tool(event.tool):
                         self._foreground_delegate_depth = max(
@@ -2264,6 +2437,7 @@ class TGAgentCLI:
                     markdown_content = event.content or "".join(assistant_text_parts)
                     final_response = markdown_content
                     self._console.print()
+                    self._print_response_title()
                     print_markdown_response(markdown_content)
                     self._console.print()
 

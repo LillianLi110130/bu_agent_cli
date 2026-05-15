@@ -15,6 +15,23 @@ from tools.shell_tasks import ShellTaskManager
 
 
 _IGNORE_FILE_NAME = ".tgagentignore"
+_DEFAULT_IGNORE_PATTERNS = (
+    ".git/",
+    "node_modules/",
+    "dist/",
+    "build/",
+    ".venv/",
+    "venv/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".pytest_tmp/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".tox/",
+    ".idea/",
+    ".vscode/",
+    ".DS_Store",
+)
 
 
 class SecurityError(Exception):
@@ -132,8 +149,10 @@ class SandboxContext:
     working_dir: Path
     allowed_dirs: list[Path] = field(default_factory=list)
     ignore_rules: list[IgnoreRule] = field(default_factory=list)
+    default_ignore_rules: list[IgnoreRule] = field(default_factory=list)
     ignored_patterns: list[str] = field(default_factory=list)
     ignore_file_lines: list[str] = field(default_factory=list)
+    _ignore_cache: dict[tuple[Path, bool, bool], bool] = field(default_factory=dict)
     runtime_managed_dirs: list[Path] = field(default_factory=list)
     session_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
     subagent_executor: Any | None = None
@@ -249,6 +268,8 @@ class SandboxContext:
             self.ignore_rules.clear()
             self.ignored_patterns.clear()
             self.ignore_file_lines.clear()
+            self.default_ignore_rules = self._build_default_ignore_rules()
+            self._ignore_cache.clear()
             return
 
         try:
@@ -257,6 +278,8 @@ class SandboxContext:
             self.ignore_rules.clear()
             self.ignored_patterns.clear()
             self.ignore_file_lines.clear()
+            self.default_ignore_rules = self._build_default_ignore_rules()
+            self._ignore_cache.clear()
             return
 
         self.ignore_file_lines = raw_lines
@@ -277,23 +300,34 @@ class SandboxContext:
 
     def is_ignored(self, path: Path) -> bool:
         """Check whether a path is blocked by ignore rules."""
-        if not self.ignore_rules:
+        all_rules = self.default_ignore_rules + self.ignore_rules
+        if not all_rules:
             return False
 
         relative_parts = self._relative_parts(path)
         if relative_parts is None:
             return False
 
-        ignored = False
         path_exists = path.exists()
         path_is_dir = path_exists and path.is_dir()
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        cache_key = (resolved, path_exists, path_is_dir)
+        cached = self._ignore_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        ignored = False
         for index in range(1, len(relative_parts) + 1):
             rel_path = "/".join(relative_parts[:index])
             name = relative_parts[index - 1]
             is_dir = index < len(relative_parts) or path_is_dir
-            for rule in self.ignore_rules:
+            for rule in all_rules:
                 if rule.matches(rel_path, name, is_dir=is_dir):
                     ignored = not rule.negated
+        self._ignore_cache[cache_key] = ignored
         return ignored
 
     def resolve_path(self, path: str | Path) -> Path:
@@ -330,6 +364,7 @@ class SandboxContext:
     def _rebuild_ignore_rules(self) -> None:
         """Reparse ignore rules from the in-memory pattern list."""
         self.ignore_rules = []
+        self.default_ignore_rules = self._build_default_ignore_rules()
         normalized_patterns: list[str] = []
         normalized_lines: list[str] = []
         for line in self.ignore_file_lines:
@@ -341,6 +376,16 @@ class SandboxContext:
             normalized_patterns.append(rule.source.strip())
         self.ignore_file_lines = normalized_lines
         self.ignored_patterns = normalized_patterns
+        self._ignore_cache.clear()
+
+    def _build_default_ignore_rules(self) -> list[IgnoreRule]:
+        """Build the built-in ignore rules that apply even without a workspace file."""
+        rules: list[IgnoreRule] = []
+        for pattern in _DEFAULT_IGNORE_PATTERNS:
+            rule = IgnoreRule.from_line(pattern)
+            if rule is not None:
+                rules.append(rule)
+        return rules
 
     def _relative_parts(self, path: Path) -> tuple[str, ...] | None:
         """Return POSIX-style relative parts for a path under the workspace root."""
