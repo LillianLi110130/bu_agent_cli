@@ -2,11 +2,6 @@ package com.buagent.gateway.worker;
 
 import com.buagent.gateway.app.dto.CompleteRequest;
 import com.buagent.gateway.app.dto.MessageRequest;
-import com.buagent.gateway.app.dto.DebugInboundRequest;
-import com.buagent.gateway.app.dto.PollMessageDto;
-import com.buagent.gateway.app.dto.PollRequest;
-import com.buagent.gateway.app.dto.PollResponse;
-import com.buagent.gateway.app.dto.RenewRequest;
 import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
 import com.buagent.gateway.app.dto.WorkerRequest;
@@ -16,18 +11,19 @@ import com.buagent.gateway.store.entity.OutboundMessageEntity;
 import com.buagent.gateway.store.mapper.InboundMessageMapper;
 import com.buagent.gateway.store.mapper.OnlineWorkerMapper;
 import com.buagent.gateway.store.mapper.OutboundMessageMapper;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
-import org.springframework.web.context.request.async.DeferredResult;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.Map;
 import java.util.UUID;
@@ -41,9 +37,11 @@ import java.util.concurrent.TimeUnit;
 import static org.springframework.http.HttpStatus.CONFLICT;
 
 @Service
+@RequiredArgsConstructor
 public class WorkerGatewayService implements DisposableBean {
 
     private static final Logger logger = LoggerFactory.getLogger(WorkerGatewayService.class);
+    private static final String WORKER_CHANNEL_PREFIX = "ZH_";
 
     private static final String STATUS_ONLINE = "online";
     private static final String STATUS_OFFLINE = "offline";
@@ -57,26 +55,13 @@ public class WorkerGatewayService implements DisposableBean {
     private final InboundMessageMapper inboundMessageMapper;
     private final OutboundMessageMapper outboundMessageMapper;
     private final OnlineWorkerMapper onlineWorkerMapper;
-    private final long streamHeartbeatIntervalMillis;
-    private final long streamEmitterTimeoutMillis;
-    private final ScheduledExecutorService heartbeatExecutorService;
-    private final ConcurrentMap<String, StreamSession> streamSessions;
+    private final ScheduledExecutorService heartbeatExecutorService = Executors.newScheduledThreadPool(1);
+    private final ConcurrentMap<String, StreamSession> streamSessions = new ConcurrentHashMap<String, StreamSession>();
 
-    public WorkerGatewayService(
-        InboundMessageMapper inboundMessageMapper,
-        OutboundMessageMapper outboundMessageMapper,
-        OnlineWorkerMapper onlineWorkerMapper,
-        @Value("${gateway.stream-heartbeat-interval-ms:10000}") long streamHeartbeatIntervalMillis,
-        @Value("${gateway.stream-emitter-timeout-ms:0}") long streamEmitterTimeoutMillis
-    ) {
-        this.inboundMessageMapper = inboundMessageMapper;
-        this.outboundMessageMapper = outboundMessageMapper;
-        this.onlineWorkerMapper = onlineWorkerMapper;
-        this.streamHeartbeatIntervalMillis = streamHeartbeatIntervalMillis;
-        this.streamEmitterTimeoutMillis = streamEmitterTimeoutMillis;
-        this.heartbeatExecutorService = Executors.newScheduledThreadPool(1);
-        this.streamSessions = new ConcurrentHashMap<String, StreamSession>();
-    }
+    @Value("${gateway.stream-heartbeat-interval-ms:10000}")
+    private long streamHeartbeatIntervalMillis;
+    @Value("${gateway.stream-emitter-timeout-ms:0}")
+    private long streamEmitterTimeoutMillis;
 
     public SimpleOkResponse online(WorkerRequest request) {
         upsertWorkerStatus(request.getWorkerId(), STATUS_ONLINE);
@@ -94,9 +79,11 @@ public class WorkerGatewayService implements DisposableBean {
     public SimpleOkResponse acceptMockMessage(MessageRequest request) {
         validateWorkerIsOnline(request.getWorkerId());
         InboundMessageEntity inboundMessageEntity = new InboundMessageEntity();
-        inboundMessageEntity.setSessionKey(resolveSessionKey(request.getWorkerId()));
+        inboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
         inboundMessageEntity.setContent(request.getContent());
         inboundMessageEntity.setStatus(STATUS_RECEIVED);
+        inboundMessageEntity.setCreateTime(LocalDateTime.now());
+        inboundMessageEntity.setUpdateTime(LocalDateTime.now());
         inboundMessageMapper.insert(inboundMessageEntity);
         logger.info(
             "Accepted inbound mock message. workerId={}, messageId={}, contentLength={}",
@@ -130,121 +117,9 @@ public class WorkerGatewayService implements DisposableBean {
             sendEventSafely(
                 previousSession,
                 EVENT_ERROR,
-                Collections.<String, Object>singletonMap(
-                    "message",
-                    "connection replaced by newer stream"
-                )
+                Collections.<String, Object>singletonMap("message", "connection replaced by newer stream")
             );
             previousSession.complete();
-    public DeferredResult<PollResponse> poll(PollRequest request) {
-        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
-        long currentEpoch = ensureCurrentEpoch(sessionKey);
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, currentEpoch);
-        DeferredResult<PollResponse> deferredResult = new DeferredResult<>(pollWaitTimeoutMillis);
-
-        deferredResult.onTimeout(() -> {
-            synchronized (mailbox) {
-                PollWaiter currentWaiter = mailbox.getActivePollWaiter();
-                if (currentWaiter != null && currentWaiter.getDeferredResult() == deferredResult) {
-                    mailbox.setActivePollWaiter(null);
-                }
-            }
-            deferredResult.setResult(PollResponse.empty());
-        });
-
-        PollResponse immediateResponse = null;
-        synchronized (mailbox) {
-            mailbox.setCurrentEpoch(currentEpoch);
-            long now = System.currentTimeMillis();
-            if (!canUseOwner(mailbox, request.getWorkerId(), now)) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "session owner conflict");
-            }
-            if (mailbox.getActivePollWaiter() != null) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "active poll already exists");
-            }
-
-            touchOwner(mailbox, request.getWorkerId(), now);
-            if (mailbox.getPendingSize() > 0) {
-                immediateResponse = dispatchNextMessageLocked(mailbox, request.getWorkerId());
-            } else {
-                mailbox.setActivePollWaiter(new PollWaiter(request.getWorkerId(), deferredResult));
-            }
-        }
-
-        if (immediateResponse != null) {
-            deferredResult.setResult(immediateResponse);
-        }
-        return deferredResult;
-    }
-
-    public SimpleOkResponse online(String workerId) {
-        if (isBlank(workerId)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "worker_id is required");
-        }
-        logger.info("Worker marked online, workerId={}", workerId);
-        return new SimpleOkResponse(true);
-    }
-
-    public SimpleOkResponse offline(String workerId) {
-        if (isBlank(workerId)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "worker_id is required");
-        }
-        logger.info("Worker marked offline, workerId={}", workerId);
-        return new SimpleOkResponse(true);
-    }
-
-    public SimpleOkResponse sendText(SendTextRequest request) {
-        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
-        boolean sent = channelRouter.send(sessionKey, request.getText());
-        return new SimpleOkResponse(sent);
-    }
-
-    public SimpleOkResponse uploadAttachment(
-        String sessionKey,
-        String workerId,
-        String mimeType,
-        Long fileSize,
-        MultipartFile file
-    ) throws IOException {
-        String resolvedSessionKey = resolveSessionKey(sessionKey, workerId);
-        boolean sent = channelRouter.sendAttachment(
-            resolvedSessionKey,
-            file.getOriginalFilename(),
-            mimeType,
-            fileSize != null ? fileSize : file.getSize(),
-            file.getBytes()
-        );
-        return new SimpleOkResponse(sent);
-    }
-
-    public SimpleOkResponse renew(RenewRequest request) {
-        String sessionKey = resolveSessionKey(request.getSessionKey(), request.getWorkerId());
-        long currentEpoch = ensureCurrentEpoch(sessionKey);
-        SessionMailbox mailbox = sessionRegistry.getOrCreate(sessionKey, currentEpoch);
-        synchronized (mailbox) {
-            InFlightDelivery inFlightDelivery = mailbox.getInFlightDelivery();
-            if (inFlightDelivery == null) {
-                return new SimpleOkResponse(false);
-            }
-            if (!request.getWorkerId().equals(mailbox.getOwnerWorkerId())) {
-                return new SimpleOkResponse(false);
-            }
-            String deliveryId = resolveDeliveryId(request.getDeliveryId(), inFlightDelivery);
-            if (deliveryId == null) {
-                return new SimpleOkResponse(false);
-            }
-            if (!deliveryId.equals(inFlightDelivery.getDeliveryId())) {
-                return new SimpleOkResponse(false);
-            }
-
-            long leaseExpiresAt = System.currentTimeMillis() + deliveryLeaseTimeoutMillis;
-            int updatedRows = inboundMessageMapper.updateLease(inFlightDelivery.getMessageId(), leaseExpiresAt);
-            if (updatedRows != 1) {
-                return new SimpleOkResponse(false);
-            }
-            inFlightDelivery.setLeaseExpiresAt(leaseExpiresAt);
-            touchOwner(mailbox, request.getWorkerId(), System.currentTimeMillis());
-            return new SimpleOkResponse(true);
         }
 
         registerEmitterCallbacks(workerId, streamSession);
@@ -278,9 +153,11 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SimpleOkResponse complete(CompleteRequest request) {
         OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-        outboundMessageEntity.setSessionKey(resolveSessionKey(request.getWorkerId()));
+        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
         outboundMessageEntity.setContent(request.getFinalContent());
-        outboundMessageEntity.setStatus(STATUS_RECEIVED);
+        outboundMessageEntity.setStatus("SENT");
+        outboundMessageEntity.setCreateTime(LocalDateTime.now());
+        outboundMessageEntity.setUpdateTime(LocalDateTime.now());
         outboundMessageMapper.insert(outboundMessageEntity);
         logger.info(
             "Accepted outbound completion. workerId={}, outboundMessageId={}, finalContentLength={}",
@@ -288,6 +165,14 @@ public class WorkerGatewayService implements DisposableBean {
             outboundMessageEntity.getId(),
             request.getFinalContent() == null ? 0 : request.getFinalContent().length()
         );
+        return new SimpleOkResponse(true);
+    }
+
+    public SimpleOkResponse sendText(SendTextRequest request) {
+        return new SimpleOkResponse(true);
+    }
+
+    public SimpleOkResponse uploadAttachment(MultipartFile file) throws IOException {
         return new SimpleOkResponse(true);
     }
 
@@ -377,7 +262,7 @@ public class WorkerGatewayService implements DisposableBean {
         boolean delivered = false;
         while (true) {
             InboundMessageEntity inboundMessageEntity = inboundMessageMapper.findFirstBySessionKeyAndStatus(
-                resolveSessionKey(workerId),
+                buildSessionKey(workerId),
                 STATUS_RECEIVED
             );
             if (inboundMessageEntity == null) {
@@ -488,8 +373,15 @@ public class WorkerGatewayService implements DisposableBean {
         logger.info("Updated worker state. workerId={}, status={}", workerId, status);
     }
 
-    private String resolveSessionKey(String workerId) {
-        return workerId;
+    private String buildSessionKey(String workerId) {
+        if (isBlank(workerId)) {
+            throw new ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "worker_id is required");
+        }
+        return WORKER_CHANNEL_PREFIX + workerId;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
     }
 
     private boolean isClientDisconnect(Throwable throwable) {
@@ -553,29 +445,5 @@ public class WorkerGatewayService implements DisposableBean {
             cancelHeartbeat();
             emitter.complete();
         }
-    }
-
-    private String resolveSessionKey(String sessionKey, String workerId) {
-        if (!isBlank(sessionKey)) {
-            return sessionKey;
-        }
-        if (!isBlank(workerId)) {
-            return workerId;
-        }
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "session_key or worker_id is required");
-    }
-
-    private String resolveDeliveryId(String deliveryId, InFlightDelivery inFlightDelivery) {
-        if (!isBlank(deliveryId)) {
-            return deliveryId;
-        }
-        if (inFlightDelivery == null || isBlank(inFlightDelivery.getDeliveryId())) {
-            return null;
-        }
-        return inFlightDelivery.getDeliveryId();
-    }
-
-    private boolean isBlank(String value) {
-        return value == null || value.trim().isEmpty();
     }
 }

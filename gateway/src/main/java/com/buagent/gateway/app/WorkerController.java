@@ -1,15 +1,11 @@
 package com.buagent.gateway.app;
 
 import com.buagent.gateway.app.dto.CompleteRequest;
-import com.buagent.gateway.app.dto.PollRequest;
-import com.buagent.gateway.app.dto.PollResponse;
-import com.buagent.gateway.app.dto.RenewRequest;
 import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
-import org.springframework.http.MediaType;
 import com.buagent.gateway.app.dto.WorkerRequest;
 import com.buagent.gateway.worker.WorkerGatewayService;
-import org.springframework.web.bind.annotation.RequestParam;
+import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -19,7 +15,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.context.request.async.DeferredResult;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -72,13 +67,7 @@ public class WorkerController {
     }
 
     @PostMapping(value = "/upload_attachment", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public SimpleOkResponse uploadAttachment(
-        @RequestParam(value = "session_key", required = false) String sessionKey,
-        @RequestParam("worker_id") String workerId,
-        @RequestParam(value = "mime_type", required = false) String mimeType,
-        @RequestParam(value = "file_size", required = false) Long fileSize,
-        @RequestParam("file") MultipartFile file
-    ) throws IOException {
-        return workerGatewayService.uploadAttachment(sessionKey, workerId, mimeType, fileSize, file);
+    public SimpleOkResponse uploadAttachment(@RequestParam("file") MultipartFile file) throws IOException {
+        return workerGatewayService.uploadAttachment(file);
     }
 }
