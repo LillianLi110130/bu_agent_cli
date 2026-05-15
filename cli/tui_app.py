@@ -34,7 +34,6 @@ class TGAgentTUI:
         self._session = self._build_session()
         self._stop_requested = False
         self._cancel_event: asyncio.Event | None = None
-        self._cancel_requested = False
         self._suspend_prompt_for_active_task = False
 
     async def run(self) -> None:
@@ -55,12 +54,13 @@ class TGAgentTUI:
 
     def _build_session(self) -> PromptSession:
         kb = KeyBindings()
-        input_locked_filter = Condition(self._is_input_locked)
+        input_locked_filter = Condition(self._should_lock_input)
+        cancel_available_filter = Condition(self._can_cancel_from_prompt)
 
         @kb.add("enter")
         def _submit_or_complete(event) -> None:  # noqa: ANN001
             buffer = event.current_buffer
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
 
@@ -80,41 +80,41 @@ class TGAgentTUI:
 
         @kb.add("c-j")
         def _newline(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.current_buffer.insert_text("\n")
 
         @kb.add("escape", "enter")
         def _escape_newline(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.current_buffer.insert_text("\n")
 
-        @kb.add("q", filter=input_locked_filter)
+        @kb.add("q", filter=cancel_available_filter)
         def _cancel_running_task(event) -> None:  # noqa: ANN001
             if self._cancel_event is not None and not self._cancel_event.is_set():
-                self._cancel_requested = True
                 self._cancel_event.set()
-                self._cli._console.print("\n[yellow]正在取消当前执行...[/yellow]")
                 event.app.invalidate()
                 return
 
-            if self._active_task is not None and not self._active_task.done():
-                self._active_task.cancel()
-                self._cli._console.print("\n[yellow]取消未及时完成，已强制中断。[/yellow]")
+            if self._cli._cancel_active_bridge_run_from_terminal():
+                event.app.invalidate()
+                return
+
+            event.app.invalidate()
 
         @kb.add("c-c")
         def _cancel_or_clear(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.current_buffer.reset()
 
         @kb.add("c-d")
         def _exit(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.app.exit(exception=EOFError)
@@ -158,11 +158,8 @@ class TGAgentTUI:
 
     def _render_bottom_toolbar(self) -> str:
         status = self._cli._render_context_budget_toolbar()
-        if self._is_input_locked():
-            if self._cancel_requested:
-                status = f"<ansiyellow>正在取消当前执行...</ansiyellow> · {status}"
-            else:
-                status = f"<ansibrightblack>按 q 取消当前执行</ansibrightblack> · {status}"
+        if self._should_lock_input():
+            status = f"<ansibrightblack>按 q 取消当前执行</ansibrightblack> · {status}"
         return f"{self._separator_markup()}\n{status}"
 
     @staticmethod
@@ -250,13 +247,18 @@ class TGAgentTUI:
             return False
 
         self._cancel_event = asyncio.Event()
-        self._cancel_requested = False
         self._suspend_prompt_for_active_task = self._should_suspend_prompt_for_input(user_input)
         self._active_task = asyncio.create_task(self._execute_input(user_input))
         return True
 
     def _is_input_locked(self) -> bool:
         return self._active_task is not None and not self._active_task.done()
+
+    def _should_lock_input(self) -> bool:
+        return self._is_input_locked() or self._cli._has_active_bridge_run()
+
+    def _can_cancel_from_prompt(self) -> bool:
+        return self._is_input_locked() or self._cli._has_active_bridge_run()
 
     @staticmethod
     def _should_suspend_prompt_for_input(user_input: str) -> bool:
@@ -284,7 +286,9 @@ class TGAgentTUI:
         try:
             if self._cli._bridge_store is not None:
                 self._cli._enqueue_local_bridge_input(text)
-                should_continue = await self._cli._drain_bridge_queue()
+                should_continue = await self._cli._drain_bridge_queue(
+                    cancel_event=self._cancel_event
+                )
             else:
                 outcome = await self._cli._execute_input_text(
                     text,
@@ -312,7 +316,6 @@ class TGAgentTUI:
             pass
         finally:
             self._cancel_event = None
-            self._cancel_requested = False
             self._suspend_prompt_for_active_task = False
 
     async def _drain_background_work(self) -> bool:
@@ -360,5 +363,4 @@ class TGAgentTUI:
         finally:
             self._active_task = None
             self._cancel_event = None
-            self._cancel_requested = False
             self._suspend_prompt_for_active_task = False

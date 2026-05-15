@@ -486,6 +486,91 @@ class Agent:
             return
         raise asyncio.CancelledError("Sleep cancelled by user")
 
+    async def _cancel_task_best_effort(
+        self,
+        task: asyncio.Task,
+        *,
+        timeout: float = 0.2,
+    ) -> None:
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            with suppress(BaseException):
+                task.result()
+            return
+
+        def _consume_result(done_task: asyncio.Task) -> None:
+            with suppress(BaseException):
+                done_task.result()
+
+        task.add_done_callback(_consume_result)
+
+    async def _close_stream_iter_best_effort(
+        self,
+        stream_iter: AsyncIterator[ChatInvokeCompletionChunk],
+        *,
+        timeout: float = 0.2,
+    ) -> None:
+        aclose = getattr(stream_iter, "aclose", None)
+        if aclose is None:
+            return
+
+        close_task = asyncio.create_task(aclose())
+        done, _ = await asyncio.wait({close_task}, timeout=timeout)
+        if close_task in done:
+            with suppress(BaseException):
+                close_task.result()
+            return
+
+        close_task.cancel()
+
+        def _consume_result(done_task: asyncio.Task) -> None:
+            with suppress(BaseException):
+                done_task.result()
+
+        close_task.add_done_callback(_consume_result)
+
+    async def _iterate_stream_with_cancel(
+        self,
+        stream: AsyncIterator[ChatInvokeCompletionChunk],
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        """Iterate an LLM stream while racing each chunk wait against cancel_event."""
+        if self._cancel_event is None:
+            async for chunk in stream:
+                yield chunk
+            return
+
+        stream_iter = stream.__aiter__()
+        try:
+            while True:
+                if self._cancel_event.is_set():
+                    raise asyncio.CancelledError("LLM stream cancelled by user")
+
+                next_chunk_task = asyncio.create_task(stream_iter.__anext__())
+                cancel_wait_task = asyncio.create_task(self._cancel_event.wait())
+
+                try:
+                    done, _ = await asyncio.wait(
+                        {next_chunk_task, cancel_wait_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+
+                    if cancel_wait_task in done and self._cancel_event.is_set():
+                        await self._cancel_task_best_effort(next_chunk_task)
+                        raise asyncio.CancelledError("LLM stream cancelled by user")
+
+                    try:
+                        chunk = await next_chunk_task
+                    except StopAsyncIteration:
+                        return
+                    yield chunk
+                finally:
+                    cancel_wait_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await cancel_wait_task
+        finally:
+            await self._close_stream_iter_best_effort(stream_iter)
+
     # 对标记为ephemeral 的 ToolMessage，按 tool 维度，只保留最近N条
     def _destroy_ephemeral_messages(self) -> None:
         """Destroy old ephemeral message content, keeping the last N per tool.
@@ -1491,10 +1576,12 @@ class Agent:
             emitted_any_chunks = False
 
             try:
-                async for chunk in self.llm.astream(
-                    messages=messages,
-                    tools=tools,
-                    tool_choice=tool_choice,
+                async for chunk in self._iterate_stream_with_cancel(
+                    self.llm.astream(
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                    )
                 ):
                     emitted_any_chunks = True
                     yield chunk

@@ -115,6 +115,86 @@ class ScriptedStreamingLLM:
             yield chunk
 
 
+class HangingStreamingLLM:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.closed = asyncio.Event()
+        self.model = "hanging-streaming-model"
+
+    @property
+    def provider(self) -> str:
+        return "fake"
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def ainvoke(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
+        del messages, tools, tool_choice, kwargs
+        raise AssertionError("query_stream() should consume astream() in stream mode")
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        del messages, tools, tool_choice, kwargs
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+            yield ChatInvokeCompletionChunk(delta="unreachable")
+        finally:
+            self.closed.set()
+
+
+class SlowCancelStreamingLLM:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.model = "slow-cancel-streaming-model"
+
+    @property
+    def provider(self) -> str:
+        return "fake"
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    async def ainvoke(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
+        del messages, tools, tool_choice, kwargs
+        raise AssertionError("query_stream() should consume astream() in stream mode")
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> AsyncIterator[ChatInvokeCompletionChunk]:
+        del messages, tools, tool_choice, kwargs
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(10)
+            raise
+        yield ChatInvokeCompletionChunk(delta="unreachable")
+
+
 @pytest.mark.asyncio
 async def test_run_cancellable_returns_result_without_cancellation() -> None:
     agent = _create_agent()
@@ -135,6 +215,53 @@ async def test_run_cancellable_exits_quickly_when_cancelled() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=0.5)
+
+
+@pytest.mark.asyncio
+async def test_query_stream_cancels_while_waiting_for_stream_chunk() -> None:
+    llm = HangingStreamingLLM()
+    agent = Agent(llm=llm, tools=[], system_prompt="test")
+    cancel_event = asyncio.Event()
+    events = []
+
+    async def consume_events() -> None:
+        async for event in agent.query_stream("stream forever", cancel_event=cancel_event):
+            events.append(event)
+
+    task = asyncio.create_task(consume_events())
+    await asyncio.wait_for(llm.started.wait(), timeout=0.5)
+
+    cancel_event.set()
+    await asyncio.wait_for(task, timeout=0.5)
+
+    assert llm.closed.is_set()
+    assert any(
+        isinstance(event, FinalResponseEvent) and event.content == "[Cancelled by user]"
+        for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_query_stream_cancellation_does_not_wait_for_slow_stream_close() -> None:
+    llm = SlowCancelStreamingLLM()
+    agent = Agent(llm=llm, tools=[], system_prompt="test")
+    cancel_event = asyncio.Event()
+    events = []
+
+    async def consume_events() -> None:
+        async for event in agent.query_stream("stream forever", cancel_event=cancel_event):
+            events.append(event)
+
+    task = asyncio.create_task(consume_events())
+    await asyncio.wait_for(llm.started.wait(), timeout=0.5)
+
+    cancel_event.set()
+    await asyncio.wait_for(task, timeout=0.7)
+
+    assert any(
+        isinstance(event, FinalResponseEvent) and event.content == "[Cancelled by user]"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
