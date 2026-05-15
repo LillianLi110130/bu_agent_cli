@@ -101,4 +101,4 @@ async def test_web_fetch_reports_timeout(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_web_fetch_is_registered() -> None:
     assert web_fetch in ALL_TOOLS
-    assert web_fetch.name == "WebFetch"
+    assert web_fetch.name == "web_fetch"

@@ -60,6 +60,8 @@ class InteractivePrompter:
             result = await self._session.prompt_async(
                 HTML(f"<ansiblue>{prompt_display}</ansiblue>"),
                 default=default,
+                completer=None,
+                complete_while_typing=False,
             )
 
             if not result and optional:
@@ -107,6 +109,9 @@ class InteractivePrompter:
                     completer=completer,
                 )
 
+                if not result and default:
+                    return default
+
                 # Check if input is a number
                 if result.isdigit():
                     idx = int(result) - 1
@@ -145,8 +150,14 @@ class InteractivePrompter:
 
         while True:
             try:
-                result = await self._session.prompt_async(
-                    HTML(f"<ansiblue>{prompt_display}</ansiblue>")
+                session = PromptSession()
+                result = await session.prompt_async(
+                    HTML(f"<ansiblue>{prompt_display}</ansiblue>"),
+                    completer=None,
+                    complete_while_typing=False,
+                    multiline=False,
+                    enable_history_search=False,
+                    auto_suggest=None,
                 )
 
                 if not result:
@@ -262,6 +273,8 @@ class InteractivePrompter:
                 multiline=True,
                 key_bindings=kb,
                 default=default,
+                completer=None,
+                complete_while_typing=False,
             )
 
             return result
@@ -286,7 +299,9 @@ class InteractivePrompter:
 
         try:
             file_path = await self._session.prompt_async(
-                HTML("<ansiblue>文件路径：</ansiblue> ")
+                HTML("<ansiblue>文件路径：</ansiblue> "),
+                completer=None,
+                complete_while_typing=False,
             )
 
             if not file_path:
@@ -328,6 +343,8 @@ class InteractivePrompter:
             result = await self._session.prompt_async(
                 HTML("<ansiblue>新值：</ansiblue> "),
                 default=current_value,
+                completer=None,
+                complete_while_typing=False,
             )
 
             return result
@@ -366,7 +383,9 @@ class InteractivePrompter:
         while True:
             try:
                 result = await self._session.prompt_async(
-                    HTML(f"<ansiblue>{prompt_display}</ansiblue>")
+                    HTML(f"<ansiblue>{prompt_display}</ansiblue>"),
+                    completer=None,
+                    complete_while_typing=False,
                 )
 
                 if not result:

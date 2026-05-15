@@ -56,7 +56,7 @@ def parse_agent_config(
         source_scope=source_scope,
         source_priority=source_priority,
         model=metadata.get("model"),
-        temperature=metadata.get("temperature", 0.2),
+        temperature=metadata.get("temperature"),
         tools=_parse_tool_list(metadata.get("tools")),
         disallowed_tools=_parse_tool_list(
             metadata.get("disallowedTools", metadata.get("disallowed_tools"))

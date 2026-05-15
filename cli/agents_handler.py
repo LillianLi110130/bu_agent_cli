@@ -15,6 +15,8 @@ from rich.table import Table
 
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources, get_agent_registry
+from agent_core.plugin import PluginManager
+from config.model_config import ModelPreset, load_model_presets
 
 from cli.interactive_input import InteractivePrompter, get_editor_command
 
@@ -27,7 +29,9 @@ class AgentSlashHandler:
 
     AVAILABLE_TOOLS = [
         "bash",
+        "resolve_path",
         "read",
+        "read_excel",
         "write",
         "edit",
         "glob_search",
@@ -35,7 +39,8 @@ class AgentSlashHandler:
         "todo_read",
         "todo_write",
         "done",
-        "delegate",
+        "web_fetch",
+        "task_output",
         "task_status",
         "task_cancel",
     ]
@@ -53,6 +58,8 @@ class AgentSlashHandler:
         prompter: InteractivePrompter | None = None,
         workspace_root: Path | None = None,
         agents_dir: Path | None = None,
+        plugin_manager: PluginManager | None = None,
+        model_presets: dict[str, ModelPreset] | None = None,
     ):
         """Initialize the handler."""
         self.console = console or Console()
@@ -63,6 +70,8 @@ class AgentSlashHandler:
         self.builtin_agents_dir = agents_dir or (
             Path(__file__).parent.parent / "agent_core" / "prompts" / "agents"
         )
+        self.plugin_manager = plugin_manager
+        self.model_presets = model_presets if model_presets is not None else load_model_presets()
         self.registry = registry or get_agent_registry(
             self.workspace_root,
             builtin_agents_dir=self.builtin_agents_dir,
@@ -202,8 +211,6 @@ class AgentSlashHandler:
 
         if config.model:
             details.append(f"[bold cyan]模型：[/] {config.model}")
-        if config.temperature is not None:
-            details.append(f"[bold cyan]温度：[/] {config.temperature}")
         details.append(f"[bold cyan]优先级：[/] {config.source_priority}")
         return details
 
@@ -373,35 +380,25 @@ class AgentSlashHandler:
         )
 
         description = await self.prompter.prompt_text(
-            "[1/6] 描述",
+            "[1/5] 描述",
             optional=True,
             default="",
         )
-        model = await self.prompter.prompt_text(
-            "[2/6] 模型",
-            optional=True,
-            default="",
-        )
-        temperature = await self.prompter.prompt_number(
-            "[3/6] 温度",
-            default=0.7,
-            min_value=0.0,
-            max_value=2.0,
-        )
+        model = await self._prompt_model_choice("[2/5] 模型", default="inherit")
 
         self.console.print()
-        self.console.print("[4/6] 选择允许工具：")
+        self.console.print("[3/5] 选择允许工具：")
         tools = await self.prompter.prompt_multiselect("可用工具", choices=self.AVAILABLE_TOOLS)
 
         self.console.print()
-        self.console.print("[5/6] 选择禁用工具：")
+        self.console.print("[4/5] 选择禁用工具：")
         disallowed_tools = await self.prompter.prompt_multiselect(
             "禁用工具",
             choices=self.AVAILABLE_TOOLS,
         )
 
         self.console.print()
-        self.console.print("[6/6] 编辑系统提示词：")
+        self.console.print("[5/5] 编辑系统提示词：")
         system_prompt = await self.prompter.prompt_multiline(
             "系统提示词",
             default=f"You are a {name} agent.",
@@ -413,8 +410,7 @@ class AgentSlashHandler:
                 f"[bold]摘要：[/bold]\n"
                 f"  名称： [cyan]{name}[/cyan]\n"
                 f"  来源： {self._format_source_label(scope)}\n"
-                f"  模型： {model or '默认'}\n"
-                f"  温度： {temperature}\n"
+                f"  模型： {model or 'inherit'}\n"
                 f"  允许工具： {', '.join(tools) if tools else '全部'}\n"
                 f"  禁用工具： {', '.join(disallowed_tools) if disallowed_tools else '无'}\n"
                 f"  系统提示词： [dim]{system_prompt[:100]}...[/dim]",
@@ -433,7 +429,7 @@ class AgentSlashHandler:
             name=name,
             description=description,
             model=model,
-            temperature=temperature,
+            temperature=None,
             tools=tools or None,
             disallowed_tools=disallowed_tools,
             system_prompt=system_prompt,
@@ -449,7 +445,7 @@ class AgentSlashHandler:
         name: str,
         description: str,
         model: str | None,
-        temperature: float,
+        temperature: float | None,
         tools: list[str] | None,
         disallowed_tools: list[str] | None,
         system_prompt: str,
@@ -459,12 +455,13 @@ class AgentSlashHandler:
         file_path = target_dir / f"{name}.md"
 
         front_matter: dict[str, Any] = {
+            "name": name,
             "description": description,
         }
         if model:
             front_matter["model"] = model
-        if temperature is not None:
-            front_matter["temperature"] = temperature
+        # Temperature is no longer managed by /agents; omit it when rewriting
+        # configs so older files are cleaned up on edit.
         if tools:
             front_matter["tools"] = tools
         if disallowed_tools:
@@ -561,11 +558,10 @@ class AgentSlashHandler:
         self.console.print("[bold]请选择要编辑的字段：[/bold]")
         self.console.print("  [1] 描述")
         self.console.print("  [2] 模型")
-        self.console.print("  [3] 温度")
-        self.console.print("  [4] 系统提示词")
-        self.console.print("  [5] 允许工具")
-        self.console.print("  [6] 禁用工具")
-        self.console.print("  [7] 在外部编辑器中打开")
+        self.console.print("  [3] 系统提示词")
+        self.console.print("  [4] 允许工具")
+        self.console.print("  [5] 禁用工具")
+        self.console.print("  [6] 在外部编辑器中打开")
         self.console.print("  [0] 取消")
 
         while True:
@@ -573,7 +569,7 @@ class AgentSlashHandler:
                 from prompt_toolkit.formatted_text import HTML
 
                 choice_input = await self.prompter._session.prompt_async(
-                    HTML("<ansiblue>请选择 [0-7]：</ansiblue> ")
+                    HTML("<ansiblue>请选择 [0-6]：</ansiblue> ")
                 )
 
                 if not choice_input:
@@ -588,21 +584,11 @@ class AgentSlashHandler:
                 if choice == "1":
                     config.description = await self.prompter.prompt_edit("描述", config.description)
                 elif choice == "2":
-                    new_model = await self.prompter.prompt_text(
+                    config.model = await self._prompt_model_choice(
                         "模型",
-                        config.model or "",
-                        optional=True,
+                        default=config.model or "inherit",
                     )
-                    config.model = new_model or None
                 elif choice == "3":
-                    current_temp = config.temperature or 0.7
-                    config.temperature = await self.prompter.prompt_number(
-                        "温度",
-                        current_temp,
-                        0.0,
-                        2.0,
-                    )
-                elif choice == "4":
                     self.console.print("\n[dim]当前系统提示词：[/dim]")
                     prompt_preview = config.system_prompt[:300]
                     if len(config.system_prompt) > 300:
@@ -613,7 +599,7 @@ class AgentSlashHandler:
                         "新的系统提示词",
                         config.system_prompt,
                     )
-                elif choice == "5":
+                elif choice == "4":
                     current_tools = list(config.tools or [])
                     new_tools = await self.prompter.prompt_multiselect(
                         "选择允许工具",
@@ -621,14 +607,14 @@ class AgentSlashHandler:
                         current_tools,
                     )
                     config.tools = new_tools
-                elif choice == "6":
+                elif choice == "5":
                     current_disallowed = list(config.disallowed_tools or [])
                     config.disallowed_tools = await self.prompter.prompt_multiselect(
                         "选择禁用工具",
                         self.AVAILABLE_TOOLS,
                         current_disallowed,
                     )
-                elif choice == "7":
+                elif choice == "6":
                     return await self._edit_in_editor(name)
                 else:
                     self.console.print("[red]无效选项[/red]")
@@ -639,7 +625,7 @@ class AgentSlashHandler:
                     name=config.name,
                     description=config.description,
                     model=config.model,
-                    temperature=config.temperature or 0.7,
+                    temperature=config.temperature,
                     tools=config.tools,
                     disallowed_tools=config.disallowed_tools,
                     system_prompt=config.system_prompt,
@@ -693,16 +679,50 @@ class AgentSlashHandler:
         self.console.print(f"[green]✓ 已重新加载 {count} 个智能体[/green]")
         return True
 
+    def _model_choices(self, current: str | None = None) -> list[str]:
+        """Return selectable agent models based on configured model presets."""
+        choices = ["inherit", *self.model_presets.keys()]
+        normalized_current = (current or "").strip()
+        if normalized_current and normalized_current not in choices:
+            choices.append(normalized_current)
+        return choices
+
+    async def _prompt_model_choice(self, prompt: str, *, default: str = "inherit") -> str:
+        """Prompt for an agent model using the same preset names as /model."""
+        normalized_default = (default or "inherit").strip() or "inherit"
+        choices = self._model_choices(normalized_default)
+        if normalized_default not in choices:
+            normalized_default = "inherit"
+        self._print_model_choice_hint()
+        return await self.prompter.prompt_choice(
+            prompt,
+            choices=choices,
+            default=normalized_default,
+        )
+
+    def _print_model_choice_hint(self) -> None:
+        """Print compact model preset details before model selection."""
+        if not self.model_presets:
+            self.console.print("[dim]未配置模型预设，仅可选择 inherit。[/dim]")
+            return
+        self.console.print("[dim]可选模型来自 /model list；inherit 表示继承调用方当前模型。[/dim]")
+        for name, preset in self.model_presets.items():
+            model = str(preset.get("model") or name)
+            vision = " vision" if bool(preset.get("vision", False)) else ""
+            self.console.print(f"  [cyan]{name}[/cyan] -> {model}[dim]{vision}[/dim]")
+
     def _reload_registry(self):
         """Reload the agent registry."""
-        global _global_registry
         import agent_core.agent.registry as registry_module
 
-        _global_registry = AgentRegistry(
+        fresh_registry = AgentRegistry(
             agent_sources=default_agent_sources(
                 self.workspace_root,
                 builtin_agents_dir=self.builtin_agents_dir,
             )
         )
-        registry_module._global_registry = _global_registry
-        self.registry = _global_registry
+        self.registry._configs = fresh_registry._configs
+        self.registry._config_sources = fresh_registry._config_sources
+        registry_module._global_registry = self.registry
+        if self.plugin_manager is not None:
+            self.plugin_manager.reload_all()

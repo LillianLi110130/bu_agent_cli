@@ -1813,8 +1813,12 @@ class TGAgentCLI:
                 registry=self._agent_registry,
                 console=self._console,
                 workspace_root=self._ctx.working_dir,
+                plugin_manager=self._plugin_manager,
+                model_presets=self._model_presets,
             )
-            return await handler.handle(args)
+            handled = await handler.handle(args)
+            self._agent_registry = handler.registry
+            return handled
 
         if command_name == "team":
             from agent_core.team import team_experiment_disabled_message

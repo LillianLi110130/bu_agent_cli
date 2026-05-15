@@ -133,22 +133,6 @@ async def team_update_task(
     return json.dumps(task.to_dict(), ensure_ascii=False, indent=2)
 
 
-@tool("Read the lead mailbox for a team.", name="team_read_inbox")
-async def team_read_inbox(
-    ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
-    team_id: str,
-    ack: bool = True,
-) -> str:
-    runtime, error = _runtime_or_error(ctx)
-    if error is not None:
-        return error
-    return json.dumps(
-        [message.to_dict() for message in runtime.read_lead_inbox(team_id, ack=ack)],
-        ensure_ascii=False,
-        indent=2,
-    )
-
-
 @tool("Send a team message between the lead and teammates.", name="team_send_message")
 async def team_send_message(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],

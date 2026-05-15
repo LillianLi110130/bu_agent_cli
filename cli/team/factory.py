@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,13 @@ _TEAM_MEMBER_BLOCKED_TOOL_NAMES = {
     "team_shutdown",
 }
 
+_TEAM_MEMBER_DEFAULT_TOOL_NAMES = {
+    "team_send_message",
+    "team_list_tasks",
+    "team_status",
+    "team_snapshot",
+}
+
 
 def _bootstrap_module() -> Any:
     """Return the loaded TgAgent bootstrap module without double-loading script mode."""
@@ -45,6 +53,14 @@ def _without_team_member_blocked_tools(tools: list[Any]) -> list[Any]:
         for tool in tools
         if getattr(tool, "name", None) not in _TEAM_MEMBER_BLOCKED_TOOL_NAMES
     ]
+
+
+def _with_team_member_default_tools(agent_config: AgentConfig | None) -> AgentConfig | None:
+    """Ensure team members keep member-safe team tools even with an agent tool whitelist."""
+    if agent_config is None or not agent_config.tools:
+        return agent_config
+    merged_tools = sorted({*agent_config.tools, *_TEAM_MEMBER_DEFAULT_TOOL_NAMES})
+    return replace(agent_config, tools=merged_tools)
 
 
 def _load_agent_type_skill_text(
@@ -133,6 +149,7 @@ def create_team_member_agent(
     agent_config = runtime.agent_registry.get_config(agent_type) if agent_type else None
     if agent_type and agent_config is None:
         raise ValueError(f"Agent '{agent_type}' not found")
+    agent_config = _with_team_member_default_tools(agent_config)
 
     base_system_prompt = bootstrap._build_system_prompt(
         ctx.working_dir,

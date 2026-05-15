@@ -16,7 +16,7 @@ from prompt_toolkit.styles import Style
 from rich.text import Text
 
 from cli.at_commands import AtCommandCompleter, parse_at_command
-from cli.slash_commands import SlashCommandCompleter
+from cli.slash_commands import SlashCommandCompleter, parse_slash_command
 
 if TYPE_CHECKING:
     from cli.app import TGAgentCLI
@@ -34,6 +34,7 @@ class TGAgentTUI:
         self._stop_requested = False
         self._cancel_event: asyncio.Event | None = None
         self._cancel_requested = False
+        self._suspend_prompt_for_active_task = False
 
     async def run(self) -> None:
         old_tui_enabled = self._cli._fixed_input_tui_enabled
@@ -142,16 +143,12 @@ class TGAgentTUI:
             if self._cancel_requested:
                 status = f"<ansiyellow>正在取消当前执行...</ansiyellow> · {status}"
             else:
-                status = f"<ansiyellow>Ctrl+C 取消当前执行</ansiyellow> · {status}"
+                status = f"<ansibrightblack>Ctrl+C 取消当前执行</ansibrightblack> · {status}"
         return f"{self._separator_markup()}\n{status}"
 
     @staticmethod
     def _separator() -> str:
         columns = shutil.get_terminal_size((80, 20)).columns
-        # Avoid filling the last terminal column. Many terminals set an
-        # auto-wrap flag when a character lands in the final column, and that
-        # flag is exactly what makes resize redraws leave messy separator
-        # fragments in scrollback.
         return "─" * max(20, columns - 1)
 
     async def _run_loop(self) -> None:
@@ -161,12 +158,18 @@ class TGAgentTUI:
                 return
 
         while True:
-            if self._prompt_task is None:
+            if self._prompt_task is None and (
+                self._active_task is None or not self._suspend_prompt_for_active_task
+            ):
                 self._prompt_task = asyncio.create_task(self._prompt_async())
 
-            wait_set = {self._prompt_task}
+            wait_set = set()
+            if self._prompt_task is not None:
+                wait_set.add(self._prompt_task)
             if self._active_task is not None:
                 wait_set.add(self._active_task)
+            if not wait_set:
+                continue
 
             done, _ = await asyncio.wait(
                 wait_set,
@@ -184,7 +187,7 @@ class TGAgentTUI:
                 if self._stop_requested:
                     return
 
-            if self._prompt_task not in done:
+            if self._prompt_task is None or self._prompt_task not in done:
                 continue
 
             try:
@@ -229,8 +232,17 @@ class TGAgentTUI:
 
         self._cancel_event = asyncio.Event()
         self._cancel_requested = False
+        self._suspend_prompt_for_active_task = self._should_suspend_prompt_for_input(user_input)
         self._active_task = asyncio.create_task(self._execute_input(user_input))
         return True
+
+    @staticmethod
+    def _should_suspend_prompt_for_input(user_input: str) -> bool:
+        command = parse_slash_command(user_input)
+        if command.name != "agents":
+            return False
+        subcommand = command.args[0].lower() if command.args else ""
+        return subcommand in {"create", "edit", "delete"}
 
     def _print_user_input_record(self, user_input: str) -> None:
         self._cli._console.print()
@@ -279,6 +291,7 @@ class TGAgentTUI:
         finally:
             self._cancel_event = None
             self._cancel_requested = False
+            self._suspend_prompt_for_active_task = False
 
     async def _drain_background_work(self) -> bool:
         if self._cli._bridge_store is not None:
@@ -326,3 +339,4 @@ class TGAgentTUI:
             self._active_task = None
             self._cancel_event = None
             self._cancel_requested = False
+            self._suspend_prompt_for_active_task = False

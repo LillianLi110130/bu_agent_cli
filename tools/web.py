@@ -17,7 +17,7 @@ _TEXT_CONTENT_TYPES = ("text/plain", "text/markdown")
 _HTML_CONTENT_TYPES = ("text/html", "application/xhtml+xml")
 
 
-@tool("Fetch the content of a web page from a URL and return readable text.", name="WebFetch")
+@tool("Fetch the content of a web page from a URL and return readable text.", name="web_fetch")
 async def web_fetch(url: str) -> str:
     timeout = httpx.Timeout(180.0, connect=15.0)
     headers = {"User-Agent": _USER_AGENT}

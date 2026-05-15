@@ -67,7 +67,6 @@ Available team primitives:
 - team_update_task: update task status, owner, dependency, result, error, title, or write scope.
 - team_send_message: coordinate lead-to-teammate or teammate-to-teammate messages. Use `message` for ordinary coordination and `clarification_response` to answer teammate blocker questions. Supports `type` and `metadata`.
 - team_snapshot: read an orchestration-friendly team snapshot. It peeks lead inbox by default.
-- team_read_inbox: consume lead inbox messages when you are ready to act on them.
 - team_status: inspect lower-level team status when raw details are needed.
 - team_shutdown: shut down the team after completion or when the user asks to stop.
 
