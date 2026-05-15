@@ -20,6 +20,178 @@ from agent_core.runtime_paths import application_root, tg_agent_home
 logger = logging.getLogger("cli.worker.auth")
 
 DEFAULT_AUTH_CALLBACK_URL = "http://127.0.0.1:8088/callback"
+
+_LOGIN_SUCCESS_HTML = """\
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录成功</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#0f172a 0%,#1e293b 50%,#0f172a 100%);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    color:#f8fafc;overflow:hidden;
+  }
+  .card{
+    text-align:center;padding:48px 56px;border-radius:24px;
+    background:rgba(255,255,255,.06);backdrop-filter:blur(20px);
+    border:1px solid rgba(255,255,255,.1);
+    box-shadow:0 25px 60px rgba(0,0,0,.4);
+    animation:fadeUp .6s ease-out both;
+    max-width:420px;
+  }
+  @keyframes fadeUp{
+    from{opacity:0;transform:translateY(24px) scale(.96)}
+    to{opacity:1;transform:translateY(0) scale(1)}
+  }
+  .icon{
+    width:80px;height:80px;margin:0 auto 28px;
+    border-radius:50%;
+    background:linear-gradient(135deg,#22c55e,#16a34a);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 0 8px rgba(34,197,94,.15),0 8px 32px rgba(34,197,94,.25);
+    animation:popIn .5s .2s ease-out both;
+  }
+  @keyframes popIn{
+    from{transform:scale(0)}
+    60%{transform:scale(1.15)}
+    to{transform:scale(1)}
+  }
+  .icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin=round}
+  h1{font-size:26px;font-weight:700;margin-bottom:12px;letter-spacing:-.02em}
+  p{font-size:15px;color:#94a3b8;line-height:1.6;margin-bottom:32px}
+  .btn{
+    display:inline-block;padding:12px 32px;border-radius:12px;
+    background:linear-gradient(135deg,#3b82f6,#2563eb);
+    color:#fff;font-size:14px;font-weight:600;
+    border:none;cursor:pointer;
+    box-shadow:0 4px 16px rgba(37,99,235,.35);
+    transition:transform .15s,box-shadow .15s;
+  }
+  .btn:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(37,99,235,.45)}
+  .btn:active{transform:translateY(0)}
+  .hint{margin-top:20px;font-size:12px;color:#475569}
+  .particles{position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:-1}
+  .particle{
+    position:absolute;border-radius:50%;
+    background:rgba(34,197,94,.25);
+    animation:float linear infinite;
+  }
+  @keyframes float{
+    0%{transform:translateY(100vh) scale(0);opacity:0}
+    10%{opacity:1}
+    90%{opacity:1}
+    100%{transform:translateY(-10vh) scale(1);opacity:0}
+  }
+</style>
+</head>
+<body>
+<div class="particles" id="particles"></div>
+<div class="card">
+  <div class="icon">
+    <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+  </div>
+  <h1>🦀 小螃蟹已登录成功</h1>
+  <p>身份验证已完成。<br>您可以关闭此页面并返回终端。</p>
+  <button class="btn" onclick="window.close()">关闭窗口</button>
+  <div class="hint">或手动关闭此标签页</div>
+</div>
+<script>
+(function(){
+  var c=document.getElementById('particles');
+  for(var i=0;i<12;i++){
+    var p=document.createElement('div');
+    p.className='particle';
+    var s=Math.random()*6+3;
+    p.style.cssText='width:'+s+'px;height:'+s+'px;left:'+Math.random()*100+'%;animation-duration:'+(Math.random()*6+4)+'s;animation-delay:'+(Math.random()*4)+'s';
+    c.appendChild(p);
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
+_LOGIN_ERROR_HTML = """\
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录失败</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    min-height:100vh;display:flex;align-items:center;justify-content:center;
+    background:linear-gradient(135deg,#1c1917 0%,#292524 50%,#1c1917 100%);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    color:#f8fafc;overflow:hidden;
+  }
+  .card{
+    text-align:center;padding:48px 56px;border-radius:24px;
+    background:rgba(255,255,255,.06);backdrop-filter:blur(20px);
+    border:1px solid rgba(255,255,255,.1);
+    box-shadow:0 25px 60px rgba(0,0,0,.4);
+    animation:fadeUp .6s ease-out both;
+    max-width:460px;
+  }
+  @keyframes fadeUp{
+    from{opacity:0;transform:translateY(24px) scale(.96)}
+    to{opacity:1;transform:translateY(0) scale(1)}
+  }
+  .icon{
+    width:80px;height:80px;margin:0 auto 28px;
+    border-radius:50%;
+    background:linear-gradient(135deg,#ef4444,#dc2626);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 0 8px rgba(239,68,68,.15),0 8px 32px rgba(239,68,68,.25);
+    animation:popIn .5s .2s ease-out both;
+  }
+  @keyframes popIn{
+    from{transform:scale(0)}
+    60%{transform:scale(1.15)}
+    to{transform:scale(1)}
+  }
+  .icon svg{width:40px;height:40px;stroke:#fff;stroke-width:3;fill:none;stroke-linecap:round;stroke-linejoin=round}
+  h1{font-size:26px;font-weight:700;margin-bottom:12px;letter-spacing:-.02em}
+  p{font-size:15px;color:#94a3b8;line-height:1.6;margin-bottom:8px}
+  .error-msg{
+    margin:16px 0 28px;padding:14px 20px;border-radius:12px;
+    background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.2);
+    font-size:13px;color:#fca5a5;word-break:break-word;text-align:left;
+  }
+  .btn{
+    display:inline-block;padding:12px 32px;border-radius:12px;
+    background:linear-gradient(135deg,#6b7280,#4b5563);
+    color:#fff;font-size:14px;font-weight:600;
+    border:none;cursor:pointer;
+    box-shadow:0 4px 16px rgba(75,85,99,.35);
+    transition:transform .15s,box-shadow .15s;
+  }
+  .btn:hover{transform:translateY(-1px);box-shadow:0 6px 24px rgba(75,85,99,.45)}
+  .btn:active{transform:translateY(0)}
+  .hint{margin-top:20px;font-size:12px;color:#475569}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">
+    <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  </div>
+  <h1>登录失败</h1>
+  <p>身份验证未能完成。</p>
+  <div class="error-msg">{error}</div>
+  <button class="btn" onclick="window.close()">关闭窗口</button>
+  <div class="hint">或手动关闭此标签页</div>
+</div>
+</body>
+</html>
+"""
+
 AUTH_CALLBACK_TIMEOUT_SECONDS = 180.0
 _PACKAGE_CONFIG_FILE_NAME = "tg_crab_worker.json"
 
@@ -85,10 +257,7 @@ class _AuthCallbackRequestHandler(BaseHTTPRequestHandler):
             )
             self._write_html(
                 status_code=400,
-                body=(
-                    "<html><body><h1>Login failed</h1>"
-                    "<p>The authorization callback reported an error.</p></body></html>"
-                ),
+                body=_LOGIN_ERROR_HTML.format(error=error_message),
             )
             return
 
@@ -99,9 +268,8 @@ class _AuthCallbackRequestHandler(BaseHTTPRequestHandler):
             )
             self._write_html(
                 status_code=400,
-                body=(
-                    "<html><body><h1>Login failed</h1>"
-                    "<p>The authorization callback did not include a code.</p></body></html>"
+                body=_LOGIN_ERROR_HTML.format(
+                    error="The authorization callback did not include a code."
                 ),
             )
             return
@@ -109,10 +277,7 @@ class _AuthCallbackRequestHandler(BaseHTTPRequestHandler):
         self._publish_result(_CallbackPayload(code=code))
         self._write_html(
             status_code=200,
-            body=(
-                "<html><body><h1>Login complete</h1>"
-                "<p>You can close this page and return to the terminal.</p></body></html>"
-            ),
+            body=_LOGIN_SUCCESS_HTML,
         )
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A003

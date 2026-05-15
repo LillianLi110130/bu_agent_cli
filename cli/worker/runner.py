@@ -37,7 +37,9 @@ class WorkerRunner:
         self.stream_max_session_seconds = stream_max_session_seconds
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
-        resolved_root_dir = Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
+        resolved_root_dir = (
+            Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
+        )
         self.bridge_store = FileBridgeStore(
             root_dir=resolved_root_dir,
             session_binding_id=resolve_session_binding_id(worker_id),
@@ -53,9 +55,7 @@ class WorkerRunner:
     async def run_forever(self) -> None:
         """Run the worker loop until explicitly stopped."""
         if not await self.gateway_client.online(worker_id=self.worker_id):
-            raise RuntimeError(
-                f"Failed to mark worker online for worker_id={self.worker_id}"
-            )
+            raise RuntimeError(f"Failed to mark worker online for worker_id={self.worker_id}")
 
         try:
             if self.gateway_transport == "sse":
@@ -167,7 +167,7 @@ class WorkerRunner:
 
         try:
             result = await self._wait_for_result(request.request_id, source=source)
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 f"Worker request processing failed for worker_id={self.worker_id}: {exc}"
             )
@@ -176,9 +176,7 @@ class WorkerRunner:
         else:
             ok = await self._complete_bridge_result(result, source=source)
         if not ok:
-            logger.warning(
-                f"Worker complete returned ok=false for worker_id={self.worker_id}"
-            )
+            logger.warning(f"Worker complete returned ok=false for worker_id={self.worker_id}")
 
     async def _complete_bridge_result(self, result: Any, *, source: str) -> bool:
         """Report a bridge result back to the gateway complete endpoint."""
@@ -217,8 +215,7 @@ class WorkerRunner:
             return
         if not ok:
             logger.warning(
-                "Worker request error complete returned ok=false for "
-                f"worker_id={self.worker_id}"
+                "Worker request error complete returned ok=false for " f"worker_id={self.worker_id}"
             )
 
     async def _wait_for_result(self, request_id: str, *, source: str):
@@ -252,9 +249,7 @@ class WorkerRunner:
                 source=source,
             )
             if not ok:
-                logger.warning(
-                    f"Worker progress returned ok=false for worker_id={self.worker_id}"
-                )
+                logger.warning(f"Worker progress returned ok=false for worker_id={self.worker_id}")
                 continue
             self.bridge_store.complete_progress(progress)
 
@@ -287,7 +282,9 @@ class WorkerRunner:
                     file_bytes=file_bytes,
                 )
             else:
-                logger.warning(f"Unsupported outbound action={event.action}, event_id={event.event_id}")
+                logger.warning(
+                    f"Unsupported outbound action={event.action}, event_id={event.event_id}"
+                )
                 ok = False
 
             if ok:
