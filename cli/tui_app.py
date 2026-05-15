@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import ThreadedCompleter, merge_completers
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -54,11 +55,13 @@ class TGAgentTUI:
 
     def _build_session(self) -> PromptSession:
         kb = KeyBindings()
+        input_locked_filter = Condition(self._is_input_locked)
 
         @kb.add("enter")
         def _submit_or_complete(event) -> None:  # noqa: ANN001
             buffer = event.current_buffer
-            if self._active_task is not None and not self._active_task.done():
+            if self._is_input_locked():
+                event.app.invalidate()
                 return
 
             complete_state = buffer.complete_state
@@ -77,29 +80,43 @@ class TGAgentTUI:
 
         @kb.add("c-j")
         def _newline(event) -> None:  # noqa: ANN001
+            if self._is_input_locked():
+                event.app.invalidate()
+                return
             event.current_buffer.insert_text("\n")
 
         @kb.add("escape", "enter")
         def _escape_newline(event) -> None:  # noqa: ANN001
+            if self._is_input_locked():
+                event.app.invalidate()
+                return
             event.current_buffer.insert_text("\n")
+
+        @kb.add("q", filter=input_locked_filter)
+        def _cancel_running_task(event) -> None:  # noqa: ANN001
+            if self._cancel_event is not None and not self._cancel_event.is_set():
+                self._cancel_requested = True
+                self._cancel_event.set()
+                self._cli._console.print("\n[yellow]正在取消当前执行...[/yellow]")
+                event.app.invalidate()
+                return
+
+            if self._active_task is not None and not self._active_task.done():
+                self._active_task.cancel()
+                self._cli._console.print("\n[yellow]取消未及时完成，已强制中断。[/yellow]")
 
         @kb.add("c-c")
         def _cancel_or_clear(event) -> None:  # noqa: ANN001
-            if self._active_task is not None and not self._active_task.done():
-                if self._cancel_event is not None and not self._cancel_event.is_set():
-                    self._cancel_requested = True
-                    self._cancel_event.set()
-                    self._cli._console.print("\n[yellow]正在取消当前执行...[/yellow]")
-                    event.app.invalidate()
-                    return
-
-                self._active_task.cancel()
-                self._cli._console.print("\n[yellow]取消未及时完成，已强制中断。[/yellow]")
+            if self._is_input_locked():
+                event.app.invalidate()
                 return
             event.current_buffer.reset()
 
         @kb.add("c-d")
         def _exit(event) -> None:  # noqa: ANN001
+            if self._is_input_locked():
+                event.app.invalidate()
+                return
             event.app.exit(exception=EOFError)
 
         slash_completer = SlashCommandCompleter(self._cli._slash_registry)
@@ -118,7 +135,7 @@ class TGAgentTUI:
                 "bottom-toolbar.text": "noreverse bg:default #777777",
             }
         )
-        return PromptSession(
+        session = PromptSession(
             message=lambda: HTML(
                 f"{self._separator_markup()}\n"
                 "<ansiblue>>> </ansiblue>"
@@ -133,17 +150,19 @@ class TGAgentTUI:
             erase_when_done=True,
             bottom_toolbar=lambda: HTML(self._render_bottom_toolbar()),
         )
+        session.default_buffer.read_only = input_locked_filter
+        return session
 
     def _separator_markup(self) -> str:
         return f"<ansibrightblack><b>{self._separator()}</b></ansibrightblack>"
 
     def _render_bottom_toolbar(self) -> str:
         status = self._cli._render_context_budget_toolbar()
-        if self._active_task is not None and not self._active_task.done():
+        if self._is_input_locked():
             if self._cancel_requested:
                 status = f"<ansiyellow>正在取消当前执行...</ansiyellow> · {status}"
             else:
-                status = f"<ansibrightblack>Ctrl+C 取消当前执行</ansibrightblack> · {status}"
+                status = f"<ansibrightblack>按 q 取消当前执行</ansibrightblack> · {status}"
         return f"{self._separator_markup()}\n{status}"
 
     @staticmethod
@@ -235,6 +254,9 @@ class TGAgentTUI:
         self._suspend_prompt_for_active_task = self._should_suspend_prompt_for_input(user_input)
         self._active_task = asyncio.create_task(self._execute_input(user_input))
         return True
+
+    def _is_input_locked(self) -> bool:
+        return self._active_task is not None and not self._active_task.done()
 
     @staticmethod
     def _should_suspend_prompt_for_input(user_input: str) -> bool:

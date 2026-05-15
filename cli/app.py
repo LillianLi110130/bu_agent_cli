@@ -2155,8 +2155,7 @@ class TGAgentCLI:
                     if self._ctx.subagent_executor is not None:
                         await self._ctx.subagent_executor.cancel_running_foreground_runs()
                     self._console.print()
-                    cancel_source = "Ctrl+C" if self._fixed_input_tui_enabled else "q 键"
-                    self._console.print(f"[yellow]用户已取消本次运行（{cancel_source}）[/yellow]")
+                    self._console.print("[yellow]用户已取消本次运行（q 键）[/yellow]")
                     break
 
                 if isinstance(event, _CLIContextBudgetSnapshot):
