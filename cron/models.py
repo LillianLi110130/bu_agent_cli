@@ -226,7 +226,9 @@ class CronJob:
             name=str(payload["name"]),
             prompt=str(payload["prompt"]),
             schedule=CronSchedule.from_dict(payload["schedule"]),
-            schedule_display=str(payload.get("schedule_display") or payload["schedule"].get("display") or ""),
+            schedule_display=str(
+                payload.get("schedule_display") or payload["schedule"].get("display") or ""
+            ),
             repeat=CronRepeat.from_dict(payload.get("repeat")),
             source=payload.get("source") or "local",
             delivery=payload.get("delivery") or "local",
