@@ -68,3 +68,21 @@ async def test_cronjob_tool_create_and_list(
     assert created["data"]["name"] == "Morning"
     assert listed["ok"] is True
     assert listed["data"][0]["name"] == "Morning"
+
+
+@pytest.mark.asyncio
+async def test_cronjob_tool_run_is_worker_host_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    ctx = SandboxContext.create(tmp_path)
+    overrides = {get_sandbox_context: lambda: ctx}
+
+    result = await cronjob.execute(
+        _overrides=overrides,
+        action="run",
+        job_id="cron_missing",
+    )
+
+    assert result == "Error: run is only supported by the WorkerRunner scheduler host"

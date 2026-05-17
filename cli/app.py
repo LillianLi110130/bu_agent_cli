@@ -122,9 +122,6 @@ from config.model_config import (
     get_image_summary_preset,
     load_model_presets,
 )
-from cron.jobs import CronJobStore
-from cron.models import CronHostContext, CronJob
-from cron.scheduler import CronScheduler
 from tools import SandboxContext, SecurityError
 
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
@@ -445,7 +442,6 @@ class TGAgentCLI:
     BRIDGE_POLL_INTERVAL_SECONDS = 0.1
     TEAM_INBOX_POLL_INTERVAL_SECONDS = 1.0
     TEAM_AUTO_TRIGGER_TYPES = LEAD_AUTO_TRIGGER_MESSAGE_TYPES
-    CRON_TICK_INTERVAL_SECONDS = 60.0
 
     def __init__(
         self,
@@ -566,8 +562,6 @@ class TGAgentCLI:
             if self._session_runtime is not None
             else self._ctx.session_id
         )
-        self._cron_scheduler = CronScheduler(store=CronJobStore())
-        self._cron_next_tick_at: float | None = None
         self._last_transcript_flushed_idx = 0
         self._conversation_session_created = False
         self._initialize_session_store()
@@ -2556,64 +2550,6 @@ class TGAgentCLI:
             and not self._active_bridge_cancel_event.is_set()
         )
 
-    async def _maybe_tick_cron(self) -> None:
-        """Run a cron scheduler tick when the local host interval elapses."""
-        loop = asyncio.get_running_loop()
-        now = loop.time()
-        if self._cron_next_tick_at is None:
-            self._cron_next_tick_at = now + self.CRON_TICK_INTERVAL_SECONDS
-            return
-        if now < self._cron_next_tick_at:
-            return
-        self._cron_next_tick_at = now + self.CRON_TICK_INTERVAL_SECONDS
-        try:
-            await self._cron_scheduler.tick(host_context=self._build_cron_host_context())
-        except Exception as exc:
-            logger.exception(f"Cron scheduler tick failed in local CLI host: {exc}")
-
-    def _build_cron_host_context(self) -> CronHostContext:
-        return CronHostContext(
-            source="local",
-            workspace_root=self._ctx.working_dir,
-            session_binding_id="local-cli",
-            default_delivery="local",
-            fresh_agent_runner=self._run_cron_fresh_agent,
-        )
-
-    async def _run_cron_fresh_agent(self, job: CronJob) -> str:
-        """Execute one scheduled job in a clean local Agent session."""
-        from agent_core.bootstrap.agent_factory import create_agent
-
-        agent, _ = create_agent(
-            model=getattr(self._agent.llm, "model", None),
-            root_dir=Path(job.execution.workspace_root),
-        )
-        self._restrict_cron_background_agent(agent)
-        prompt = self._build_cron_background_prompt(job)
-        final_response = ""
-        async for event in agent.query_stream(prompt):
-            if isinstance(event, FinalResponseEvent):
-                final_response = event.content
-        return final_response
-
-    @staticmethod
-    def _restrict_cron_background_agent(agent: Agent) -> None:
-        blocked_tools = {"cronjob", "message", "delegate", "delegate_parallel"}
-        agent.tools = [tool for tool in agent.tools if tool.name not in blocked_tools]
-        agent._tool_map = {tool.name: tool for tool in agent.tools}
-
-    @staticmethod
-    def _build_cron_background_prompt(job: CronJob) -> str:
-        return (
-            "You are running an unattended scheduled cron job.\n"
-            "Execute the prompt directly. Do not ask follow-up questions. "
-            "Do not send outbound messages; return the final result as your response.\n\n"
-            f"Job ID: {job.id}\n"
-            f"Job Name: {job.name}\n\n"
-            "Prompt:\n"
-            f"{job.prompt}"
-        )
-
     def _cancel_active_bridge_run_from_terminal(self) -> bool:
         if self._active_bridge_cancel_event is None or self._active_bridge_cancel_event.is_set():
             return False
@@ -3050,7 +2986,6 @@ class TGAgentCLI:
                 )
 
                 if prompt_task not in done:
-                    await self._maybe_tick_cron()
                     if self._has_pending_bridge_work():
                         await self._terminate_active_prompt(session, prompt_task)
                         prompt_task = None
@@ -3190,7 +3125,6 @@ class TGAgentCLI:
                         return_when=asyncio.FIRST_COMPLETED,
                     )
                     if prompt_task not in done:
-                        await self._maybe_tick_cron()
                         should_continue = await self._drain_team_auto_trigger_queue()
                         if not should_continue:
                             prompt_task.cancel()

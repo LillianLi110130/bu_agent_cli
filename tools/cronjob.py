@@ -8,7 +8,6 @@ from typing import Annotated
 from agent_core.tools import Depends, tool
 from cli.im_bridge import resolve_session_binding_id
 from cron.jobs import CronJobStore
-from cron.models import CronHostContext
 from cron.service import CronService, job_to_json
 from tools.sandbox import SandboxContext, get_sandbox_context
 
@@ -99,14 +98,6 @@ async def cronjob(
         )
 
     if normalized_action == "run":
-        if not job_id:
-            return "Error: run requires job_id"
-        host_context = CronHostContext(
-            source="local",
-            workspace_root=workspace_root,
-            session_binding_id=session_binding_id,
-            default_delivery="local",
-        )
-        return job_to_json(await service.run_job_now(job_id, host_context=host_context))
+        return "Error: run is only supported by the WorkerRunner scheduler host"
 
     return "Error: action must be create, list, get, update, pause, resume, run, or remove"
