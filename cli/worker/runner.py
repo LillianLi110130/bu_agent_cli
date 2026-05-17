@@ -10,7 +10,12 @@ from typing import Any
 
 import httpx
 
+from agent_core.agent import FinalResponseEvent
+from agent_core.bootstrap.agent_factory import create_agent
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cron.jobs import CronJobStore
+from cron.models import CronHostContext, CronJob
+from cron.scheduler import CronScheduler
 
 logger = logging.getLogger("cli.worker.runner")
 
@@ -28,6 +33,7 @@ class WorkerRunner:
         stream_max_session_seconds: float = 20 * 60,
         result_poll_interval_seconds: float = 0.5,
         empty_poll_sleep_seconds: float = 0.1,
+        cron_tick_interval_seconds: float = 60.0,
     ) -> None:
         self.worker_id = worker_id
         self.gateway_client = gateway_client
@@ -37,14 +43,18 @@ class WorkerRunner:
         self.stream_max_session_seconds = stream_max_session_seconds
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
+        self.cron_tick_interval_seconds = cron_tick_interval_seconds
         resolved_root_dir = (
             Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         )
+        self.root_path = resolved_root_dir
         self.bridge_store = FileBridgeStore(
             root_dir=resolved_root_dir,
             session_binding_id=resolve_session_binding_id(worker_id),
         )
         self.bridge_store.initialize()
+        self.cron_scheduler = CronScheduler(store=CronJobStore())
+        self._cron_next_tick_at: float | None = None
         self._stop_event = asyncio.Event()
         self._completion_tasks: set[asyncio.Task[Any]] = set()
 
@@ -71,6 +81,7 @@ class WorkerRunner:
     async def _run_poll_loop(self) -> None:
         """Consume remote messages via long polling."""
         while not self._stop_event.is_set():
+            await self._maybe_tick_cron()
             try:
                 messages = await self.gateway_client.poll(worker_id=self.worker_id)
             except httpx.ReadTimeout as exc:
@@ -98,6 +109,7 @@ class WorkerRunner:
                         deadline=stream_session_deadline,
                     )
                     await self._drain_outbound_events()
+                    await self._maybe_tick_cron()
                     if self._stop_event.is_set():
                         break
                     if event.event != "message" or event.message is None:
@@ -259,6 +271,63 @@ class WorkerRunner:
         if normalized_source in {"im", "web"}:
             return normalized_source
         return "im"
+
+    async def _maybe_tick_cron(self) -> None:
+        """Run a cron scheduler tick when the worker host interval elapses."""
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._cron_next_tick_at is None:
+            self._cron_next_tick_at = now + self.cron_tick_interval_seconds
+            return
+        if now < self._cron_next_tick_at:
+            return
+        self._cron_next_tick_at = now + self.cron_tick_interval_seconds
+        try:
+            await self.cron_scheduler.tick(host_context=self._build_cron_host_context())
+        except Exception as exc:
+            logger.exception(
+                f"Cron scheduler tick failed for worker_id={self.worker_id}: {exc}"
+            )
+
+    def _build_cron_host_context(self) -> CronHostContext:
+        return CronHostContext(
+            source="remote",
+            workspace_root=self.root_path,
+            session_binding_id=resolve_session_binding_id(self.worker_id),
+            worker_id=self.worker_id,
+            gateway_client=self.gateway_client,
+            default_delivery="remote",
+            fresh_agent_runner=self._run_cron_fresh_agent,
+        )
+
+    async def _run_cron_fresh_agent(self, job: CronJob) -> str:
+        """Execute one scheduled job in a clean worker Agent session."""
+        agent, _ = create_agent(model=job.model or self.model, root_dir=self.root_path)
+        self._restrict_cron_background_agent(agent)
+        prompt = self._build_cron_background_prompt(job)
+        final_response = ""
+        async for event in agent.query_stream(prompt):
+            if isinstance(event, FinalResponseEvent):
+                final_response = event.content
+        return final_response
+
+    @staticmethod
+    def _restrict_cron_background_agent(agent: Any) -> None:
+        blocked_tools = {"cronjob", "message", "delegate", "delegate_parallel"}
+        agent.tools = [tool for tool in agent.tools if tool.name not in blocked_tools]
+        agent._tool_map = {tool.name: tool for tool in agent.tools}
+
+    @staticmethod
+    def _build_cron_background_prompt(job: CronJob) -> str:
+        return (
+            "You are running an unattended scheduled cron job.\n"
+            "Execute the prompt directly. Do not ask follow-up questions. "
+            "Do not send outbound messages; return the final result as your response.\n\n"
+            f"Job ID: {job.id}\n"
+            f"Job Name: {job.name}\n\n"
+            "Prompt:\n"
+            f"{job.prompt}"
+        )
 
     async def _drain_outbound_events(self) -> None:
         """Deliver queued outbound events through the gateway."""

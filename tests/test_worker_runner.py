@@ -15,6 +15,20 @@ from cli.worker.mock_server import MockGatewayState, create_mock_gateway_app
 from cli.worker.runner import WorkerRunner
 
 
+class _RecordingCronScheduler:
+    def __init__(self) -> None:
+        self.contexts = []
+
+    async def tick(self, *, host_context):
+        self.contexts.append(host_context)
+
+
+class _FailingCronScheduler:
+    async def tick(self, *, host_context):
+        del host_context
+        raise RuntimeError("synthetic cron failure")
+
+
 async def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.01) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -442,3 +456,49 @@ def test_mock_gateway_register_stream_replaces_previous_connection():
 
     assert state.is_current_stream(worker_id="worker-1", version=first_version) is False
     assert state.is_current_stream(worker_id="worker-1", version=second_version) is True
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_builds_remote_cron_host_context(workspace_root: Path):
+    class FakeGatewayClient:
+        pass
+
+    scheduler = _RecordingCronScheduler()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+        cron_tick_interval_seconds=0.01,
+    )
+    runner.cron_scheduler = scheduler
+    runner._cron_next_tick_at = 0
+
+    await runner._maybe_tick_cron()
+
+    assert len(scheduler.contexts) == 1
+    context = scheduler.contexts[0]
+    assert context.source == "remote"
+    assert context.workspace_root == workspace_root
+    assert context.session_binding_id == resolve_session_binding_id("worker-1")
+    assert context.worker_id == "worker-1"
+    assert context.gateway_client is runner.gateway_client
+    assert context.default_delivery == "remote"
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_cron_tick_error_does_not_raise(workspace_root: Path):
+    class FakeGatewayClient:
+        pass
+
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+        cron_tick_interval_seconds=0.01,
+    )
+    runner.cron_scheduler = _FailingCronScheduler()
+    runner._cron_next_tick_at = 0
+
+    await runner._maybe_tick_cron()

@@ -21,8 +21,8 @@ async def cronjob(
     name: str | None = None,
     prompt: str | None = None,
     schedule: str | None = None,
-    delivery: str = "local",
-    execution_mode: str = "enqueue_current_session",
+    delivery: str | None = None,
+    execution_mode: str | None = None,
     repeat_times: int | None = None,
 ) -> str:
     """
@@ -53,8 +53,8 @@ async def cronjob(
             schedule=schedule,
             workspace_root=workspace_root,
             session_binding_id=session_binding_id,
-            delivery=delivery,
-            execution_mode=execution_mode,
+            delivery=delivery or "local",
+            execution_mode=execution_mode or "enqueue_current_session",
             repeat_times=repeat_times,
         )
         return job_to_json(job)
