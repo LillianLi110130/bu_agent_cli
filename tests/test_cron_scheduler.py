@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -145,3 +146,59 @@ async def test_enqueue_current_session_writes_cron_source_meta(tmp_path: Path) -
     assert payload["request_id"].startswith("req_run_")
     assert payload["source_meta"]["kind"] == "cron"
     assert payload["source_meta"]["job_id"] == job.id
+
+
+@pytest.mark.asyncio
+async def test_fresh_agent_background_starts_without_blocking_tick(tmp_path: Path) -> None:
+    now = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    store = CronJobStore(base_dir=tmp_path / "cron")
+    job = store.create_job(
+        name="Background",
+        prompt="Run in background",
+        schedule_text=(now - timedelta(seconds=1)).isoformat(),
+        workspace_root=tmp_path,
+        session_binding_id="worker-1",
+        execution_mode="fresh_agent_background",
+        now=now,
+    )
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def fresh_runner(_job):
+        started.set()
+        await finish.wait()
+        return "background done"
+
+    scheduler = CronScheduler(store=store)
+
+    result = await scheduler.tick(
+        host_context=CronHostContext(
+            source="remote",
+            workspace_root=tmp_path,
+            session_binding_id="worker-1",
+            default_delivery="remote",
+            fresh_agent_runner=fresh_runner,
+        ),
+        now=now,
+    )
+
+    assert result.claimed == 1
+    assert result.executed == 0
+    assert result.started_background == 1
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    claimed = store.get_job(job.id)
+    assert claimed is not None
+    assert claimed.last_status == "claimed"
+
+    finish.set()
+    await scheduler.wait_background_tasks()
+
+    updated = store.get_job(job.id)
+    assert updated is not None
+    assert updated.last_status == "success"
+    assert updated.repeat.completed == 1
+    assert updated.last_run is not None
+    assert updated.last_run.archive_path is not None
+    assert Path(updated.last_run.archive_path).read_text(encoding="utf-8").find(
+        "background done"
+    ) >= 0

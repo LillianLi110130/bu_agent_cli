@@ -273,6 +273,7 @@ class CronDeliveryResult:
 class CronTickResult:
     claimed: int = 0
     executed: int = 0
+    started_background: int = 0
     missed: int = 0
     skipped_locked: bool = False
     errors: list[str] = field(default_factory=list)

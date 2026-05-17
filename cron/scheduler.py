@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import secrets
@@ -34,6 +35,7 @@ class CronScheduler:
         self.delivery_port = delivery_port or CronDeliveryPort()
         self.oneshot_grace_seconds = oneshot_grace_seconds
         self.lock_path = self.store.base_dir / ".tick.lock"
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def tick(
         self,
@@ -50,13 +52,48 @@ class CronScheduler:
         result = CronTickResult(claimed=len(claimed_jobs), missed=missed_count)
         for job in claimed_jobs:
             try:
-                await self._execute_claimed_job(job, host_context=host_context)
-                result.executed += 1
+                if job.execution.mode == "fresh_agent_background":
+                    self._start_background_execution(job, host_context=host_context)
+                    result.started_background += 1
+                else:
+                    await self._execute_claimed_job(job, host_context=host_context)
+                    result.executed += 1
             except Exception as exc:
                 message = str(exc) or exc.__class__.__name__
                 logger.exception(f"Cron job execution failed for job_id={job.id}: {message}")
                 result.errors.append(f"{job.id}: {message}")
         return result
+
+    async def wait_background_tasks(self) -> None:
+        """Wait for currently running background cron executions to finish."""
+        if not self._background_tasks:
+            return
+        await asyncio.gather(*list(self._background_tasks), return_exceptions=True)
+
+    def _start_background_execution(
+        self,
+        job: CronJob,
+        *,
+        host_context: CronHostContext,
+    ) -> None:
+        task = asyncio.create_task(
+            self._execute_claimed_job(job, host_context=host_context)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(lambda done_task: self._log_background_task_failure(job, done_task))
+
+    def _log_background_task_failure(
+        self,
+        job: CronJob,
+        task: asyncio.Task[None],
+    ) -> None:
+        try:
+            task.result()
+        except Exception as exc:
+            logger.exception(
+                f"Cron background execution task failed for job_id={job.id}: {exc}"
+            )
 
     def _claim_due_jobs(self, now: datetime) -> tuple[list[CronJob], int]:
         claimed: list[CronJob] = []

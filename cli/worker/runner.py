@@ -10,12 +10,13 @@ from typing import Any
 
 import httpx
 
-from agent_core.agent import FinalResponseEvent
+from agent_core import Agent
 from agent_core.bootstrap.agent_factory import create_agent
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
 from cron.jobs import CronJobStore
 from cron.models import CronHostContext, CronJob
 from cron.scheduler import CronScheduler
+from tools.sandbox import get_current_agent
 
 logger = logging.getLogger("cli.worker.runner")
 
@@ -34,6 +35,7 @@ class WorkerRunner:
         result_poll_interval_seconds: float = 0.5,
         empty_poll_sleep_seconds: float = 0.1,
         cron_tick_interval_seconds: float = 60.0,
+        agent: Agent | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.gateway_client = gateway_client
@@ -44,6 +46,7 @@ class WorkerRunner:
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
         self.cron_tick_interval_seconds = cron_tick_interval_seconds
+        self._main_agent = agent
         resolved_root_dir = (
             Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         )
@@ -76,6 +79,7 @@ class WorkerRunner:
             self._stop_event.set()
             if self._completion_tasks:
                 await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
+            await self.cron_scheduler.wait_background_tasks()
             await self.gateway_client.offline(worker_id=self.worker_id)
 
     async def _run_poll_loop(self) -> None:
@@ -86,7 +90,8 @@ class WorkerRunner:
                 messages = await self.gateway_client.poll(worker_id=self.worker_id)
             except httpx.ReadTimeout as exc:
                 logger.warning(
-                    f"Worker poll timed out for worker_id={self.worker_id}, continuing next poll: {exc}"
+                    "Worker poll timed out for "
+                    f"worker_id={self.worker_id}, continuing next poll: {exc}"
                 )
                 continue
             if not messages:
@@ -302,20 +307,42 @@ class WorkerRunner:
 
     async def _run_cron_fresh_agent(self, job: CronJob) -> str:
         """Execute one scheduled job in a clean worker Agent session."""
-        agent, _ = create_agent(model=job.model or self.model, root_dir=self.root_path)
-        self._restrict_cron_background_agent(agent)
+        main_agent = self._resolve_main_agent()
+        cron_agent = self._build_cron_background_agent(main_agent, job)
         prompt = self._build_cron_background_prompt(job)
-        final_response = ""
-        async for event in agent.query_stream(prompt):
-            if isinstance(event, FinalResponseEvent):
-                final_response = event.content
-        return final_response
+        return await cron_agent.query(prompt)
+
+    def _resolve_main_agent(self) -> Agent:
+        if self._main_agent is None:
+            self._main_agent, _ = create_agent(model=self.model, root_dir=self.root_path)
+        return self._main_agent
+
+    def _build_cron_background_agent(self, main_agent: Agent, job: CronJob) -> Agent:
+        dependency_overrides = dict(main_agent.dependency_overrides or {})
+        tools = self._cron_background_tools(main_agent, job)
+        cron_agent = Agent(
+            llm=main_agent.llm,
+            tools=tools,
+            system_prompt=main_agent.system_prompt,
+            max_iterations=main_agent.max_iterations,
+            tool_choice=main_agent.tool_choice,
+            compaction=main_agent.compaction,
+            dependency_overrides=dependency_overrides,
+            runtime_role="primary",
+            hooks=[],
+            use_streaming=main_agent.use_streaming,
+        )
+        cron_agent.dependency_overrides[get_current_agent] = lambda: cron_agent
+        return cron_agent
 
     @staticmethod
-    def _restrict_cron_background_agent(agent: Any) -> None:
-        blocked_tools = {"cronjob", "message", "delegate", "delegate_parallel"}
-        agent.tools = [tool for tool in agent.tools if tool.name not in blocked_tools]
-        agent._tool_map = {tool.name: tool for tool in agent.tools}
+    def _cron_background_tools(main_agent: Agent, job: CronJob) -> list[Any]:
+        blocked_tools = {"cronjob", "delegate", "delegate_parallel"}
+        tools = [tool for tool in main_agent.tools if tool.name not in blocked_tools]
+        if job.enabled_toolsets is None:
+            return tools
+        allowed_names = set(job.enabled_toolsets)
+        return [tool for tool in tools if tool.name in allowed_names]
 
     @staticmethod
     def _build_cron_background_prompt(job: CronJob) -> str:
