@@ -167,6 +167,17 @@ class SlashCommandRegistry:
                 category="后台任务",
             ),
             SlashCommand(
+                name="cron",
+                description="查看和清理定时任务",
+                usage="/cron [list|get <job_id>|remove <job_id>]",
+                examples=[
+                    "/cron list",
+                    "/cron get cron_a1b2c3d4",
+                    "/cron remove cron_a1b2c3d4",
+                ],
+                category="后台任务",
+            ),
+            SlashCommand(
                 name="task",
                 description="查看指定后台任务的详情",
                 usage="/task <task_id>",

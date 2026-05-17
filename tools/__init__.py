@@ -2,6 +2,7 @@
 
 from tools.bash import bash
 from tools.agent_tool import delegate, delegate_parallel
+from tools.cronjob import cronjob
 from tools.files import edit, read, write
 from tools.message import message
 from tools.resolve_path import resolve_path
@@ -43,6 +44,7 @@ ALL_TOOLS = [
     web_fetch,
     delegate,
     delegate_parallel,
+    cronjob,
     task_output,
     task_status,
     task_cancel,
@@ -77,6 +79,7 @@ __all__ = [
     "web_fetch",
     "delegate",
     "delegate_parallel",
+    "cronjob",
     "task_output",
     "task_status",
     "task_cancel",
