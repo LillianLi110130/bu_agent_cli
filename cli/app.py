@@ -2257,6 +2257,7 @@ class TGAgentCLI:
         active_agent = agent or self._agent
         previous_interactive_terminal_ui_enabled = self._interactive_terminal_ui_enabled
         self._interactive_terminal_ui_enabled = enable_interactive_terminal_ui
+        show_thinking_output = True
         self._ensure_context_budget_hook(active_agent)
 
         # Keep workspace instructions synchronized for the main CLI agent.
@@ -2344,20 +2345,20 @@ class TGAgentCLI:
                 elif isinstance(event, ThinkingEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    if enable_interactive_terminal_ui:
+                    if show_thinking_output:
                         self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, ThinkingStartEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    if enable_interactive_terminal_ui:
+                    if show_thinking_output:
                         self._active_thinking_id = event.think_id
                         self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
 
                 elif isinstance(event, ThinkingDeltaEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    if enable_interactive_terminal_ui:
+                    if show_thinking_output:
                         if self._active_thinking_id != event.think_id:
                             self._active_thinking_id = event.think_id
                             self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
@@ -2366,7 +2367,7 @@ class TGAgentCLI:
                 elif isinstance(event, ThinkingEndEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
-                    if enable_interactive_terminal_ui:
+                    if show_thinking_output:
                         if self._active_thinking_id == event.think_id:
                             self._active_thinking_id = None
                         self._console.print()
@@ -2575,7 +2576,17 @@ class TGAgentCLI:
             self._resume_handler.bind_console(self._console)
             pick_result = self._resume_handler.handle_pick_input(user_input)
             if pick_result.selected_session_id is not None:
-                await self._switch_resume_session(pick_result.selected_session_id)
+                original_console = self._console
+                original_model_console = self._model_switch_service._console
+                mirror = _ConsoleMirror(original_console)
+                self._console = mirror
+                self._model_switch_service._console = mirror
+                try:
+                    await self._switch_resume_session(pick_result.selected_session_id)
+                finally:
+                    self._console = original_console
+                    self._model_switch_service._console = original_model_console
+                return _ExecutionOutcome(final_content=mirror.export_text())
             if pick_result.handled:
                 return _ExecutionOutcome()
 
