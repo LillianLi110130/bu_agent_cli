@@ -799,20 +799,6 @@ async def main():
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
     ctx.bridge_store = bridge_store
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
-    if bridge_store is not None:
-        console.print(
-            "[dim]桥接会话：[/] "
-            f"[cyan]{bridge_store.session_binding_id}[/cyan] "
-            f"[dim]->[/dim] {bridge_store.bridge_dir}"
-        )
-    if args.im_enable:
-        console.print(
-            "[dim]IM 工作进程：[/] "
-            f"worker=[cyan]{args.im_worker_id}[/cyan] "
-            f"gateway=[cyan]{args.im_gateway_base_url}[/cyan]"
-        )
-        if bridge_store is not None:
-            console.print(f"[dim]工作日志：[/] {bridge_store.logs_dir / 'worker.log'}")
     cli = TGAgentCLI(
         agent=agent,
         context=ctx,
@@ -829,6 +815,8 @@ async def main():
         skill_runtime_service=getattr(agent, "_skill_runtime_service", None),
         bridge_store=bridge_store,
         session_runtime=session_runtime,
+        im_worker_id=args.im_worker_id if args.im_enable else None,
+        im_gateway_base_url=args.im_gateway_base_url if args.im_enable else None,
     )
 
     try:

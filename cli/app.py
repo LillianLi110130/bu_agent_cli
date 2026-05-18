@@ -478,6 +478,8 @@ class TGAgentCLI:
         skill_runtime_service: SkillRuntimeService | None = None,
         bridge_store: FileBridgeStore | None = None,
         session_runtime: CLISessionRuntime | None = None,
+        im_worker_id: str | None = None,
+        im_gateway_base_url: str | None = None,
     ):
         """Initialize CLI with pre-configured agent and context.
 
@@ -525,6 +527,8 @@ class TGAgentCLI:
             if self._skill_runtime_service.system_prompt_builder is None:
                 self._skill_runtime_service.system_prompt_builder = self._system_prompt_builder
         self._bridge_store = bridge_store
+        self._im_worker_id = im_worker_id
+        self._im_gateway_base_url = im_gateway_base_url
         self._session_runtime = session_runtime
         if self._session_runtime is not None:
             self._agent.bind_session_runtime(self._session_runtime)
@@ -1859,6 +1863,23 @@ class TGAgentCLI:
         self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
         self._console.print("[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
+
+        if self._bridge_store is not None:
+            self._console.print("[bold cyan]桥接信息：[/bold cyan]")
+            self._console.print(
+                f"  [dim]桥接会话：[/dim] [cyan]{self._bridge_store.session_binding_id}[/cyan] "
+                f"[dim]->[/dim] {self._bridge_store.bridge_dir}"
+            )
+            self._console.print(
+                f"  [dim]工作日志：[/dim] {self._bridge_store.logs_dir / 'worker.log'}"
+            )
+            if self._im_worker_id or self._im_gateway_base_url:
+                self._console.print(
+                    "  [dim]IM 工作进程：[/dim] "
+                    f"worker=[cyan]{self._im_worker_id or '-'}[/cyan] "
+                    f"gateway=[cyan]{self._im_gateway_base_url or '-'}[/cyan]"
+                )
+            self._console.print()
 
         categories = self._slash_registry.get_by_category()
         for category, commands in sorted(categories.items()):
@@ -3322,6 +3343,21 @@ class TGAgentCLI:
 
     def _print_help(self):
         """Print help information."""
+        bridge_help = ""
+        if self._bridge_store is not None:
+            bridge_help = (
+                "\n[bold cyan]桥接信息：[/bold cyan]\n\n"
+                f"  [dim]桥接会话：[/dim] [cyan]{self._bridge_store.session_binding_id}[/cyan] "
+                f"[dim]->[/dim] {self._bridge_store.bridge_dir}\n"
+                f"  [dim]工作日志：[/dim] {self._bridge_store.logs_dir / 'worker.log'}\n"
+            )
+            if self._im_worker_id or self._im_gateway_base_url:
+                bridge_help += (
+                    "  [dim]IM 工作进程：[/dim] "
+                    f"worker=[cyan]{self._im_worker_id or '-'}[/cyan] "
+                    f"gateway=[cyan]{self._im_gateway_base_url or '-'}[/cyan]\n"
+                )
+
         help_text = """
 [bold cyan]可用命令：[/bold cyan]
 
@@ -3347,7 +3383,7 @@ class TGAgentCLI:
   - 直接自然地输入你的需求，例如“列出所有 Python 文件”
   - 可使用 [blue]@"<path>"<message>[/blue] 或 [blue]@'<path>'<message>[/blue] 发送图片输入
   - AI 会自动使用工具帮助你
-"""
+""" + bridge_help
         self._console.print(Panel(help_text, border_style="dim"))
 
     def _print_approval_status(self) -> None:
@@ -3537,6 +3573,23 @@ class TGAgentCLI:
         self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
         self._console.print("[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
+
+        if self._bridge_store is not None:
+            self._console.print("[bold cyan]桥接信息：[/bold cyan]")
+            self._console.print(
+                f"  [dim]桥接会话：[/dim] [cyan]{self._bridge_store.session_binding_id}[/cyan] "
+                f"[dim]->[/dim] {self._bridge_store.bridge_dir}"
+            )
+            self._console.print(
+                f"  [dim]工作日志：[/dim] {self._bridge_store.logs_dir / 'worker.log'}"
+            )
+            if self._im_worker_id or self._im_gateway_base_url:
+                self._console.print(
+                    "  [dim]IM 工作进程：[/dim] "
+                    f"worker=[cyan]{self._im_worker_id or '-'}[/cyan] "
+                    f"gateway=[cyan]{self._im_gateway_base_url or '-'}[/cyan]"
+                )
+            self._console.print()
 
         categories = self._slash_registry.get_by_category()
         for category, commands in sorted(categories.items()):
