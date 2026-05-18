@@ -71,12 +71,15 @@ from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
+from rich.color import Color
 from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.syntax import Syntax
+from rich.style import Style
+from rich.syntax import ANSISyntaxTheme, Syntax
 from rich.table import Table
 from rich.text import Text
+from pygments.token import Keyword, Literal, Name, Punctuation, Text as PygmentsText
 
 from cli.slash_commands import (
     SlashCommand,
@@ -127,6 +130,17 @@ from tools import SandboxContext, SecurityError
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
 
 logger = logging.getLogger("cli.app")
+
+
+class _SyntaxWithLineNumberColor(Syntax):
+    def __init__(self, *args: Any, line_number_color: str | None = None, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._line_number_color_override = line_number_color
+
+    def _get_line_numbers_color(self, blend: float = 0.3) -> Color:
+        if self._line_number_color_override:
+            return Color.parse(self._line_number_color_override)
+        return super()._get_line_numbers_color(blend)
 
 _REMOTE_RESET_STARTUP_PROMPT_PATH = (
     application_root() / "agent_core" / "prompts" / "remote_reset_startup.md"
@@ -1561,12 +1575,34 @@ class TGAgentCLI:
             parsed = self._compact_tool_arg_value(parsed)
         return json.dumps(parsed, ensure_ascii=False, indent=2)
 
-    def _syntax_block(self, code: str, lexer: str, *, line_numbers: bool = True) -> Syntax:
-        return Syntax(
+    def _tool_args_json_theme(self) -> ANSISyntaxTheme:
+        base = Style(color="#e5e7eb")
+        return ANSISyntaxTheme(
+            {
+                PygmentsText: base,
+                Punctuation: base,
+                Literal.String: base,
+                Name.Tag: Style(color="#9cd7ff"),
+                Literal.Number: Style(color="#ffd166"),
+                Keyword.Constant: Style(color="#ffb38a"),
+            }
+        )
+
+    def _syntax_block(
+        self,
+        code: str,
+        lexer: str,
+        *,
+        line_numbers: bool = True,
+        line_number_color: str | None = None,
+        theme: Any = "ansi_dark",
+    ) -> Syntax:
+        return _SyntaxWithLineNumberColor(
             code,
             lexer,
-            theme="ansi_dark",
+            theme=theme,
             line_numbers=line_numbers,
+            line_number_color=line_number_color,
             word_wrap=True,
             background_color="default",
         )
@@ -1586,7 +1622,7 @@ class TGAgentCLI:
             return renderable
         return Group(
             renderable,
-            Text(f"... ({hidden_count} more lines hidden)", style="dim"),
+            Text(f"... ({hidden_count} more lines hidden)", style="#9ca3af"),
         )
 
     def _looks_like_structured_tool_text(self, value: str) -> bool:
@@ -1616,9 +1652,9 @@ class TGAgentCLI:
             elif stripped.startswith("/") or "read(file_path=" in stripped:
                 style = "#9cd7ff"
             elif stripped.startswith(("Do not repeat", "If you need more detail")):
-                style = "grey62"
+                style = "#9ca3af"
             else:
-                style = "#d8dee9"
+                style = "#e5e7eb"
             output.append(line, style=style)
         return output
 
@@ -1689,8 +1725,13 @@ class TGAgentCLI:
         args_json = json.dumps(preview_args, ensure_ascii=False, indent=2, default=str)
         self._console.print(
             Panel(
-                self._syntax_block(args_json, "json"),
-                border_style="grey74",
+                self._syntax_block(
+                    args_json,
+                    "json",
+                    line_number_color="#9ca3af",
+                    theme=self._tool_args_json_theme(),
+                ),
+                border_style="#e5e7eb",
                 padding=(0, 1),
                 width=self._panel_width(),
             )
@@ -1718,7 +1759,7 @@ class TGAgentCLI:
         else:
             preview, hidden_count = self._truncate_tool_result_lines(result_text)
             renderable = self._with_hidden_lines_note(
-                self._syntax_block(preview, "text", line_numbers=False),
+                Text(preview, style="#e5e7eb"),
                 hidden_count,
             )
 
@@ -2289,7 +2330,7 @@ class TGAgentCLI:
         def print_markdown_response(content: str | None) -> None:
             if not content:
                 return
-            self._console.print(Markdown(content))
+            self._console.print(Markdown(content, style="#e5e7eb"))
 
         try:
             # Pass cancel_event to agent for immediate cancellation
@@ -3125,8 +3166,8 @@ class TGAgentCLI:
         coral = "#ff6b57"
         amber = "#ffb38a"
         cyan = "#9cd7ff"
-        text = "white"
-        dim = "dim"
+        text = "#e5e7eb"
+        dim = "#9ca3af"
 
         logo = Text.from_markup(
             "\n".join(
@@ -3210,7 +3251,7 @@ class TGAgentCLI:
 """
         self._console.print(
             Panel(
-                Markdown(version_notes),
+                Markdown(version_notes, style=text),
                 border_style="#5aa9e6",
                 padding=(1, 2),
                 width=self._panel_width(),
