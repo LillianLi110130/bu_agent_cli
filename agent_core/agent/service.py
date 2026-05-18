@@ -1698,7 +1698,7 @@ Keep the summary brief but informative."""
         return f"[Max iterations reached]\n\n{summary}"
 
     async def _get_incomplete_todos_prompt(self) -> str | None:
-        """Hook for subclasses to check for incomplete todos before finishing.
+        """Check for incomplete todos before finishing.
 
         This method is called when the LLM is about to stop (no more tool calls in CLI mode,
         or done tool called in autonomous mode).
@@ -1708,7 +1708,12 @@ Keep the summary brief but informative."""
         2. Mark completed tasks as done
         3. Revise the todo list if tasks are no longer relevant
         """
-        return None
+        session_id = self._todo_session_id()
+        if session_id is None:
+            return None
+        from tools.todos import get_incomplete_todos_prompt
+
+        return get_incomplete_todos_prompt(session_id)
 
     async def _maintain_context(self, response: ChatInvokeCompletion) -> None:
         """Run unified context maintenance after one model response."""
@@ -1716,7 +1721,24 @@ Keep the summary brief but informative."""
 
     async def _maintain_context_from_budget(self, *, trigger: str | None = None) -> None:
         """Run sliding-window cleanup and compaction from the shared budget engine."""
-        await self._context.maintain_budget(self.llm, trigger=trigger)
+        assessment = await self._context.maintain_budget(self.llm, trigger=trigger)
+        if assessment.trigger == "post_compaction":
+            self._inject_active_todos_after_compaction()
+
+    def _todo_session_id(self) -> str | None:
+        ctx = getattr(self, "_sandbox_context", None)
+        session_id = getattr(ctx, "session_id", None)
+        return session_id if isinstance(session_id, str) and session_id else None
+
+    def _inject_active_todos_after_compaction(self) -> None:
+        session_id = self._todo_session_id()
+        if session_id is None:
+            return
+        from tools.todos import format_active_todos_for_injection
+
+        snapshot = format_active_todos_for_injection(session_id)
+        if snapshot:
+            self._context.add_message(UserMessage(content=snapshot))
 
     def _split_persistent_instruction_prefix(
         self,
@@ -1787,6 +1809,7 @@ Keep the summary brief but informative."""
             return False
 
         self._context.apply_compaction_result(result, recent_messages=recent_messages)
+        self._inject_active_todos_after_compaction()
         if self._context._budget_engine is not None:
             self._context._budget_engine.note_trigger("overflow_recovery")
         return True

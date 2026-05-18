@@ -126,6 +126,7 @@ from config.model_config import (
     load_model_presets,
 )
 from tools import SandboxContext, SecurityError
+from tools.todos import clear_todo_store, hydrate_todo_store_from_messages
 
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
 
@@ -490,6 +491,7 @@ class TGAgentCLI:
         self._console = Console()
         self._agent = agent
         self._ctx = context
+        setattr(self._agent, "_sandbox_context", self._ctx)
         self._step_number = 0
         self._loading: _SafeLoadingIndicator | None = None
         self._interactive_terminal_ui_enabled = True
@@ -883,6 +885,7 @@ class TGAgentCLI:
     async def _handle_reset_command(self, *, source: str = "local") -> str:
         """Reset conversation state."""
         self._agent.clear_history()
+        clear_todo_store(self._ctx.session_id)
         self._reset_current_session_persistence_cursor()
         await self._refresh_empty_context_budget_display()
         self._console.print("[yellow]会话上下文已重置。[/yellow]")
@@ -899,6 +902,7 @@ class TGAgentCLI:
         self._conversation_session_created = False
         self._last_transcript_flushed_idx = 0
         self._agent.clear_history()
+        clear_todo_store(self._ctx.session_id)
 
         self._resume_handler.clear_pick()
         self._model_pick_active = False
@@ -1262,6 +1266,8 @@ class TGAgentCLI:
         self._conversation_session_created = True
         self._agent.system_prompt = meta.system_prompt
         self._agent.load_history(snapshot.messages)
+        clear_todo_store(self._ctx.session_id)
+        hydrate_todo_store_from_messages(self._ctx.session_id, snapshot.messages)
         self._last_transcript_flushed_idx = len(snapshot.messages)
         self._session_store.reopen_session(target_session_id)
 
@@ -3376,7 +3382,7 @@ class TGAgentCLI:
   [blue]edit <file>[/blue]   - 编辑文件（替换文本）
   [blue]glob <pattern>[/blue]- 按模式查找文件或目录
   [blue]grep <pattern>[/blue] - 搜索文件内容
-  [blue]todos[/blue]         - 管理待办事项
+  [blue]todo[/blue]          - 管理当前会话任务清单
 
 [bold cyan]提示：[/boldcyan]
 

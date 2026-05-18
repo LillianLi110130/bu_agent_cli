@@ -231,7 +231,7 @@ docs/spec/<spec_name>/
 - `edit`：按字符串替换编辑文件
 - `glob_search`：按 glob 查找文件
 - `grep`：正则搜索文件内容
-- `todo_read` / `todo_write`：读写会话 todo
+- `todo`：管理当前会话任务清单
 - `done`：显式完成任务
 - `task`：调用子代理处理子任务
 

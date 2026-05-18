@@ -765,6 +765,7 @@ def create_agent(
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
     setattr(agent, "_memory_store", memory_store)
     setattr(agent, "_memory_context_snapshot", frozen_memory_context)
+    setattr(agent, "_sandbox_context", ctx)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
     setattr(ctx, "memory_store", memory_store)
     agent.register_hook(
