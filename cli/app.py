@@ -205,6 +205,13 @@ class _ExecutionOutcome:
 
 
 @dataclass(slots=True)
+class _TerminalApprovalPrompt:
+    request: HumanApprovalRequest
+    future: asyncio.Future[HumanApprovalDecision]
+    step: str = "decision"
+
+
+@dataclass(slots=True)
 class _CLIContextBudgetSnapshot:
     """CLI-private snapshot for displaying remaining context budget."""
 
@@ -486,6 +493,8 @@ class TGAgentCLI:
         self._interactive_terminal_ui_enabled = True
         self._fixed_input_tui_enabled = False
         self._terminal_activity_status: str | None = None
+        self._terminal_ui_invalidator: Callable[[], None] | None = None
+        self._terminal_approval_prompt: _TerminalApprovalPrompt | None = None
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
@@ -1562,9 +1571,61 @@ class TGAgentCLI:
 
     def _set_terminal_activity_status(self, status: str | None) -> None:
         self._terminal_activity_status = status
+        self._invalidate_terminal_ui()
 
     def _get_terminal_activity_status(self) -> str | None:
         return self._terminal_activity_status
+
+    def _set_terminal_ui_invalidator(
+        self, invalidator: Callable[[], None] | None
+    ) -> None:
+        self._terminal_ui_invalidator = invalidator
+
+    def _invalidate_terminal_ui(self) -> None:
+        if self._terminal_ui_invalidator is None:
+            return
+        self._terminal_ui_invalidator()
+
+    def _has_terminal_approval_prompt(self) -> bool:
+        return self._terminal_approval_prompt is not None
+
+    def _terminal_approval_prompt_lines(self) -> list[str]:
+        prompt = self._terminal_approval_prompt
+        if prompt is None:
+            return []
+
+        request = prompt.request
+        if prompt.step == "deny_reason":
+            return [
+                "审批已选择拒绝。",
+                "请输入拒绝原因（可选，直接回车跳过）：",
+            ]
+
+        if request.approval_kind == "safety":
+            session_label = request.session_approval_label or "该风险"
+            return [
+                f"需要审批：{request.tool_name} / {request.risk_level}",
+                "1. 仅本次允许",
+                f"2. 本会话内允许执行 {session_label} 指令",
+                "3. 拒绝（默认）",
+                "请输入 1/2/3：",
+            ]
+
+        return [
+            f"需要审批：{request.tool_name} / {request.risk_level}",
+            "是否仅本次允许这次工具调用？",
+            "输入 y/是 允许；输入 n/否 或直接回车拒绝：",
+        ]
+
+    def _terminal_approval_toolbar(self) -> str | None:
+        prompt = self._terminal_approval_prompt
+        if prompt is None:
+            return None
+        if prompt.step == "deny_reason":
+            return "审批模式：输入拒绝原因，直接回车跳过"
+        if prompt.request.approval_kind == "safety":
+            return "审批模式：1=仅本次允许 · 2=本会话允许 · 3/回车=拒绝"
+        return "审批模式：y/是=允许 · n/否/回车=拒绝"
 
     def _try_format_json(self, value: str, *, compact_values: bool = False) -> str | None:
         try:
@@ -3323,6 +3384,9 @@ class TGAgentCLI:
         self._console.print()
         self._console.print(panel)
 
+        if self._fixed_input_tui_enabled:
+            return await self._request_human_approval_via_terminal_ui(request)
+
         if request.approval_kind == "safety":
             session_label = request.session_approval_label or "该风险"
             session_choice = f"本会话内允许执行 {session_label} 指令"
@@ -3368,6 +3432,92 @@ class TGAgentCLI:
         self._console.print("[yellow]已拒绝。[/yellow]")
         self._console.print()
         return HumanApprovalDecision(approved=False, reason=reason or None, scope="deny")
+
+    async def _request_human_approval_via_terminal_ui(
+        self,
+        request: HumanApprovalRequest,
+    ) -> HumanApprovalDecision:
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[HumanApprovalDecision] = loop.create_future()
+        self._terminal_approval_prompt = _TerminalApprovalPrompt(
+            request=request,
+            future=future,
+        )
+        self._invalidate_terminal_ui()
+        try:
+            return await future
+        finally:
+            if self._terminal_approval_prompt is not None:
+                self._terminal_approval_prompt = None
+                self._invalidate_terminal_ui()
+
+    def _submit_terminal_approval_input(self, raw_input: str) -> bool:
+        prompt = self._terminal_approval_prompt
+        if prompt is None or prompt.future.done():
+            return False
+
+        user_input = raw_input.strip()
+        if prompt.step == "deny_reason":
+            prompt.future.set_result(
+                HumanApprovalDecision(
+                    approved=False,
+                    reason=user_input or None,
+                    scope="deny",
+                )
+            )
+            self._console.print("[yellow]已拒绝。[/yellow]")
+            self._console.print()
+            return True
+
+        lowered = user_input.lower()
+        request = prompt.request
+        if request.approval_kind == "safety":
+            session_label = request.session_approval_label or "该风险"
+            if lowered == "1":
+                prompt.future.set_result(HumanApprovalDecision(approved=True, scope="once"))
+                self._console.print("[green]已批准，仅本次允许。[/green]")
+                self._console.print()
+                return True
+            if lowered in {"2"}:
+                prompt.future.set_result(
+                    HumanApprovalDecision(approved=True, scope="session")
+                )
+                self._console.print(
+                    f"[green]已批准，本会话内允许执行 {session_label} 指令。[/green]"
+                )
+                self._console.print()
+                return True
+            if lowered in {"", "3", "n", "no", "否"}:
+                prompt.step = "deny_reason"
+                self._invalidate_terminal_ui()
+                return True
+
+            self._console.print("[red]无效选项。请输入 1/2/3。[/red]")
+            self._invalidate_terminal_ui()
+            return True
+
+        if lowered in {"y", "yes", "是"}:
+            prompt.future.set_result(HumanApprovalDecision(approved=True, scope="once"))
+            self._console.print("[green]已批准，仅本次允许。[/green]")
+            self._console.print()
+            return True
+        if lowered in {"", "n", "no", "否"}:
+            prompt.step = "deny_reason"
+            self._invalidate_terminal_ui()
+            return True
+
+        self._console.print("[red]请输入 y/n 或 是/否。[/red]")
+        self._invalidate_terminal_ui()
+        return True
+
+    def _cancel_terminal_approval_prompt(self) -> None:
+        prompt = self._terminal_approval_prompt
+        if prompt is None:
+            return
+        if not prompt.future.done():
+            prompt.future.cancel()
+        self._terminal_approval_prompt = None
+        self._invalidate_terminal_ui()
 
     @staticmethod
     def _approval_hint(request: HumanApprovalRequest) -> str:

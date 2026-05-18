@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from html import escape as html_escape
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
@@ -43,6 +44,7 @@ class TGAgentTUI:
     async def run(self) -> None:
         old_tui_enabled = self._cli._fixed_input_tui_enabled
         self._cli._fixed_input_tui_enabled = True
+        self._cli._set_terminal_ui_invalidator(self._invalidate_prompt)
 
         self._cli._print_welcome()
         await self._cli._refresh_empty_context_budget_display()
@@ -53,8 +55,10 @@ class TGAgentTUI:
         finally:
             await self._shutdown_background_tasks()
             await self._cancel_prompt_task()
+            self._cli._cancel_terminal_approval_prompt()
             await self._cancel_active_task()
             self._cli._set_terminal_activity_status(None)
+            self._cli._set_terminal_ui_invalidator(None)
             self._cli._fixed_input_tui_enabled = old_tui_enabled
 
     def _build_session(self) -> PromptSession:
@@ -157,9 +161,14 @@ class TGAgentTUI:
     def _render_prompt_message(self) -> str:
         status = self._cli._get_terminal_activity_status()
         lines = []
+        approval_lines = self._cli._terminal_approval_prompt_lines()
+        if approval_lines:
+            for line in approval_lines:
+                lines.append(f"<ansiyellow>{html_escape(line)}</ansiyellow>")
+            lines.append("")
         if status:
             frame = self._prompt_spinner_frame()
-            lines.append(f"<ansibrightblack>{frame} {status}...</ansibrightblack>")
+            lines.append(f"<ansibrightwhite>{frame} {status}...</ansibrightwhite>")
             lines.append("")
         lines.append(self._separator_markup())
         lines.append("<ansiblue>>> </ansiblue>")
@@ -171,8 +180,11 @@ class TGAgentTUI:
 
     def _render_bottom_toolbar(self) -> str:
         status = self._cli._render_context_budget_toolbar()
-        if self._should_lock_input():
-            status = f"<ansibrightblack>按 q 取消当前执行</ansibrightblack> · {status}"
+        approval_toolbar = self._cli._terminal_approval_toolbar()
+        if approval_toolbar is not None:
+            status = f"<ansiyellow>{html_escape(approval_toolbar)}</ansiyellow> · {status}"
+        elif self._should_lock_input():
+            status = f"按 q 取消当前执行 · {status}"
         return f"{self._separator_markup()}\n{status}"
 
     @staticmethod
@@ -276,6 +288,10 @@ class TGAgentTUI:
 
     async def _handle_user_input(self, user_input: str) -> bool:
         user_input = user_input.strip()
+        if self._cli._has_terminal_approval_prompt():
+            self._cli._submit_terminal_approval_input(user_input)
+            return True
+
         if not user_input:
             return True
 
@@ -300,9 +316,13 @@ class TGAgentTUI:
         return self._active_task is not None and not self._active_task.done()
 
     def _should_lock_input(self) -> bool:
+        if self._cli._has_terminal_approval_prompt():
+            return False
         return self._is_input_locked() or self._cli._has_active_bridge_run()
 
     def _can_cancel_from_prompt(self) -> bool:
+        if self._cli._has_terminal_approval_prompt():
+            return False
         return self._is_input_locked() or self._cli._has_active_bridge_run()
 
     @staticmethod
