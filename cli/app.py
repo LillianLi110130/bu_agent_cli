@@ -456,7 +456,7 @@ class TGAgentCLI:
     COLOR_TOOL_CALL = "bright_blue"
     COLOR_TOOL_RESULT = "green"
     COLOR_ERROR = "red"
-    COLOR_THINKING = "dim cyan"
+    COLOR_THINKING = "#9ca3af"
     COLOR_FINAL = "bold green"
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
