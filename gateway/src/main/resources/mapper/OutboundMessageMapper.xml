@@ -30,9 +30,36 @@
         )
     </insert>
 
+    <select id="findLatestBySessionKey" resultMap="OutboundMessageResultMap">
+        SELECT id, session_key, epoch, inbound_message_id, content, status, created_at
+        FROM outbound_message
+        WHERE session_key = #{sessionKey}
+        ORDER BY id DESC
+        LIMIT 1
+    </select>
+
+    <select id="findFirstBySessionKeyAndStatus" resultMap="OutboundMessageResultMap">
+        SELECT id, session_key, epoch, inbound_message_id, content, status, created_at
+        FROM outbound_message
+        WHERE session_key = #{sessionKey}
+          AND status = #{status}
+        ORDER BY id ASC
+        LIMIT 1
+    </select>
+
+    <select id="findFirstPendingBySessionKey" resultMap="OutboundMessageResultMap">
+        SELECT id, session_key, epoch, inbound_message_id, content, status, created_at
+        FROM outbound_message
+        WHERE session_key = #{sessionKey}
+          AND status IN ('PROGRESS', 'COMPLETED', 'FAILED')
+        ORDER BY id ASC
+        LIMIT 1
+    </select>
+
     <update id="updateStatus">
         UPDATE outbound_message
-        SET status = #{status}
+        SET status = #{nextStatus}
         WHERE id = #{id}
+          AND status = #{currentStatus}
     </update>
 </mapper>

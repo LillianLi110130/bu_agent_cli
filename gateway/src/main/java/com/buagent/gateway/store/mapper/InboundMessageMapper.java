@@ -13,6 +13,8 @@ public interface InboundMessageMapper {
         @Param("status") String status
     );
 
+    InboundMessageEntity findLatestBySessionKey(@Param("sessionKey") String sessionKey);
+
     int updateStatus(
         @Param("id") Long id,
         @Param("currentStatus") String currentStatus,

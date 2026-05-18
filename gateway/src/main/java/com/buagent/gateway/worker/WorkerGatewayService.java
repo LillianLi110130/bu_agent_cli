@@ -2,6 +2,7 @@ package com.buagent.gateway.worker;
 
 import com.buagent.gateway.app.dto.CompleteRequest;
 import com.buagent.gateway.app.dto.MessageRequest;
+import com.buagent.gateway.app.dto.ProgressRequest;
 import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
 import com.buagent.gateway.app.dto.WorkerRequest;
@@ -47,6 +48,12 @@ public class WorkerGatewayService implements DisposableBean {
     private static final String STATUS_OFFLINE = "offline";
     private static final String STATUS_RECEIVED = "RECEIVED";
     private static final String STATUS_CONSUMED = "CONSUMED";
+    private static final String SOURCE_IM = "im";
+    private static final String SOURCE_WEB = "web";
+    private static final String WEB_SESSION_PREFIX = "WEB_";
+    private static final String STATUS_PROGRESS = "PROGRESS";
+    private static final String STATUS_COMPLETED = "COMPLETED";
+    private static final String STATUS_FAILED = "FAILED";
     private static final String EVENT_READY = "ready";
     private static final String EVENT_MESSAGE = "message";
     private static final String EVENT_HEARTBEAT = "heartbeat";
@@ -55,7 +62,6 @@ public class WorkerGatewayService implements DisposableBean {
     private final InboundMessageMapper inboundMessageMapper;
     private final OutboundMessageMapper outboundMessageMapper;
     private final OnlineWorkerMapper onlineWorkerMapper;
-    private final ScheduledExecutorService heartbeatExecutorService = Executors.newScheduledThreadPool(1);
     private final ConcurrentMap<String, StreamSession> streamSessions = new ConcurrentHashMap<String, StreamSession>();
 
     @Value("${gateway.stream-heartbeat-interval-ms:10000}")
@@ -152,15 +158,57 @@ public class WorkerGatewayService implements DisposableBean {
     }
 
     public SimpleOkResponse complete(CompleteRequest request) {
+        if ("web".equalsIgnoreCase(request.getSource())) {
+            OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+            outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+            if ("failed".equalsIgnoreCase(request.getFinalStatus())) {
+                outboundMessageEntity.setContent(
+                    request.getErrorMessage() == null ? request.getFinalContent() : request.getErrorMessage()
+                );
+                outboundMessageEntity.setStatus(STATUS_FAILED);
+            } else {
+                outboundMessageEntity.setContent(request.getFinalContent());
+                outboundMessageEntity.setStatus(STATUS_COMPLETED);
+            }
+            outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
+            outboundMessageMapper.insert(outboundMessageEntity);
+            return new SimpleOkResponse(true);
+        }
+
         OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
         outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
         outboundMessageEntity.setContent(request.getFinalContent());
         outboundMessageEntity.setStatus("SENT");
-        outboundMessageEntity.setCreateTime(LocalDateTime.now());
-        outboundMessageEntity.setUpdateTime(LocalDateTime.now());
+        outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
         outboundMessageMapper.insert(outboundMessageEntity);
         logger.info(
             "Accepted outbound completion. workerId={}, outboundMessageId={}, finalContentLength={}",
+            request.getWorkerId(),
+            outboundMessageEntity.getId(),
+            request.getFinalContent() == null ? 0 : request.getFinalContent().length()
+        );
+        return new SimpleOkResponse(true);
+    }
+
+    public SimpleOkResponse progress(ProgressRequest request) {
+        if ("web".equalsIgnoreCase(request.getSource())) {
+            OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+            outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+            outboundMessageEntity.setContent(request.getContent());
+            outboundMessageEntity.setStatus(STATUS_PROGRESS);
+            outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
+            outboundMessageMapper.insert(outboundMessageEntity);
+            return new SimpleOkResponse(true);
+        }
+
+        OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        outboundMessageEntity.setContent(request.getFinalContent());
+        outboundMessageEntity.setStatus("SENT");
+        outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
+        outboundMessageMapper.insert(outboundMessageEntity);
+        logger.info(
+            "Accepted outbound progress. workerId={}, outboundMessageId={}, finalContentLength={}",
             request.getWorkerId(),
             outboundMessageEntity.getId(),
             request.getFinalContent() == null ? 0 : request.getFinalContent().length()
@@ -293,7 +341,7 @@ public class WorkerGatewayService implements DisposableBean {
             sendEventSafely(
                 streamSession,
                 EVENT_MESSAGE,
-                Collections.<String, Object>singletonMap("content", inboundMessageEntity.getContent())
+                buildWorkerMessagePayload(inboundMessageEntity)
             );
         }
 
@@ -332,6 +380,20 @@ public class WorkerGatewayService implements DisposableBean {
             removeStreamSession(streamSession.getWorkerId(), streamSession);
             streamSession.getEmitter().completeWithError(exception);
         }
+    }
+
+    private Map<String, Object> buildWorkerMessagePayload(InboundMessageEntity inboundMessageEntity) {
+        Map<String, Object> payload = new ConcurrentHashMap<String, Object>();
+        payload.put("content", inboundMessageEntity.getContent());
+        payload.put("source", inferRemoteSource(inboundMessageEntity.getSessionKey()));
+        return payload;
+    }
+
+    private String inferRemoteSource(String sessionKey) {
+        if (sessionKey != null && sessionKey.startsWith(WEB_SESSION_PREFIX)) {
+            return SOURCE_WEB;
+        }
+        return SOURCE_IM;
     }
 
     private void removeStreamSession(String workerId, StreamSession expectedSession) {
