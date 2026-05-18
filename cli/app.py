@@ -2255,14 +2255,8 @@ class TGAgentCLI:
         # Start loading animation
         self._loading = self._start_loading("思考中")
 
-        # Show cancel hint for local runs, or a static thinking hint for remote runs.
-        if enable_interactive_terminal_ui:
-            self._console.print("[dim]按 q 可取消本次运行[/dim]")
-        else:
+        if not enable_interactive_terminal_ui:
             self._console.print("[dim]思考中...[/dim]")
-
-        # Create cancellation event for 'q' key
-        import asyncio
 
         run_cancel_event = cancel_event or asyncio.Event()
         owns_cancel_event = cancel_event is None
@@ -2284,62 +2278,6 @@ class TGAgentCLI:
                 return
             self._console.print(Markdown(content))
 
-        # Background task to listen for 'q' key
-        async def listen_for_cancel():
-            """Listen for 'q' key press to cancel the current agent run."""
-            if not enable_interactive_terminal_ui:
-                return
-            import sys
-            import os
-
-            if os.name == "nt":  # Windows
-                try:
-                    import msvcrt
-
-                    while not run_cancel_event.is_set():
-                        if msvcrt.kbhit():  # Check if key is available
-                            ch = msvcrt.getwch()  # Get wide char (Unicode)
-                            if ch.lower() == "q":
-                                run_cancel_event.set()
-                                break
-                        await asyncio.sleep(0.05)  # Small delay to prevent busy-wait
-                except (ImportError, AttributeError):
-                    pass
-            else:  # Unix/Linux/macOS
-                try:
-                    import select
-                    import tty
-                    import termios
-
-                    # Save old terminal settings
-                    old_settings = None
-                    try:
-                        old_settings = termios.tcgetattr(sys.stdin)
-                        tty.setcbreak(sys.stdin.fileno())
-                    except (termios.error, OSError):
-                        # Not a TTY, skip
-                        return
-
-                    while not run_cancel_event.is_set():
-                        # Check if data is available on stdin
-                        if select.select([sys.stdin], [], [], 0)[0]:
-                            ch = sys.stdin.read(1)
-                            if ch.lower() == "q":
-                                run_cancel_event.set()
-                                break
-                        await asyncio.sleep(0.05)
-                except (ImportError, AttributeError, termios.error, OSError):
-                    pass
-                finally:
-                    # Restore terminal settings
-                    if old_settings is not None:
-                        try:
-                            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
-                        except (termios.error, OSError):
-                            pass
-
-        # Start the listener task
-        listener_task = asyncio.create_task(listen_for_cancel())
         try:
             # Pass cancel_event to agent for immediate cancellation
             async for event in active_agent.query_stream(
@@ -2371,9 +2309,6 @@ class TGAgentCLI:
                     self._step_number += 1
                     self._print_tool_step_title(self._step_number, event.tool)
                     self._print_tool_args(event.args)
-                    if enable_interactive_terminal_ui:
-                        self._console.print("[dim]按 q 可取消[/dim]")
-
                     if not self._is_delegate_tool(event.tool):
                         # Start loading while the tool runs.
                         self._loading = self._start_loading("执行中")
@@ -2457,14 +2392,8 @@ class TGAgentCLI:
             if propagate_errors:
                 raise
         finally:
-            # Cancel the listener task
             if owns_cancel_event:
                 run_cancel_event.set()
-            listener_task.cancel()
-            try:
-                await listener_task
-            except (asyncio.CancelledError, Exception):
-                pass
             self._interactive_terminal_ui_enabled = previous_interactive_terminal_ui_enabled
 
         # Ensure loading is stopped
@@ -2667,9 +2596,7 @@ class TGAgentCLI:
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
                 propagate_errors=source == "remote",
-                enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(
-                    source
-                ),
+                enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(source),
                 cancel_event=cancel_event,
             )
             return _ExecutionOutcome(final_content=final_content or "")
@@ -2680,9 +2607,7 @@ class TGAgentCLI:
                 has_image=True,
                 intermediate_text_callback=intermediate_text_callback,
                 propagate_errors=source == "remote",
-                enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(
-                    source
-                ),
+                enable_interactive_terminal_ui=self._should_enable_interactive_terminal_ui(source),
                 cancel_event=cancel_event,
             )
             return _ExecutionOutcome(final_content=final_content or "")
@@ -2736,8 +2661,7 @@ class TGAgentCLI:
         return _ExecutionOutcome(final_content=final_content or "")
 
     def _should_enable_interactive_terminal_ui(self, source: str) -> bool:
-        """Return whether raw terminal affordances like q-cancel can own stdin."""
-        return source == "local" and not self._fixed_input_tui_enabled
+        return source == "local"
 
     async def _drain_bridge_queue(
         self,
