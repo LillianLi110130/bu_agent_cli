@@ -75,6 +75,7 @@ from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 
 from cli.slash_commands import (
@@ -438,6 +439,7 @@ class TGAgentCLI:
     COLOR_FINAL = "bold green"
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
+    PANEL_MAX_WIDTH = 120
     BRIDGE_POLL_INTERVAL_SECONDS = 0.1
     TEAM_INBOX_POLL_INTERVAL_SECONDS = 1.0
     TEAM_AUTO_TRIGGER_TYPES = LEAD_AUTO_TRIGGER_MESSAGE_TYPES
@@ -1557,6 +1559,9 @@ class TGAgentCLI:
             background_color="default",
         )
 
+    def _panel_width(self) -> int:
+        return min(self._console.width, self.PANEL_MAX_WIDTH)
+
     def _truncate_tool_result_lines(self, value: str, *, max_lines: int = 5) -> tuple[str, int]:
         lines = value.splitlines()
         if len(lines) <= max_lines:
@@ -1675,6 +1680,7 @@ class TGAgentCLI:
                 self._syntax_block(args_json, "json"),
                 border_style="grey74",
                 padding=(0, 1),
+                width=self._panel_width(),
             )
         )
 
@@ -1710,6 +1716,7 @@ class TGAgentCLI:
                 title=f"[{title_style}]{title}[/]",
                 border_style=border_style,
                 padding=(0, 1),
+                width=self._panel_width(),
             )
         )
 
@@ -1723,7 +1730,7 @@ class TGAgentCLI:
         self._console.print(title)
 
     def _print_response_title(self) -> None:
-        self._console.print(Text("✦ ", style="bold bright_magenta"), end="")
+        self._console.print(Text("✦ ", style="bold #c084fc"), end="")
 
     @staticmethod
     def _is_delegate_tool(tool_name: str) -> bool:
@@ -3171,39 +3178,57 @@ class TGAgentCLI:
 
     def _print_welcome(self):
         """Print welcome message."""
-        title = Text(justify="center")
-        title.append("Crab", style="bold #ff6b57")
-        title.append(" CLI", style="bold #ffd166")
+        accent = "#ff7a59"
+        gold = "#ffd166"
+        coral = "#ff6b57"
+        amber = "#ffb38a"
+        cyan = "#9cd7ff"
+        text = "white"
+        dim = "dim"
 
-        subtitle = Text(
-            "让任务横着走，结果稳稳落地。",
-            style="italic #ffb38a",
-            justify="center",
+        logo = Text.from_markup(
+            "\n".join(
+                [
+                    f"[bold {coral}] ██████╗██████╗  █████╗ ██████╗      ██████╗██╗     ██╗[/]",
+                    f"[bold {accent}]██╔════╝██╔══██╗██╔══██╗██╔══██╗    ██╔════╝██║     ██║[/]",
+                    f"[bold {gold}]██║     ██████╔╝███████║██████╔╝    ██║     ██║     ██║[/]",
+                    f"[bold {amber}]██║     ██╔══██╗██╔══██║██╔══██╗    ██║     ██║     ██║[/]",
+                    f"[bold {coral}]╚██████╗██║  ██║██║  ██║██████╔╝    ╚██████╗███████╗██║[/]",
+                    f"[dim {gold}] ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝      ╚═════╝╚══════╝╚═╝[/]",
+                ]
+            )
         )
+
+        compact_brand = Text(justify="center")
+        compact_brand.append("Crab", style=f"bold {coral}")
+        compact_brand.append(" CLI", style=f"bold {gold}")
+        compact_brand.append("\n让任务横着走，结果稳稳落地。", style=f"italic {amber}")
+
+        slogan = Text("让任务横着走，结果稳稳落地。", style=f"italic {amber}")
 
         details = Text()
         detail_rows: list[list[tuple[str, str]]] = [
-            [("工作目录：", "dim"), (str(self._ctx.working_dir), "bold white")],
+            [("工作目录：", dim), (str(self._ctx.working_dir), f"bold {text}")],
             [
-                ("当前模型：", "dim"),
-                (str(self._agent.llm.model), "bold #ffd166"),
-                ("，", "white"),
+                ("当前模型：", dim),
+                (str(self._agent.llm.model), f"bold {gold}"),
+                ("，", text),
                 ("/model", "bold cyan"),
-                (" 切换模型", "white"),
+                (" 切换模型", text),
             ],
             [
                 ("@ + Tab", "bold cyan"),
-                ("  查看技能，", "white"),
-                ('@"<path>"<message>', "bold #9cd7ff"),
-                (" 发送图片", "white"),
+                ("  查看技能，", text),
+                ('@"<path>"<message>', f"bold {cyan}"),
+                (" 发送图片", text),
             ],
             [
                 ("/help", "bold cyan"),
-                (" 查看帮助，", "white"),
-                ("Ctrl+D", "bold #ffd166"),
-                (" 或 ", "white"),
+                (" 查看帮助，", text),
+                ("Ctrl+D", f"bold {gold}"),
+                (" 或 ", text),
                 ("/exit", "bold cyan"),
-                (" 退出", "white"),
+                (" 退出", text),
             ],
         ]
         for index, row in enumerate(detail_rows):
@@ -3212,15 +3237,25 @@ class TGAgentCLI:
             for text, style in row:
                 details.append(text, style=style)
 
-        banner = Group(title, subtitle, Text(""), details)
+        if self._panel_width() >= 95:
+            layout = Table.grid(padding=(0, 5))
+            layout.add_column("logo", justify="left", no_wrap=True)
+            layout.add_column("info", justify="left", ratio=1)
+
+            left = Group(logo)
+            right = Group(slogan, Text(""), details)
+            layout.add_row(left, right)
+            banner = layout
+        else:
+            banner = Group(compact_brand, Text(""), details)
 
         self._console.print(
             Panel(
                 banner,
-                title="[bold #ffd166]Welcome Aboard[/bold #ffd166]",
                 subtitle="[dim]ready when you are[/dim]",
-                border_style="#ff7a59",
-                padding=(1, 2),
+                border_style=accent,
+                padding=(2, 2),
+                width=self._panel_width(),
             )
         )
 
@@ -3236,6 +3271,7 @@ class TGAgentCLI:
                 Markdown(version_notes),
                 border_style="#5aa9e6",
                 padding=(1, 2),
+                width=self._panel_width(),
             )
         )
         self._console.print()
