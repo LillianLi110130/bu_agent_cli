@@ -12,8 +12,10 @@ from prompt_toolkit.completion import ThreadedCompleter, merge_completers
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from rich.text import Text
 
 from cli.at_commands import AtCommandCompleter, parse_at_command
@@ -85,13 +87,6 @@ class TGAgentTUI:
                 return
             event.current_buffer.insert_text("\n")
 
-        @kb.add("escape", "enter")
-        def _escape_newline(event) -> None:  # noqa: ANN001
-            if self._should_lock_input():
-                event.app.invalidate()
-                return
-            event.current_buffer.insert_text("\n")
-
         @kb.add("q", filter=cancel_available_filter)
         def _cancel_running_task(event) -> None:  # noqa: ANN001
             if self._cancel_event is not None and not self._cancel_event.is_set():
@@ -148,9 +143,12 @@ class TGAgentTUI:
             enable_history_search=True,
             multiline=True,
             erase_when_done=True,
+            reserve_space_for_menu=0,
             bottom_toolbar=lambda: HTML(self._render_bottom_toolbar()),
         )
         session.default_buffer.read_only = input_locked_filter
+        session.app.layout.current_window.height = self._input_window_height
+        session.default_buffer.on_text_changed += self._invalidate_prompt_layout
         return session
 
     def _separator_markup(self) -> str:
@@ -166,6 +164,38 @@ class TGAgentTUI:
     def _separator() -> str:
         columns = shutil.get_terminal_size((80, 20)).columns
         return "─" * max(20, columns - 1)
+
+    def _input_window_height(self) -> Dimension:
+        text = self._session.default_buffer.text if hasattr(self, "_session") else ""
+        columns = shutil.get_terminal_size((80, 20)).columns
+        prompt_width = get_cwidth(">>> ")
+        available_width = max(1, columns - prompt_width - 1)
+        visual_lines = 0
+        for logical_line in text.split("\n") or [""]:
+            line_width = get_cwidth(logical_line)
+            visual_lines += max(1, (line_width + available_width - 1) // available_width)
+        height = min(max(visual_lines, 1), 6)
+        height += self._completion_menu_height()
+        return Dimension.exact(height)
+
+    def _completion_menu_height(self) -> int:
+        if not hasattr(self, "_session"):
+            return 0
+
+        buffer = self._session.default_buffer
+        stripped_text = buffer.text.lstrip()
+        if not stripped_text.startswith(("/", "@")):
+            return 0
+
+        complete_state = buffer.complete_state
+        if complete_state is None:
+            return 0
+
+        return min(max(len(complete_state.completions), 1), 8)
+
+    def _invalidate_prompt_layout(self, _) -> None:  # noqa: ANN001
+        if hasattr(self, "_session"):
+            self._session.app.invalidate()
 
     async def _run_loop(self) -> None:
         if self._cli._bridge_store is not None:
