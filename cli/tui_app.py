@@ -37,6 +37,8 @@ class TGAgentTUI:
         self._stop_requested = False
         self._cancel_event: asyncio.Event | None = None
         self._suspend_prompt_for_active_task = False
+        self._prompt_spinner_index = 0
+        self._prompt_spinner_active = False
 
     async def run(self) -> None:
         old_tui_enabled = self._cli._fixed_input_tui_enabled
@@ -52,6 +54,7 @@ class TGAgentTUI:
             await self._shutdown_background_tasks()
             await self._cancel_prompt_task()
             await self._cancel_active_task()
+            self._cli._set_terminal_activity_status(None)
             self._cli._fixed_input_tui_enabled = old_tui_enabled
 
     def _build_session(self) -> PromptSession:
@@ -131,10 +134,7 @@ class TGAgentTUI:
             }
         )
         session = PromptSession(
-            message=lambda: HTML(
-                f"{self._separator_markup()}\n"
-                "<ansiblue>>> </ansiblue>"
-            ),
+            message=lambda: HTML(self._render_prompt_message()),
             key_bindings=kb,
             completer=threaded_completer,
             complete_while_typing=True,
@@ -153,6 +153,21 @@ class TGAgentTUI:
 
     def _separator_markup(self) -> str:
         return f"<ansibrightblack><b>{self._separator()}</b></ansibrightblack>"
+
+    def _render_prompt_message(self) -> str:
+        status = self._cli._get_terminal_activity_status()
+        lines = []
+        if status:
+            frame = self._prompt_spinner_frame()
+            lines.append(f"<ansibrightblack>{frame} {status}...</ansibrightblack>")
+            lines.append("")
+        lines.append(self._separator_markup())
+        lines.append("<ansiblue>>> </ansiblue>")
+        return "\n".join(lines)
+
+    def _prompt_spinner_frame(self) -> str:
+        frames = ["-", "\\", "|", "/"]
+        return frames[self._prompt_spinner_index % len(frames)]
 
     def _render_bottom_toolbar(self) -> str:
         status = self._cli._render_context_budget_toolbar()
@@ -310,7 +325,6 @@ class TGAgentTUI:
                 overflow="crop",
                 crop=True,
             )
-        self._cli._console.print()
 
     async def _execute_input(self, text: str) -> None:
         try:
@@ -357,6 +371,7 @@ class TGAgentTUI:
         self._background_tasks = [
             asyncio.create_task(self._cli._consume_subagent_notifications()),
             asyncio.create_task(self._cli._consume_team_inbox_auto_triggers()),
+            asyncio.create_task(self._prompt_spinner_loop()),
         ]
 
     async def _shutdown_background_tasks(self) -> None:
@@ -368,6 +383,26 @@ class TGAgentTUI:
             except asyncio.CancelledError:
                 pass
         self._background_tasks.clear()
+        self._prompt_spinner_active = False
+
+    async def _prompt_spinner_loop(self) -> None:
+        while True:
+            if self._cli._get_terminal_activity_status():
+                self._prompt_spinner_active = True
+                self._prompt_spinner_index += 1
+                self._invalidate_prompt()
+                await asyncio.sleep(0.18)
+                continue
+
+            if self._prompt_spinner_active:
+                self._prompt_spinner_active = False
+                self._prompt_spinner_index = 0
+                self._invalidate_prompt()
+            await asyncio.sleep(0.08)
+
+    def _invalidate_prompt(self) -> None:
+        if hasattr(self, "_session"):
+            self._session.app.invalidate()
 
     async def _cancel_prompt_task(self) -> None:
         if self._prompt_task is None or self._prompt_task.done():

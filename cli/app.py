@@ -471,6 +471,7 @@ class TGAgentCLI:
         self._loading: _SafeLoadingIndicator | None = None
         self._interactive_terminal_ui_enabled = True
         self._fixed_input_tui_enabled = False
+        self._terminal_activity_status: str | None = None
         self._prompter = InteractivePrompter(self._console)
         self._slash_registry = slash_registry or SlashCommandRegistry()
         self._at_registry = at_registry or AtCommandRegistry(
@@ -1530,6 +1531,9 @@ class TGAgentCLI:
         """Start a loading animation."""
         if not self._interactive_terminal_ui_enabled:
             return None
+        if self._fixed_input_tui_enabled:
+            self._set_terminal_activity_status(message)
+            return None
         loading = _SafeLoadingIndicator(message)
         loading.start()
         time.sleep(0.02)
@@ -1537,8 +1541,16 @@ class TGAgentCLI:
 
     def _stop_loading(self, loading: _SafeLoadingIndicator | None):
         """Stop the loading animation."""
+        if self._fixed_input_tui_enabled:
+            self._set_terminal_activity_status(None)
         if loading:
             loading.stop()
+
+    def _set_terminal_activity_status(self, status: str | None) -> None:
+        self._terminal_activity_status = status
+
+    def _get_terminal_activity_status(self) -> str | None:
+        return self._terminal_activity_status
 
     def _try_format_json(self, value: str, *, compact_values: bool = False) -> str | None:
         try:
@@ -2363,15 +2375,11 @@ class TGAgentCLI:
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.delta)
                     assistant_text_parts.append(event.delta)
-                    self._stop_loading(self._loading)
-                    self._loading = None
 
                 elif isinstance(event, TextEvent):
                     if intermediate_text_callback is not None:
                         pending_intermediate_text.append(event.content)
                     assistant_text_parts.append(event.content)
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     logger.info(event.content)
 
                 elif isinstance(event, FinalResponseEvent):
@@ -2383,7 +2391,6 @@ class TGAgentCLI:
                     self._console.print()
                     self._print_response_title()
                     print_markdown_response(markdown_content)
-                    self._console.print()
 
         except Exception as e:
             self._stop_loading(self._loading)
