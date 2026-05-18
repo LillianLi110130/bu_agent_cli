@@ -16,12 +16,13 @@ import pytest
 import cli.app as app_module
 from agent_core import Agent
 from agent_core.agent.events import FinalResponseEvent, TextDeltaEvent
-from agent_core.llm.messages import AssistantMessage, UserMessage
+from agent_core.llm.messages import AssistantMessage, BaseMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion
 from agent_core.team import TeamRuntime
 from cli.app import TGAgentCLI, _SafeLoadingIndicator
 from cli.im_bridge import FileBridgeStore
 from cli.im_bridge.models import BridgeRequest
+from cli.session_store import CLISessionStore, workspace_identity
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.runtime_factory import EchoLLM
 from tools import SandboxContext
@@ -61,6 +62,34 @@ def _create_cli(workspace_root: Path, monkeypatch):
         bridge_store=store,
     )
     return cli, store
+
+
+def _seed_session(
+    store: CLISessionStore,
+    *,
+    session_id: str,
+    workspace: Path,
+    messages: list[BaseMessage],
+    snapshot: list[BaseMessage] | None = None,
+    compacted: bool = False,
+    now: float = 1000.0,
+) -> None:
+    workspace_root, workspace_key = workspace_identity(workspace)
+    store.create_session(
+        session_id=session_id,
+        workspace_root=workspace_root,
+        workspace_key=workspace_key,
+        model="fake-model",
+        system_prompt="stored system",
+        now=now,
+    )
+    store.append_messages(session_id, messages)
+    store.upsert_context_snapshot(
+        session_id=session_id,
+        messages=snapshot if snapshot is not None else messages,
+        compacted=compacted,
+        now=now,
+    )
 
 
 def test_remote_reset_startup_prompt_is_loaded_from_prompt_file(workspace_root, monkeypatch):
@@ -578,6 +607,64 @@ async def test_slash_command_final_content_is_captured(workspace_root, monkeypat
     assert result.input_kind == "slash"
     assert str(workspace_root).replace("\n", "") in result.final_content.replace("\n", "")
     assert "\x1b" not in result.final_content
+
+
+@pytest.mark.asyncio
+async def test_remote_resume_selection_returns_recent_history_preview(
+    workspace_root,
+    monkeypatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root / "home"))
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    assert cli._session_store is not None
+
+    transcript: list[BaseMessage] = []
+    for index in range(12):
+        transcript.append(UserMessage(content=f"turn-{index:02d}-user"))
+        transcript.append(AssistantMessage(content=f"turn-{index:02d}-assistant"))
+
+    _seed_session(
+        cli._session_store,
+        session_id="old-session",
+        workspace=workspace_root,
+        messages=transcript,
+        snapshot=[
+            UserMessage(content="compressed user"),
+            AssistantMessage(content="compressed assistant"),
+        ],
+        compacted=False,
+    )
+
+    store.enqueue_text(
+        "/resume",
+        source="web",
+        remote_response_required=True,
+        request_id="remote-resume-list",
+    )
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    list_result = store.find_result("remote-resume-list")
+    assert list_result is not None
+    assert "选择要恢复的会话" in list_result.final_content
+
+    store.enqueue_text(
+        "1",
+        source="web",
+        remote_response_required=True,
+        request_id="remote-resume-select",
+    )
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    result = store.find_result("remote-resume-select")
+    assert result is not None
+    assert result.final_status == "completed"
+    assert "已恢复" in result.final_content
+    assert "最近 10 轮对话" in result.final_content
+    assert "turn-01-user" not in result.final_content
+    assert "turn-02-user" in result.final_content
+    assert "turn-11-assistant" in result.final_content
 
 
 def test_team_inbox_submits_messages_to_lead_agent(workspace_root, monkeypatch):

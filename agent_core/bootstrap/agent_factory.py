@@ -216,6 +216,7 @@ def create_agent(
         },
         agent_config=agent_config,
     )
+    setattr(agent, "_sandbox_context", ctx)
 
     subagent_executor.set_main_agent(agent)
     ctx.current_agent = agent

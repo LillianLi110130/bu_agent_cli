@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from agent_core.agent.runtime_events import ToolCallRequested
 from agent_core.agent.tool_args import parse_tool_arguments_for_display
@@ -30,6 +30,9 @@ class HumanApprovalRequest:
     reason: str
     risk_level: str = "medium"
     command_preview: str | None = None
+    approval_kind: Literal["normal", "safety"] = "normal"
+    approval_keys: tuple[str, ...] = ()
+    session_approval_label: str | None = None
 
 
 @dataclass
@@ -38,6 +41,7 @@ class HumanApprovalDecision:
 
     approved: bool
     reason: str | None = None
+    scope: Literal["once", "session", "deny"] = "once"
 
 
 class HumanInLoopHandler(Protocol):
@@ -56,7 +60,7 @@ def _parse_tool_arguments(arguments: str) -> dict[str, Any]:
     return parse_tool_arguments_for_display(arguments)
 
 
-def build_default_approval_policy() -> ApprovalPolicy:
+def build_default_approval_policy(*_args: Any, **_kwargs: Any) -> ApprovalPolicy:
     """Build the default approval policy."""
 
     def policy(event: ToolCallRequested, ctx: HookContext) -> HumanApprovalRequest | None:

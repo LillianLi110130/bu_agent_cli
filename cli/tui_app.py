@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+from html import escape as html_escape
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit import PromptSession
@@ -12,8 +13,10 @@ from prompt_toolkit.completion import ThreadedCompleter, merge_completers
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from rich.text import Text
 
 from cli.at_commands import AtCommandCompleter, parse_at_command
@@ -34,12 +37,14 @@ class TGAgentTUI:
         self._session = self._build_session()
         self._stop_requested = False
         self._cancel_event: asyncio.Event | None = None
-        self._cancel_requested = False
         self._suspend_prompt_for_active_task = False
+        self._prompt_spinner_index = 0
+        self._prompt_spinner_active = False
 
     async def run(self) -> None:
         old_tui_enabled = self._cli._fixed_input_tui_enabled
         self._cli._fixed_input_tui_enabled = True
+        self._cli._set_terminal_ui_invalidator(self._invalidate_prompt)
 
         self._cli._print_welcome()
         await self._cli._refresh_empty_context_budget_display()
@@ -50,17 +55,21 @@ class TGAgentTUI:
         finally:
             await self._shutdown_background_tasks()
             await self._cancel_prompt_task()
+            self._cli._cancel_terminal_approval_prompt()
             await self._cancel_active_task()
+            self._cli._set_terminal_activity_status(None)
+            self._cli._set_terminal_ui_invalidator(None)
             self._cli._fixed_input_tui_enabled = old_tui_enabled
 
     def _build_session(self) -> PromptSession:
         kb = KeyBindings()
-        input_locked_filter = Condition(self._is_input_locked)
+        input_locked_filter = Condition(self._should_lock_input)
+        cancel_available_filter = Condition(self._can_cancel_from_prompt)
 
         @kb.add("enter")
         def _submit_or_complete(event) -> None:  # noqa: ANN001
             buffer = event.current_buffer
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
 
@@ -80,41 +89,34 @@ class TGAgentTUI:
 
         @kb.add("c-j")
         def _newline(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.current_buffer.insert_text("\n")
 
-        @kb.add("escape", "enter")
-        def _escape_newline(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
-                event.app.invalidate()
-                return
-            event.current_buffer.insert_text("\n")
-
-        @kb.add("q", filter=input_locked_filter)
+        @kb.add("q", filter=cancel_available_filter)
         def _cancel_running_task(event) -> None:  # noqa: ANN001
             if self._cancel_event is not None and not self._cancel_event.is_set():
-                self._cancel_requested = True
                 self._cancel_event.set()
-                self._cli._console.print("\n[yellow]正在取消当前执行...[/yellow]")
                 event.app.invalidate()
                 return
 
-            if self._active_task is not None and not self._active_task.done():
-                self._active_task.cancel()
-                self._cli._console.print("\n[yellow]取消未及时完成，已强制中断。[/yellow]")
+            if self._cli._cancel_active_bridge_run_from_terminal():
+                event.app.invalidate()
+                return
+
+            event.app.invalidate()
 
         @kb.add("c-c")
         def _cancel_or_clear(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.current_buffer.reset()
 
         @kb.add("c-d")
         def _exit(event) -> None:  # noqa: ANN001
-            if self._is_input_locked():
+            if self._should_lock_input():
                 event.app.invalidate()
                 return
             event.app.exit(exception=EOFError)
@@ -136,10 +138,7 @@ class TGAgentTUI:
             }
         )
         session = PromptSession(
-            message=lambda: HTML(
-                f"{self._separator_markup()}\n"
-                "<ansiblue>>> </ansiblue>"
-            ),
+            message=lambda: HTML(self._render_prompt_message()),
             key_bindings=kb,
             completer=threaded_completer,
             complete_while_typing=True,
@@ -148,27 +147,82 @@ class TGAgentTUI:
             enable_history_search=True,
             multiline=True,
             erase_when_done=True,
+            reserve_space_for_menu=0,
             bottom_toolbar=lambda: HTML(self._render_bottom_toolbar()),
         )
         session.default_buffer.read_only = input_locked_filter
+        session.app.layout.current_window.height = self._input_window_height
+        session.default_buffer.on_text_changed += self._invalidate_prompt_layout
         return session
 
     def _separator_markup(self) -> str:
         return f"<ansibrightblack><b>{self._separator()}</b></ansibrightblack>"
 
+    def _render_prompt_message(self) -> str:
+        status = self._cli._get_terminal_activity_status()
+        lines = []
+        approval_lines = self._cli._terminal_approval_prompt_lines()
+        if approval_lines:
+            for line in approval_lines:
+                lines.append(f"<ansiyellow>{html_escape(line)}</ansiyellow>")
+            lines.append("")
+        if status:
+            frame = self._prompt_spinner_frame()
+            lines.append(f"<ansibrightwhite>{frame} {status}...</ansibrightwhite>")
+            lines.append("")
+        lines.append(self._separator_markup())
+        lines.append("<ansiblue>>> </ansiblue>")
+        return "\n".join(lines)
+
+    def _prompt_spinner_frame(self) -> str:
+        frames = ["-", "\\", "|", "/"]
+        return frames[self._prompt_spinner_index % len(frames)]
+
     def _render_bottom_toolbar(self) -> str:
         status = self._cli._render_context_budget_toolbar()
-        if self._is_input_locked():
-            if self._cancel_requested:
-                status = f"<ansiyellow>正在取消当前执行...</ansiyellow> · {status}"
-            else:
-                status = f"<ansibrightblack>按 q 取消当前执行</ansibrightblack> · {status}"
+        approval_toolbar = self._cli._terminal_approval_toolbar()
+        if approval_toolbar is not None:
+            status = f"<ansiyellow>{html_escape(approval_toolbar)}</ansiyellow> · {status}"
+        elif self._should_lock_input():
+            status = f"按 q 取消当前执行 · {status}"
         return f"{self._separator_markup()}\n{status}"
 
     @staticmethod
     def _separator() -> str:
         columns = shutil.get_terminal_size((80, 20)).columns
         return "─" * max(20, columns - 1)
+
+    def _input_window_height(self) -> Dimension:
+        text = self._session.default_buffer.text if hasattr(self, "_session") else ""
+        columns = shutil.get_terminal_size((80, 20)).columns
+        prompt_width = get_cwidth(">>> ")
+        available_width = max(1, columns - prompt_width - 1)
+        visual_lines = 0
+        for logical_line in text.split("\n") or [""]:
+            line_width = get_cwidth(logical_line)
+            visual_lines += max(1, (line_width + available_width - 1) // available_width)
+        height = min(max(visual_lines, 1), 6)
+        height += self._completion_menu_height()
+        return Dimension.exact(height)
+
+    def _completion_menu_height(self) -> int:
+        if not hasattr(self, "_session"):
+            return 0
+
+        buffer = self._session.default_buffer
+        stripped_text = buffer.text.lstrip()
+        if not stripped_text.startswith(("/", "@")):
+            return 0
+
+        complete_state = buffer.complete_state
+        if complete_state is None:
+            return 0
+
+        return min(max(len(complete_state.completions), 1), 8)
+
+    def _invalidate_prompt_layout(self, _) -> None:  # noqa: ANN001
+        if hasattr(self, "_session"):
+            self._session.app.invalidate()
 
     async def _run_loop(self) -> None:
         if self._cli._bridge_store is not None:
@@ -234,6 +288,10 @@ class TGAgentTUI:
 
     async def _handle_user_input(self, user_input: str) -> bool:
         user_input = user_input.strip()
+        if self._cli._has_terminal_approval_prompt():
+            self._cli._submit_terminal_approval_input(user_input)
+            return True
+
         if not user_input:
             return True
 
@@ -250,13 +308,22 @@ class TGAgentTUI:
             return False
 
         self._cancel_event = asyncio.Event()
-        self._cancel_requested = False
         self._suspend_prompt_for_active_task = self._should_suspend_prompt_for_input(user_input)
         self._active_task = asyncio.create_task(self._execute_input(user_input))
         return True
 
     def _is_input_locked(self) -> bool:
         return self._active_task is not None and not self._active_task.done()
+
+    def _should_lock_input(self) -> bool:
+        if self._cli._has_terminal_approval_prompt():
+            return False
+        return self._is_input_locked() or self._cli._has_active_bridge_run()
+
+    def _can_cancel_from_prompt(self) -> bool:
+        if self._cli._has_terminal_approval_prompt():
+            return False
+        return self._is_input_locked() or self._cli._has_active_bridge_run()
 
     @staticmethod
     def _should_suspend_prompt_for_input(user_input: str) -> bool:
@@ -278,13 +345,14 @@ class TGAgentTUI:
                 overflow="crop",
                 crop=True,
             )
-        self._cli._console.print()
 
     async def _execute_input(self, text: str) -> None:
         try:
             if self._cli._bridge_store is not None:
                 self._cli._enqueue_local_bridge_input(text)
-                should_continue = await self._cli._drain_bridge_queue()
+                should_continue = await self._cli._drain_bridge_queue(
+                    cancel_event=self._cancel_event
+                )
             else:
                 outcome = await self._cli._execute_input_text(
                     text,
@@ -312,7 +380,6 @@ class TGAgentTUI:
             pass
         finally:
             self._cancel_event = None
-            self._cancel_requested = False
             self._suspend_prompt_for_active_task = False
 
     async def _drain_background_work(self) -> bool:
@@ -324,6 +391,7 @@ class TGAgentTUI:
         self._background_tasks = [
             asyncio.create_task(self._cli._consume_subagent_notifications()),
             asyncio.create_task(self._cli._consume_team_inbox_auto_triggers()),
+            asyncio.create_task(self._prompt_spinner_loop()),
         ]
 
     async def _shutdown_background_tasks(self) -> None:
@@ -335,6 +403,26 @@ class TGAgentTUI:
             except asyncio.CancelledError:
                 pass
         self._background_tasks.clear()
+        self._prompt_spinner_active = False
+
+    async def _prompt_spinner_loop(self) -> None:
+        while True:
+            if self._cli._get_terminal_activity_status():
+                self._prompt_spinner_active = True
+                self._prompt_spinner_index += 1
+                self._invalidate_prompt()
+                await asyncio.sleep(0.18)
+                continue
+
+            if self._prompt_spinner_active:
+                self._prompt_spinner_active = False
+                self._prompt_spinner_index = 0
+                self._invalidate_prompt()
+            await asyncio.sleep(0.08)
+
+    def _invalidate_prompt(self) -> None:
+        if hasattr(self, "_session"):
+            self._session.app.invalidate()
 
     async def _cancel_prompt_task(self) -> None:
         if self._prompt_task is None or self._prompt_task.done():
@@ -360,5 +448,4 @@ class TGAgentTUI:
         finally:
             self._active_task = None
             self._cancel_event = None
-            self._cancel_requested = False
             self._suspend_prompt_for_active_task = False

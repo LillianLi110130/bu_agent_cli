@@ -265,7 +265,7 @@ class InteractivePrompter:
             event.app.exit(result=event.app.current_buffer.text)
 
         self.console.print(f"\n{prompt}")
-        self.console.print("[dim]请输入内容（按 Ctrl+Q，或按 Esc 后回车结束）：[/dim]\n")
+        self.console.print("[dim]请输入内容（按 Ctrl+Q 结束）：[/dim]\n")
 
         try:
             result = await self._session.prompt_async(

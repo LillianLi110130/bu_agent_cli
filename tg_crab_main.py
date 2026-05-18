@@ -34,9 +34,11 @@ from agent_core.agent import (
     AgentHook,
     AuditHook,
     BashFileTaskGuardHook,
+    DangerousBashCommandGuardHook,
     ExcelReadGuardHook,
     HumanApprovalHook,
     SubagentCompletionHook,
+    build_command_safety_approval_policy,
     build_default_approval_policy,
 )
 from agent_core.agent.config import AgentConfig
@@ -67,7 +69,7 @@ from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.task import SubagentTaskManager
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id, get_bridge_store
+from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.auth import (
@@ -678,7 +680,11 @@ def build_agent_hooks() -> list[AgentHook]:
     only adds optional extra hooks.
     """
     hooks: list[AgentHook] = [
-        HumanApprovalHook(policy=build_default_approval_policy()),
+        DangerousBashCommandGuardHook(),
+        HumanApprovalHook(
+            mandatory_policy=build_command_safety_approval_policy(),
+            policy=build_default_approval_policy(),
+        ),
         BashFileTaskGuardHook(),
         ExcelReadGuardHook(),
         SubagentCompletionHook(),
@@ -759,6 +765,7 @@ def create_agent(
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
     setattr(agent, "_memory_store", memory_store)
     setattr(agent, "_memory_context_snapshot", frozen_memory_context)
+    setattr(agent, "_sandbox_context", ctx)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
     setattr(ctx, "memory_store", memory_store)
     agent.register_hook(
@@ -793,20 +800,6 @@ async def main():
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
     ctx.bridge_store = bridge_store
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
-    if bridge_store is not None:
-        console.print(
-            "[dim]桥接会话：[/] "
-            f"[cyan]{bridge_store.session_binding_id}[/cyan] "
-            f"[dim]->[/dim] {bridge_store.bridge_dir}"
-        )
-    if args.im_enable:
-        console.print(
-            "[dim]IM 工作进程：[/] "
-            f"worker=[cyan]{args.im_worker_id}[/cyan] "
-            f"gateway=[cyan]{args.im_gateway_base_url}[/cyan]"
-        )
-        if bridge_store is not None:
-            console.print(f"[dim]工作日志：[/] {bridge_store.logs_dir / 'worker.log'}")
     cli = TGAgentCLI(
         agent=agent,
         context=ctx,
@@ -823,6 +816,8 @@ async def main():
         skill_runtime_service=getattr(agent, "_skill_runtime_service", None),
         bridge_store=bridge_store,
         session_runtime=session_runtime,
+        im_worker_id=args.im_worker_id if args.im_enable else None,
+        im_gateway_base_url=args.im_gateway_base_url if args.im_enable else None,
     )
 
     try:
