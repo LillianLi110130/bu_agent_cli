@@ -5,6 +5,7 @@
     <resultMap id="InboundMessageResultMap" type="com.buagent.gateway.store.entity.InboundMessageEntity">
         <id property="id" column="id"/>
         <result property="sessionKey" column="session_key"/>
+        <result property="source" column="source"/>
         <result property="content" column="content"/>
         <result property="status" column="status"/>
         <result property="createdAt" column="created_at"/>
@@ -12,12 +13,14 @@
 
     <insert id="insert" parameterType="com.buagent.gateway.store.entity.InboundMessageEntity" useGeneratedKeys="true" keyProperty="id">
         INSERT INTO inbound_message (
-            session_key, ,
+            session_key,
+            source,
             content,
             status,
             created_at
         ) VALUES (
             #{sessionKey},
+            #{source},
             #{content},
             #{status},
             #{createdAt}
@@ -25,7 +28,7 @@
     </insert>
 
     <select id="findFirstBySessionKeyAndStatus" resultMap="InboundMessageResultMap">
-        SELECT id, session_key, content, status, created_at
+        SELECT id, session_key, source, content, status, created_at
         FROM inbound_message
         WHERE session_key = #{sessionKey}
           AND status = #{status}
@@ -34,7 +37,7 @@
     </select>
 
     <select id="findLatestBySessionKey" resultMap="InboundMessageResultMap">
-        SELECT id, session_key, content, status, created_at
+        SELECT id, session_key, source, content, status, created_at
         FROM inbound_message
         WHERE session_key = #{sessionKey}
         ORDER BY id DESC
