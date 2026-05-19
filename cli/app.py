@@ -3375,7 +3375,7 @@ class TGAgentCLI:
         self._console.print(
             Panel(
                 Markdown(version_notes, style="#e5e7eb"),
-                border_style="#5aa9e6",
+                border_style="#ffeb82",
                 padding=(1, 2),
                 width=self._panel_width(),
             )
