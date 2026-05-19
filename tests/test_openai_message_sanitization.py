@@ -155,6 +155,19 @@ def test_raw_response_debug_log_truncates_payload_by_default(monkeypatch, caplog
     assert "<truncated" in log_text
 
 
+def test_extract_thinking_content_supports_glm_reasoning_content():
+    assert (
+        ChatOpenAI._extract_thinking_content(
+            SimpleNamespace(reasoning_content="glm-thinking")
+        )
+        == "glm-thinking"
+    )
+    assert (
+        ChatOpenAI._extract_thinking_content(SimpleNamespace(reasoning="openai-thinking"))
+        == "openai-thinking"
+    )
+
+
 @pytest.mark.asyncio
 async def test_chat_openai_reuses_and_closes_owned_client():
     llm = ChatOpenAI(model="gpt-4o-mini", api_key="test-key", base_url="http://example.invalid/v1")

@@ -2405,6 +2405,8 @@ class TGAgentCLI:
         pending_intermediate_text: list[str] = []
         assistant_text_parts: list[str] = []
         streamed_text_started = False
+        thinking_line_buffer = ""
+        thinking_line_started = False
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2419,6 +2421,20 @@ class TGAgentCLI:
             if not content:
                 return
             self._console.print(Markdown(content, style="#e5e7eb"))
+
+        def print_thinking_line(content: str = "") -> None:
+            nonlocal thinking_line_started
+            self._console.print(f"[{self.COLOR_THINKING}]{content}[/]")
+            thinking_line_started = True
+
+        def flush_thinking_lines(*, final: bool = False) -> None:
+            nonlocal thinking_line_buffer
+            while "\n" in thinking_line_buffer:
+                line, thinking_line_buffer = thinking_line_buffer.split("\n", 1)
+                print_thinking_line(line)
+            if final and thinking_line_buffer:
+                print_thinking_line(thinking_line_buffer)
+                thinking_line_buffer = ""
 
         try:
             # Pass cancel_event to agent for immediate cancellation
@@ -2482,7 +2498,8 @@ class TGAgentCLI:
                     self._loading = None
                     if show_thinking_output:
                         self._active_thinking_id = event.think_id
-                        self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+                        thinking_line_buffer = ""
+                        thinking_line_started = False
 
                 elif isinstance(event, ThinkingDeltaEvent):
                     self._stop_loading(self._loading)
@@ -2490,16 +2507,19 @@ class TGAgentCLI:
                     if show_thinking_output:
                         if self._active_thinking_id != event.think_id:
                             self._active_thinking_id = event.think_id
-                            self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
-                        self._console.print(f"[{self.COLOR_THINKING}]{event.delta}[/]", end="")
+                            thinking_line_buffer = ""
+                            thinking_line_started = False
+                        thinking_line_buffer += event.delta
+                        flush_thinking_lines()
 
                 elif isinstance(event, ThinkingEndEvent):
                     self._stop_loading(self._loading)
                     self._loading = None
                     if show_thinking_output:
+                        flush_thinking_lines(final=True)
                         if self._active_thinking_id == event.think_id:
                             self._active_thinking_id = None
-                        self._console.print()
+                        thinking_line_started = False
 
                 elif isinstance(event, TextDeltaEvent):
                     if intermediate_text_callback is not None:
