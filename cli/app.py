@@ -2153,6 +2153,7 @@ class TGAgentCLI:
                 workspace_root=self._ctx.working_dir,
                 plugin_manager=self._plugin_manager,
                 model_presets=self._model_presets,
+                markdown_output_callback=self._store_command_final_content,
             )
             handled = await handler.handle(args)
             self._agent_registry = handler.registry
@@ -2242,6 +2243,7 @@ class TGAgentCLI:
             handler = PluginSlashHandler(
                 manager=self._plugin_manager,
                 console=self._console,
+                markdown_output_callback=self._store_command_final_content,
             )
             result = await handler.handle(args)
             if result.reloaded:

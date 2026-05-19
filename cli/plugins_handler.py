@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -23,9 +24,16 @@ class PluginSlashHandler:
         self,
         manager: PluginManager,
         console: Console | None = None,
+        markdown_output_callback: Callable[[str], None] | None = None,
     ):
         self._manager = manager
         self._console = console or Console()
+        self._markdown_output_callback = markdown_output_callback
+
+    def _emit_markdown(self, content: str) -> None:
+        self._console.print(Markdown(content, style="#e5e7eb"))
+        if self._markdown_output_callback is not None:
+            self._markdown_output_callback(content)
 
     async def handle(self, args: list[str]) -> PluginSlashResult:
         if not args:
@@ -100,7 +108,7 @@ class PluginSlashHandler:
         )
 
         self._console.print()
-        self._console.print(Markdown("\n".join(lines), style="#e5e7eb"))
+        self._emit_markdown("\n".join(lines))
         self._console.print()
         return PluginSlashResult()
 
@@ -147,7 +155,7 @@ class PluginSlashHandler:
             lines.extend(f"- {warning}" for warning in plugin.warnings)
 
         self._console.print()
-        self._console.print(Markdown("\n".join(lines), style="#e5e7eb"))
+        self._emit_markdown("\n".join(lines))
         self._console.print()
         return PluginSlashResult()
 

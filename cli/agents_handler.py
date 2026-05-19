@@ -6,7 +6,7 @@ Handles the /agents slash command for managing agent configurations.
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 from rich.console import Console
@@ -59,6 +59,7 @@ class AgentSlashHandler:
         agents_dir: Path | None = None,
         plugin_manager: PluginManager | None = None,
         model_presets: dict[str, ModelPreset] | None = None,
+        markdown_output_callback: Callable[[str], None] | None = None,
     ):
         """Initialize the handler."""
         self.console = console or Console()
@@ -71,6 +72,7 @@ class AgentSlashHandler:
         )
         self.plugin_manager = plugin_manager
         self.model_presets = model_presets if model_presets is not None else load_model_presets()
+        self._markdown_output_callback = markdown_output_callback
         self.registry = registry or get_agent_registry(
             self.workspace_root,
             builtin_agents_dir=self.builtin_agents_dir,
@@ -111,6 +113,11 @@ class AgentSlashHandler:
         self.console.print(f"[red]未知子命令：{subcommand}[/red]")
         self.console.print("[dim]可用子命令：list、show、create、delete、edit、reload[/dim]")
         return True
+
+    def _emit_markdown(self, content: str) -> None:
+        self.console.print(Markdown(content, style="#e5e7eb"))
+        if self._markdown_output_callback is not None:
+            self._markdown_output_callback(content)
 
     async def _list(self, args: list[str] | None = None) -> bool:
         """List all agents."""
@@ -183,7 +190,7 @@ class AgentSlashHandler:
         )
 
         self.console.print()
-        self.console.print(Markdown("\n".join(lines), style="#e5e7eb"))
+        self._emit_markdown("\n".join(lines))
         self.console.print()
         return True
 
@@ -202,7 +209,7 @@ class AgentSlashHandler:
             return True
 
         self.console.print()
-        self.console.print(Markdown(self._build_agent_details_markdown(config), style="#e5e7eb"))
+        self._emit_markdown(self._build_agent_details_markdown(config))
         self.console.print()
         return True
 
