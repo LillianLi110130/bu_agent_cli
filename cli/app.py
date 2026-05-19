@@ -3349,9 +3349,6 @@ class TGAgentCLI:
             [
                 ("当前模型：", dim),
                 (str(self._agent.llm.model), f"bold {text}"),
-                ("，", text),
-                ("/model", "bold #ffeb82"),
-                (" 切换模型", text),
             ],
             [
                 ("@ + Tab", f"bold {cyan}"),
@@ -3362,6 +3359,8 @@ class TGAgentCLI:
             [
                 ("/help", "bold #ffeb82"),
                 (" 查看帮助，", text),
+                ("/model", "bold #ffeb82"),
+                (" 切换模型，", text),
                 ("Ctrl+D", "bold #ffeb82"),
                 (" 或 ", text),
                 ("/exit", "bold #ffeb82"),
