@@ -87,6 +87,7 @@ public class WebConsoleService implements DisposableBean {
         String sessionKey = buildSessionKey(TgAiServerConstants.WEBSITE_WEB, TokenContextHolder.getOpenIdOfCurrentUser());
         InboundMessagePO inboundMessagePO = new InboundMessagePO();
         inboundMessagePO.setSessionKey(sessionKey);
+        inboundMessagePO.setSource("web");
         inboundMessagePO.setContent(request.getContent());
         inboundMessagePO.setStatus(InboundMessageStatusEnum.RECEIVED.getCode());
         inboundMessagePO.setMsgType("text");
@@ -229,7 +230,6 @@ public class WebConsoleService implements DisposableBean {
                 );
             } else if (
                     InboundMessageStatusEnum.CONSUMED.getCode().equalsIgnoreCase(inboundMessagePO.getStatus())
-                            && !hasTerminalOutboundEvent(sessionKey)
             ) {
                 sendEventSafely(
                         streamSession,
@@ -246,17 +246,6 @@ public class WebConsoleService implements DisposableBean {
         if (!delivered && emitHeartbeatWhenEmpty) {
             sendHeartbeatSafely(streamSession);
         }
-    }
-
-    private boolean hasTerminalOutboundEvent(String sessionKey) {
-        OutboundMessagePO latestOutboundMessage = outboundMessageMapper.findLatestMessage(sessionKey);
-        if (latestOutboundMessage == null || latestOutboundMessage.getStatus() == null) {
-            return false;
-        }
-        String status = latestOutboundMessage.getStatus();
-        return STATUS_COMPLETED.equalsIgnoreCase(status)
-                || STATUS_FAILED.equalsIgnoreCase(status)
-                || STATUS_SENT.equalsIgnoreCase(status);
     }
 
     private Map<String, Object> buildEventPayload(String type, String workerId, LocalDateTime localDateTime, String content) {
@@ -319,6 +308,11 @@ public class WebConsoleService implements DisposableBean {
                         outboundMessageEntity.getContent()
                 )
         );
+        if (SseEventEnum.COMPLETED.getCode().equals(eventType) || SseEventEnum.FAILED.getCode().equals(eventType)) {
+            sendDoneSafely(streamSession);
+            removeStreamSession(streamSession.getSessionKey(), streamSession);
+            streamSession.complete();
+        }
         return true;
     }
 
@@ -384,6 +378,28 @@ public class WebConsoleService implements DisposableBean {
             }
             removeStreamSession(streamSession.getSessionKey(), streamSession);
             streamSession.getEmitter().completeWithError(exception);
+        }
+    }
+
+    private void sendDoneSafely(StreamSession streamSession) {
+        try {
+            streamSession.getEmitter().send(SseEmitter.event().comment("done"));
+        } catch (IOException exception) {
+            if (isClientDisconnect(exception)) {
+                logger.info(
+                        "Web SSE client disconnected during done marker. sessionKey={}, sessionId={}, reason={}",
+                        streamSession.getSessionKey(),
+                        streamSession.getSessionId(),
+                        exception.getMessage()
+                );
+            } else {
+                logger.warn(
+                        "Failed to send web SSE done marker. sessionKey={}, sessionId={}",
+                        streamSession.getSessionKey(),
+                        streamSession.getSessionId(),
+                        exception
+                );
+            }
         }
     }
 
