@@ -10,8 +10,8 @@ from typing import Any
 
 import yaml
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.table import Table
 
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources, get_agent_registry
@@ -122,11 +122,7 @@ class AgentSlashHandler:
             self.console.print("[yellow]未找到智能体[/yellow]")
             return True
 
-        table = Table(title="可用智能体")
-        table.add_column("名称", style="cyan")
-        table.add_column("来源", style="magenta")
-        table.add_column("模型", style="dim")
-        table.add_column("描述", style="white")
+        rows: list[tuple[str, str, str, str]] = []
 
         for name in agent_names:
             config = self.registry.get_config(name)
@@ -141,27 +137,54 @@ class AgentSlashHandler:
                 else config.description
             )
 
-            table.add_row(
+            rows.append(
+                (
                 name,
                 self._source_label_for_config(name, config),
                 config.model or "默认",
                 desc,
+                )
             )
 
-        if table.row_count == 0:
+        if not rows:
             label = self._format_source_label(scope_filter) if scope_filter else "指定来源"
             self.console.print(f"[yellow]未找到来自 {label} 的智能体[/yellow]")
             return True
 
+        lines = [
+            "## 可用智能体",
+            "",
+            "| 名称 | 来源 | 模型 | 描述 |",
+            "| --- | --- | --- | --- |",
+        ]
+        for name, source, model, desc in rows:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        self._escape_markdown_table_cell(name),
+                        self._escape_markdown_table_cell(source),
+                        self._escape_markdown_table_cell(model),
+                        self._escape_markdown_table_cell(desc),
+                    ]
+                )
+                + " |"
+            )
+        lines.extend(
+            [
+                "",
+                "- 使用 `/agents show <name>` 查看详情。",
+                "- 使用 `/agents create <name> --scope workspace|user` 创建智能体。",
+                "- 使用 `/agents edit <name>` 修改项目/用户智能体。",
+                "- 使用 `/agents delete <name>` 删除项目/用户智能体。",
+                "- 使用 `/agents reload` 重新加载智能体定义。",
+                "- 使用 `/agents list <workspace|user|builtin|plugin>` 按来源筛选。",
+            ]
+        )
+
         self.console.print()
-        self.console.print(table)
+        self.console.print(Markdown("\n".join(lines), style="#e5e7eb"))
         self.console.print()
-        self.console.print("[dim]使用 /agents show <name> 查看详情[/dim]")
-        self.console.print("[dim]使用 /agents create <name> [--scope workspace|user] 创建智能体[/dim]")
-        self.console.print("[dim]使用 /agents edit <name> 修改项目/用户智能体[/dim]")
-        self.console.print("[dim]使用 /agents delete <name> 删除项目/用户智能体[/dim]")
-        self.console.print("[dim]使用 /agents reload 重新加载智能体定义[/dim]")
-        self.console.print("[dim]使用 /agents list <workspace|user|builtin|plugin> 按来源筛选[/dim]")
         return True
 
     async def _show(self, args: list[str]) -> bool:
@@ -178,19 +201,70 @@ class AgentSlashHandler:
             self.console.print("[dim]使用 /agents list 查看可用智能体[/dim]")
             return True
 
-        details = self._build_agent_details(config)
-
-        panel = Panel(
-            "\n".join(details),
-            title=f"[bold blue]智能体：{config.name}[/bold blue]",
-            border_style="bright_blue",
-            padding=(1, 2),
-        )
-
         self.console.print()
-        self.console.print(panel)
+        self.console.print(Markdown(self._build_agent_details_markdown(config), style="#e5e7eb"))
         self.console.print()
         return True
+
+    @staticmethod
+    def _escape_markdown_table_cell(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+    @staticmethod
+    def _escape_markdown_code(value: str) -> str:
+        return value.replace("```", "`\u200b``")
+
+    def _build_agent_details_markdown(self, config: AgentConfig) -> str:
+        """Build a Markdown details document for one agent."""
+        from tools import ALL_TOOLS
+
+        all_tool_names = {tool.name for tool in ALL_TOOLS}
+        enabled_tools = list(config.tools or [])
+        disabled_tools = list(config.disallowed_tools or [])
+
+        lines = [
+            f"## 智能体：{config.name}",
+            "",
+            f"- **名称**：`{config.name}`",
+            f"- **描述**：{config.description or '-'}",
+            f"- **来源**：{self._source_label_for_config(config.name, config)}",
+            f"- **模型**：`{config.model or 'inherit'}`",
+            f"- **优先级**：`{config.source_priority}`",
+            "",
+            "### 工具",
+        ]
+
+        if enabled_tools:
+            for tool in enabled_tools:
+                marker = "✓" if tool in all_tool_names else "?"
+                lines.append(f"- `{tool}` {marker}")
+        else:
+            lines.append("- 未显式启用")
+
+        if disabled_tools:
+            lines.extend(["", "### 已禁用工具"])
+            for tool in disabled_tools:
+                lines.append(f"- `{tool}`")
+
+        prompt_preview = config.system_prompt[:200]
+        if len(config.system_prompt) > 200:
+            prompt_preview += "..."
+        lines.extend(
+            [
+                "",
+                "### 系统提示词",
+                "",
+                "```text",
+                self._escape_markdown_code(prompt_preview),
+                "```",
+            ]
+        )
+
+        file_path = config.source_path
+        if file_path is not None and file_path.exists():
+            lines.extend(["", "### 文件", "", f"`{file_path}`"])
+
+        return "\n".join(lines)
 
     def _build_agent_details(self, config: AgentConfig) -> list[str]:
         """Build the display lines for the agent details panel."""
