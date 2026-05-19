@@ -50,7 +50,6 @@ public class WorkerGatewayService implements DisposableBean {
     private static final String STATUS_CONSUMED = "CONSUMED";
     private static final String SOURCE_IM = "im";
     private static final String SOURCE_WEB = "web";
-    private static final String WEB_SESSION_PREFIX = "WEB_";
     private static final String STATUS_PROGRESS = "PROGRESS";
     private static final String STATUS_COMPLETED = "COMPLETED";
     private static final String STATUS_FAILED = "FAILED";
@@ -62,6 +61,7 @@ public class WorkerGatewayService implements DisposableBean {
     private final InboundMessageMapper inboundMessageMapper;
     private final OutboundMessageMapper outboundMessageMapper;
     private final OnlineWorkerMapper onlineWorkerMapper;
+    private final WebConsoleService webConsoleService;
     private final ConcurrentMap<String, StreamSession> streamSessions = new ConcurrentHashMap<String, StreamSession>();
 
     @Value("${gateway.stream-heartbeat-interval-ms:10000}")
@@ -86,6 +86,7 @@ public class WorkerGatewayService implements DisposableBean {
         validateWorkerIsOnline(request.getWorkerId());
         InboundMessageEntity inboundMessageEntity = new InboundMessageEntity();
         inboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        inboundMessageEntity.setSource(SOURCE_IM);
         inboundMessageEntity.setContent(request.getContent());
         inboundMessageEntity.setStatus(STATUS_RECEIVED);
         inboundMessageEntity.setCreateTime(LocalDateTime.now());
@@ -159,8 +160,9 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SimpleOkResponse complete(CompleteRequest request) {
         if ("web".equalsIgnoreCase(request.getSource())) {
+            String sessionKey = buildSessionKey(request.getWorkerId());
             OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-            outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+            outboundMessageEntity.setSessionKey(sessionKey);
             if ("failed".equalsIgnoreCase(request.getFinalStatus())) {
                 outboundMessageEntity.setContent(
                     request.getErrorMessage() == null ? request.getFinalContent() : request.getErrorMessage()
@@ -172,6 +174,7 @@ public class WorkerGatewayService implements DisposableBean {
             }
             outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
             outboundMessageMapper.insert(outboundMessageEntity);
+            webConsoleService.dispatchPendingWebEvents(sessionKey, false);
             return new SimpleOkResponse(true);
         }
 
@@ -192,12 +195,14 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SimpleOkResponse progress(ProgressRequest request) {
         if ("web".equalsIgnoreCase(request.getSource())) {
+            String sessionKey = buildSessionKey(request.getWorkerId());
             OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-            outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+            outboundMessageEntity.setSessionKey(sessionKey);
             outboundMessageEntity.setContent(request.getContent());
             outboundMessageEntity.setStatus(STATUS_PROGRESS);
             outboundMessageEntity.setCreatedAt(System.currentTimeMillis());
             outboundMessageMapper.insert(outboundMessageEntity);
+            webConsoleService.dispatchPendingWebEvents(sessionKey, false);
             return new SimpleOkResponse(true);
         }
 
@@ -385,15 +390,8 @@ public class WorkerGatewayService implements DisposableBean {
     private Map<String, Object> buildWorkerMessagePayload(InboundMessageEntity inboundMessageEntity) {
         Map<String, Object> payload = new ConcurrentHashMap<String, Object>();
         payload.put("content", inboundMessageEntity.getContent());
-        payload.put("source", inferRemoteSource(inboundMessageEntity.getSessionKey()));
+        payload.put("source", inboundMessageEntity.getSource());
         return payload;
-    }
-
-    private String inferRemoteSource(String sessionKey) {
-        if (sessionKey != null && sessionKey.startsWith(WEB_SESSION_PREFIX)) {
-            return SOURCE_WEB;
-        }
-        return SOURCE_IM;
     }
 
     private void removeStreamSession(String workerId, StreamSession expectedSession) {

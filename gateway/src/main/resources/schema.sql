@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS online_worker (
 CREATE TABLE IF NOT EXISTS inbound_message (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
     session_key VARCHAR(255) NOT NULL,
+    source VARCHAR(32) NOT NULL,
     content TEXT NOT NULL,
     status VARCHAR(32) NOT NULL,
     msg_type VARCHAR(32) NOT NULL DEFAULE 'text',
