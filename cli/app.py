@@ -2422,8 +2422,14 @@ class TGAgentCLI:
                 return
             self._console.print(Markdown(content, style="#e5e7eb"))
 
+        def stop_loading_for_visible_output() -> None:
+            if self._loading is not None:
+                self._stop_loading(self._loading)
+                self._loading = None
+
         def print_thinking_line(content: str = "") -> None:
             nonlocal thinking_line_started
+            stop_loading_for_visible_output()
             self._console.print(f"[{self.COLOR_THINKING}]{content}[/]")
             thinking_line_started = True
 
@@ -2488,22 +2494,17 @@ class TGAgentCLI:
                         self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
+                        stop_loading_for_visible_output()
                         self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, ThinkingStartEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         self._active_thinking_id = event.think_id
                         thinking_line_buffer = ""
                         thinking_line_started = False
 
                 elif isinstance(event, ThinkingDeltaEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         if self._active_thinking_id != event.think_id:
                             self._active_thinking_id = event.think_id
@@ -2513,8 +2514,6 @@ class TGAgentCLI:
                         flush_thinking_lines()
 
                 elif isinstance(event, ThinkingEndEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         flush_thinking_lines(final=True)
                         if self._active_thinking_id == event.think_id:
