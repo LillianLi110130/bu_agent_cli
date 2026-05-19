@@ -170,7 +170,7 @@ class TGAgentTUI:
             lines.append("")
         if status:
             frame = self._prompt_spinner_frame()
-            lines.append(f'<style fg="#e5e7eb">{frame} {status}...</style>')
+            lines.append(f'<style fg="#c084fc">{frame} {status}...</style>')
             lines.append("")
         lines.append(self._separator_markup())
         lines.append("<ansiblue>>> </ansiblue>")
