@@ -3286,6 +3286,11 @@ class TGAgentCLI:
 
     def _print_welcome(self):
         """Print welcome message."""
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[H\033[2J\033[3J")
+            sys.stdout.flush()
+        self._console.clear()
+
         accent = "#ff7a59"
         gold = "#ffd166"
         coral = "#ff6b57"
@@ -3294,18 +3299,42 @@ class TGAgentCLI:
         text = "#e5e7eb"
         dim = "#9ca3af"
 
-        logo = Text.from_markup(
-            "\n".join(
-                [
-                    f"[bold {coral}] ██████╗██████╗  █████╗ ██████╗      ██████╗██╗     ██╗[/]",
-                    f"[bold {accent}]██╔════╝██╔══██╗██╔══██╗██╔══██╗    ██╔════╝██║     ██║[/]",
-                    f"[bold {gold}]██║     ██████╔╝███████║██████╔╝    ██║     ██║     ██║[/]",
-                    f"[bold {amber}]██║     ██╔══██╗██╔══██║██╔══██╗    ██║     ██║     ██║[/]",
-                    f"[bold {coral}]╚██████╗██║  ██║██║  ██║██████╔╝    ╚██████╗███████╗██║[/]",
-                    f"[dim {gold}] ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝      ╚═════╝╚══════╝╚═╝[/]",
-                ]
-            )
-        )
+        logo_lines = [
+            " ██████╗██████╗  █████╗ ██████╗      ██████╗██╗     ██╗",
+            "██╔════╝██╔══██╗██╔══██╗██╔══██╗    ██╔════╝██║     ██║",
+            "██║     ██████╔╝███████║██████╔╝    ██║     ██║     ██║",
+            "██║     ██╔══██╗██╔══██║██╔══██╗    ██║     ██║     ██║",
+            "╚██████╗██║  ██║██║  ██║██████╔╝    ╚██████╗███████╗██║",
+            " ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝      ╚═════╝╚══════╝╚═╝",
+        ]
+        logo_palette = [
+            "#fff3b0",
+            "#ffd08a",
+            "#ff9a7a",
+            "#ff6b57",
+            "#f25b48",
+            "#e55343",
+            "#bf3f34",
+        ]
+        logo = Text()
+        logo_width = max(len(line) for line in logo_lines)
+        logo_height = max(len(logo_lines) - 1, 1)
+        for row_index, line in enumerate(logo_lines):
+            for col_index, char in enumerate(line):
+                if char == " ":
+                    logo.append(char)
+                    continue
+                if row_index == len(logo_lines) - 1:
+                    logo.append(char, style="#a46a3a")
+                    continue
+                depth = (row_index / logo_height * 0.7) + (col_index / logo_width * 0.3)
+                color_index = min(
+                    len(logo_palette) - 1,
+                    max(0, round(depth * (len(logo_palette) - 1))),
+                )
+                logo.append(char, style=f"bold {logo_palette[color_index]}")
+            if row_index != len(logo_lines) - 1:
+                logo.append("\n")
 
         compact_brand = Text(justify="center")
         compact_brand.append("Crab", style=f"bold {coral}")
@@ -3319,23 +3348,23 @@ class TGAgentCLI:
             [("工作目录：", dim), (str(self._ctx.working_dir), f"bold {text}")],
             [
                 ("当前模型：", dim),
-                (str(self._agent.llm.model), f"bold {gold}"),
+                (str(self._agent.llm.model), f"bold {text}"),
                 ("，", text),
-                ("/model", "bold cyan"),
+                ("/model", "bold #ffeb82"),
                 (" 切换模型", text),
             ],
             [
-                ("@ + Tab", "bold cyan"),
+                ("@ + Tab", f"bold {cyan}"),
                 ("  查看技能，", text),
                 ('@"<path>"<message>', f"bold {cyan}"),
                 (" 发送图片", text),
             ],
             [
-                ("/help", "bold cyan"),
+                ("/help", "bold #ffeb82"),
                 (" 查看帮助，", text),
-                ("Ctrl+D", f"bold {gold}"),
+                ("Ctrl+D", "bold #ffeb82"),
                 (" 或 ", text),
-                ("/exit", "bold cyan"),
+                ("/exit", "bold #ffeb82"),
                 (" 退出", text),
             ],
         ]
@@ -3367,16 +3396,18 @@ class TGAgentCLI:
             )
         )
 
-        version_notes = """**当前版本：** `v0.7.0`  `2026-05-11`
+        version_header = Text()
+        version_header.append("当前版本：", style=text)
+        version_header.append(" v0.7.0  2026-05-11 ", style="bold #ffeb82 on #332313")
 
-- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
+        version_notes = """- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
 - ✨ 优化edit工具
 - 🐞 修复模型响应内容被截断的阻断问题
 - 🐞 上下文压缩改为流式
 """
         self._console.print(
             Panel(
-                Markdown(version_notes, style="#e5e7eb"),
+                Group(version_header, Text(""), Markdown(version_notes, style="#e5e7eb")),
                 border_style="#ffeb82",
                 padding=(1, 2),
                 width=self._panel_width(),
