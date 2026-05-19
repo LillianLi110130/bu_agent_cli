@@ -128,6 +128,8 @@ class TGAgentTUI:
         )
         style = Style.from_dict(
             {
+                "": "#e5e7eb",
+                "prompt": "#e5e7eb",
                 "completion-menu.completion": "bg:#008888 #ffffff",
                 "completion-menu.completion.current": "bg:#ffffff #000000",
                 "completion-menu.meta.completion": "bg:#00aaaa #000000",
@@ -168,7 +170,7 @@ class TGAgentTUI:
             lines.append("")
         if status:
             frame = self._prompt_spinner_frame()
-            lines.append(f"<ansibrightwhite>{frame} {status}...</ansibrightwhite>")
+            lines.append(f'<style fg="#c084fc">{frame} {status}...</style>')
             lines.append("")
         lines.append(self._separator_markup())
         lines.append("<ansiblue>>> </ansiblue>")

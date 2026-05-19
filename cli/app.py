@@ -2407,6 +2407,7 @@ class TGAgentCLI:
         streamed_text_started = False
         thinking_line_buffer = ""
         thinking_line_started = False
+        pending_leading_thinking_blank_lines = 0
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2422,18 +2423,36 @@ class TGAgentCLI:
                 return
             self._console.print(Markdown(content, style="#e5e7eb"))
 
+        def stop_loading_for_visible_output() -> None:
+            if self._loading is not None:
+                self._stop_loading(self._loading)
+                self._loading = None
+
         def print_thinking_line(content: str = "") -> None:
             nonlocal thinking_line_started
+            stop_loading_for_visible_output()
             self._console.print(f"[{self.COLOR_THINKING}]{content}[/]")
             thinking_line_started = True
 
         def flush_thinking_lines(*, final: bool = False) -> None:
-            nonlocal thinking_line_buffer
+            nonlocal thinking_line_buffer, pending_leading_thinking_blank_lines
             while "\n" in thinking_line_buffer:
                 line, thinking_line_buffer = thinking_line_buffer.split("\n", 1)
+                if not thinking_line_started and not line.strip():
+                    pending_leading_thinking_blank_lines += 1
+                    continue
+                if not thinking_line_started and pending_leading_thinking_blank_lines:
+                    line = ("\n" * pending_leading_thinking_blank_lines) + line
+                    pending_leading_thinking_blank_lines = 0
                 print_thinking_line(line)
             if final and thinking_line_buffer:
-                print_thinking_line(thinking_line_buffer)
+                if thinking_line_started or thinking_line_buffer.strip():
+                    if not thinking_line_started and pending_leading_thinking_blank_lines:
+                        thinking_line_buffer = (
+                            "\n" * pending_leading_thinking_blank_lines
+                        ) + thinking_line_buffer
+                        pending_leading_thinking_blank_lines = 0
+                    print_thinking_line(thinking_line_buffer)
                 thinking_line_buffer = ""
 
         try:
@@ -2488,38 +2507,34 @@ class TGAgentCLI:
                         self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
+                        stop_loading_for_visible_output()
                         self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, ThinkingStartEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         self._active_thinking_id = event.think_id
                         thinking_line_buffer = ""
                         thinking_line_started = False
+                        pending_leading_thinking_blank_lines = 0
 
                 elif isinstance(event, ThinkingDeltaEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         if self._active_thinking_id != event.think_id:
                             self._active_thinking_id = event.think_id
                             thinking_line_buffer = ""
                             thinking_line_started = False
+                            pending_leading_thinking_blank_lines = 0
                         thinking_line_buffer += event.delta
                         flush_thinking_lines()
 
                 elif isinstance(event, ThinkingEndEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         flush_thinking_lines(final=True)
                         if self._active_thinking_id == event.think_id:
                             self._active_thinking_id = None
                         thinking_line_started = False
+                        pending_leading_thinking_blank_lines = 0
 
                 elif isinstance(event, TextDeltaEvent):
                     if intermediate_text_callback is not None:
@@ -3360,7 +3375,7 @@ class TGAgentCLI:
         self._console.print(
             Panel(
                 Markdown(version_notes, style="#e5e7eb"),
-                border_style="#5aa9e6",
+                border_style="#ffeb82",
                 padding=(1, 2),
                 width=self._panel_width(),
             )
