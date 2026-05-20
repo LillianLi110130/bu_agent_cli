@@ -3798,7 +3798,7 @@ class TGAgentCLI:
   [blue]exit[/blue]          - 退出 CLI
   [blue]pwd[/blue]           - 显示当前工作目录
   [blue]ls [path][/blue]     - 列出目录中的文件（AI 也可以完成）
-  [blue]/approval on|off|status[/blue] - 控制高风险工具的人类审批开关
+  [blue]/approval on|off|status[/blue] - 控制 ask 级危险 bash 命令审批开关
 
 [bold cyan]可用工具（供 AI 使用）：[/bold cyan]
 
@@ -3822,7 +3822,7 @@ class TGAgentCLI:
     def _print_approval_status(self) -> None:
         status = "已开启" if self._agent.human_in_loop_config.enabled else "已关闭"
         style = "green" if self._agent.human_in_loop_config.enabled else "yellow"
-        self._console.print(f"[{style}]审批模式：{status}[/{style}]")
+        self._console.print(f"[{style}]ask 级危险 bash 审批：{status}[/{style}]")
 
     async def _request_human_approval(
         self,

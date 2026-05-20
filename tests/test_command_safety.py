@@ -171,16 +171,27 @@ async def test_dangerous_bash_command_guard_ignores_ask_command() -> None:
 
 
 @pytest.mark.asyncio
-async def test_mandatory_policy_asks_even_when_approval_mode_disabled() -> None:
+async def test_mandatory_policy_skips_when_approval_mode_disabled() -> None:
     handler = FakeApprovalHandler(HumanApprovalDecision(approved=True, scope="once"))
-    hook = HumanApprovalHook(
-        mandatory_policy=build_command_safety_approval_policy(),
-        policy=build_default_approval_policy(),
-    )
+    hook = HumanApprovalHook(mandatory_policy=build_command_safety_approval_policy())
 
     decision = await hook.before_event(
         _bash_event("git reset --hard"),
         _ctx(handler, enabled=False),
+    )
+
+    assert decision is None
+    assert handler.requests == []
+
+
+@pytest.mark.asyncio
+async def test_mandatory_policy_asks_when_approval_mode_enabled() -> None:
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True, scope="once"))
+    hook = HumanApprovalHook(mandatory_policy=build_command_safety_approval_policy())
+
+    decision = await hook.before_event(
+        _bash_event("git reset --hard"),
+        _ctx(handler, enabled=True),
     )
 
     assert decision is None
@@ -196,8 +207,14 @@ async def test_safety_session_approval_skips_later_same_rule() -> None:
     handler = FakeApprovalHandler(HumanApprovalDecision(approved=True, scope="session"))
     hook = HumanApprovalHook(mandatory_policy=build_command_safety_approval_policy())
 
-    first = await hook.before_event(_bash_event("git reset --hard"), _ctx(handler))
-    second = await hook.before_event(_bash_event("git reset --hard"), _ctx(handler))
+    first = await hook.before_event(
+        _bash_event("git reset --hard"),
+        _ctx(handler, enabled=True),
+    )
+    second = await hook.before_event(
+        _bash_event("git reset --hard"),
+        _ctx(handler, enabled=True),
+    )
 
     assert first is None
     assert second is None
@@ -211,7 +228,7 @@ async def test_safety_approval_deny_aborts_and_emits_tool_result() -> None:
     )
     hook = HumanApprovalHook(mandatory_policy=build_command_safety_approval_policy())
 
-    decision = await hook.before_event(_bash_event("git clean -fdx"), _ctx(handler))
+    decision = await hook.before_event(_bash_event("git clean -fdx"), _ctx(handler, enabled=True))
 
     assert decision is not None
     assert decision.action == HookAction.ABORT
@@ -231,3 +248,14 @@ async def test_normal_approval_still_respects_approval_mode_switch() -> None:
     assert asked is None
     assert len(handler.requests) == 1
     assert handler.requests[0].approval_kind == "normal"
+
+
+@pytest.mark.asyncio
+async def test_normal_bash_is_not_approved_when_only_safety_policy_is_configured() -> None:
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True, scope="once"))
+    hook = HumanApprovalHook(mandatory_policy=build_command_safety_approval_policy())
+
+    decision = await hook.before_event(_bash_event("pytest -q"), _ctx(handler, enabled=True))
+
+    assert decision is None
+    assert handler.requests == []
