@@ -98,10 +98,14 @@ class TGAgentTUI:
         def _cancel_running_task(event) -> None:  # noqa: ANN001
             if self._cancel_event is not None and not self._cancel_event.is_set():
                 self._cancel_event.set()
+                self._cli._request_foreground_subagent_cancel_from_terminal()
+                self._cli._request_active_team_shutdown_from_cancel()
                 event.app.invalidate()
                 return
 
             if self._cli._cancel_active_bridge_run_from_terminal():
+                self._cli._request_foreground_subagent_cancel_from_terminal()
+                self._cli._request_active_team_shutdown_from_cancel()
                 event.app.invalidate()
                 return
 

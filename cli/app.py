@@ -564,8 +564,11 @@ class TGAgentCLI:
         )
         self._seen_team_inbox_message_ids: set[str] = set()
         self._team_auto_trigger_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._team_auto_trigger_suppressed_team_ids: set[str] = set()
         self._active_bridge_cancel_event: asyncio.Event | None = None
         self._active_bridge_request: BridgeRequest | None = None
+        self._foreground_subagent_cancel_task: asyncio.Task[None] | None = None
+        self._active_team_cancel_shutdown_task: asyncio.Task[None] | None = None
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
@@ -2683,6 +2686,95 @@ class TGAgentCLI:
         self._active_bridge_cancel_event.set()
         return True
 
+    def _clear_team_auto_trigger_queue(self) -> None:
+        while True:
+            try:
+                self._team_auto_trigger_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._team_auto_trigger_queue.task_done()
+
+    def _suppress_team_auto_triggers(self, team_id: str) -> None:
+        self._team_auto_trigger_suppressed_team_ids.add(team_id)
+        self._clear_team_auto_trigger_queue()
+
+    def _release_team_auto_trigger_suppression_if_inactive(self, team_id: str) -> None:
+        runtime = self._ctx.team_runtime
+        try:
+            active_team_id = runtime.get_active_team() if runtime is not None else None
+        except Exception:
+            active_team_id = None
+        if active_team_id != team_id:
+            self._team_auto_trigger_suppressed_team_ids.discard(team_id)
+
+    def _is_suppressed_team_auto_trigger_request(self, request: BridgeRequest) -> bool:
+        if request.source_meta.get("kind") != "team_inbox_auto_trigger":
+            return False
+        team_id = str(request.source_meta.get("team_id") or "")
+        return bool(team_id and team_id in self._team_auto_trigger_suppressed_team_ids)
+
+    def _request_active_team_shutdown_from_cancel(self) -> bool:
+        runtime = self._ctx.team_runtime
+        if runtime is None:
+            return False
+        team_id = runtime.get_active_team()
+        if team_id is None:
+            return False
+        self._suppress_team_auto_triggers(team_id)
+        if (
+            self._active_team_cancel_shutdown_task is not None
+            and not self._active_team_cancel_shutdown_task.done()
+        ):
+            return True
+        self._active_team_cancel_shutdown_task = asyncio.create_task(
+            self._shutdown_active_team_from_cancel(team_id)
+        )
+        return True
+
+    async def _shutdown_active_team_from_cancel(self, team_id: str) -> None:
+        runtime = self._ctx.team_runtime
+        if runtime is None:
+            return
+        self._console.print(
+            f"\n[yellow]已取消当前运行，正在请求关闭 active team：[/yellow]{team_id}"
+        )
+        try:
+            await asyncio.to_thread(runtime.shutdown_team, team_id)
+        except ValueError as exc:
+            self._console.print(f"[yellow]{exc}[/yellow]")
+        except Exception as exc:  # noqa: BLE001 - cancellation cleanup should report and continue.
+            self._console.print(f"[red]关闭 active team 失败：{exc}[/red]")
+        else:
+            self._console.print(f"[yellow]已关闭 active team：[/yellow]{team_id}")
+        finally:
+            self._release_team_auto_trigger_suppression_if_inactive(team_id)
+
+    def _request_foreground_subagent_cancel_from_terminal(self) -> bool:
+        executor = self._ctx.subagent_executor
+        if executor is None:
+            return False
+        if (
+            self._foreground_subagent_cancel_task is not None
+            and not self._foreground_subagent_cancel_task.done()
+        ):
+            return True
+        self._foreground_subagent_cancel_task = asyncio.create_task(
+            self._cancel_foreground_subagents_from_terminal()
+        )
+        return True
+
+    async def _cancel_foreground_subagents_from_terminal(self) -> None:
+        executor = self._ctx.subagent_executor
+        if executor is None:
+            return
+        try:
+            results = await executor.cancel_running_foreground_runs()
+        except Exception as exc:  # noqa: BLE001 - cancellation should report and continue.
+            self._console.print(f"[red]取消前台 subagent 失败：{exc}[/red]")
+            return
+        if results:
+            self._console.print("[yellow]已请求取消前台 subagent[/yellow]")
+
     def _build_bridge_progress_callback(
         self,
         *,
@@ -2884,6 +2976,15 @@ class TGAgentCLI:
             if request is None:
                 return True
 
+            if self._is_suppressed_team_auto_trigger_request(request):
+                self._bridge_store.fail_request(
+                    request,
+                    final_content="已跳过 team inbox 自动触发：active team 正在关闭。",
+                    error_code="TEAM_AUTO_TRIGGER_SUPPRESSED",
+                    error_message="Skipped because active team shutdown was requested from terminal.",
+                )
+                continue
+
             request_cancel_event = cancel_event or asyncio.Event()
             self._active_bridge_cancel_event = request_cancel_event
             self._active_bridge_request = request
@@ -2978,6 +3079,11 @@ class TGAgentCLI:
             except Exception:
                 continue
             if not team_id:
+                self._team_auto_trigger_suppressed_team_ids.clear()
+                self._clear_team_auto_trigger_queue()
+                continue
+
+            if team_id in self._team_auto_trigger_suppressed_team_ids:
                 continue
 
             try:
@@ -3073,6 +3179,10 @@ class TGAgentCLI:
 
     async def _drain_team_auto_trigger_queue(self) -> bool:
         """Run queued team inbox auto triggers when no bridge queue is configured."""
+        if self._team_auto_trigger_suppressed_team_ids:
+            self._clear_team_auto_trigger_queue()
+            return True
+
         while True:
             try:
                 prompt = self._team_auto_trigger_queue.get_nowait()
