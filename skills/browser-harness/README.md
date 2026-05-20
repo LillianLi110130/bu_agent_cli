@@ -36,8 +36,6 @@ Click Allow when the per-attach popup appears (Chrome 144+):
 
 <img src="docs/allow-remote-debugging.png" alt="Allow remote debugging popup" width="520" style="border-radius: 12px;" />
 
-See [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for example tasks.
-
 ## Free Browser Use Cloud browsers
 
 Stealth, sub-agents, or headless deployment.<br>
@@ -52,22 +50,12 @@ Stealth, sub-agents, or headless deployment.<br>
 - `SKILL.md` — day-to-day usage
 - `src/browser_harness/` — protected core package
 - `agent-workspace/agent_helpers.py` — helper code the agent edits
-- `agent-workspace/domain-skills/` — reusable site-specific skills the agent edits
 
 ## Contributing
 
-PRs and improvements welcome. The best way to help: **contribute a new domain skill** under [agent-workspace/domain-skills/](agent-workspace/domain-skills/) for a site or task you use often (LinkedIn outreach, ordering on Amazon, filing expenses, etc.). Each skill teaches the agent the selectors, flows, and edge cases it would otherwise have to rediscover.
-
-- **Skills are written by the harness, not by you.** Just run your task with the agent — when it figures something non-obvious out, it files the skill itself (see [SKILL.md](SKILL.md)). Please don't hand-author skill files; agent-generated ones reflect what actually works in the browser.
-- Open a PR with the generated `agent-workspace/domain-skills/<site>/` folder — small and focused is great.
-- Bug fixes, docs tweaks, and helper improvements are equally welcome.
-- Browse existing skills (`github/`, `linkedin/`, `amazon/`, ...) to see the shape.
+PRs and improvements welcome. Bug fixes, docs tweaks, and helper improvements are welcome.
 
 If you're not sure where to start, open an issue and we'll point you somewhere useful.
-
-## Domain skills
-
-Set `BH_DOMAIN_SKILLS=1` to enable [agent-workspace/domain-skills/](agent-workspace/domain-skills/) — community-contributed per-site playbooks `goto_url` surfaces by domain. Contribute via PR.
 
 ---
 

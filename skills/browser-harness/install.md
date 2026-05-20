@@ -5,7 +5,7 @@ description: Install browser-harness into the current agent and connect it to a 
 
 # `browser-harness` installation
 
-Use this file only for browser-harness install, browser connection setup, and connection troubleshooting. For day-to-day browser work, read `SKILL.md`. Task-specific edits belong in `agent-workspace/agent_helpers.py` and `agent-workspace/domain-skills/`.
+Use this file only for browser-harness install, browser connection setup, and connection troubleshooting. For day-to-day browser work, read `SKILL.md`. Task-specific edits belong in `agent-workspace/agent_helpers.py`.
 
 ## Recommended `browser-harness` setup
 

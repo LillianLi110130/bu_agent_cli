@@ -206,9 +206,10 @@ def type_text(text):
 def fill_input(selector, text, clear_first=True, timeout=0.0):
     """Fill a framework-managed input (React controlled, Vue v-model, Ember tracked).
 
-    type_text() uses Input.insertText which bypasses framework event listeners and leaves
-    submit buttons disabled. This helper focuses the element, clears it, types via real
-    key events, then fires synthetic input+change events so the framework sees the update.
+    This helper focuses the element, clears it, inserts text with CDP Input.insertText,
+    then fires synthetic input+change events so frameworks see the update.
+    Input.insertText is used for the text body because per-character key events can
+    duplicate IME / non-ASCII input such as Chinese, Japanese, and emoji.
 
     Raises RuntimeError if the element is not found. Pass timeout>0 to wait for
     late-rendered elements (e.g. after a route change) before typing.
@@ -233,8 +234,7 @@ def fill_input(selector, text, clear_first=True, timeout=0.0):
         cdp("Input.dispatchKeyEvent", type="rawKeyDown", **select_all)
         cdp("Input.dispatchKeyEvent", type="keyUp", **select_all)
         press_key("Backspace")
-    for ch in text:
-        press_key(ch)
+    type_text(text)
     js(
         f"(()=>{{const e=document.querySelector({json.dumps(selector)});"
         f"if(!e)return;"

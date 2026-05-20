@@ -7,10 +7,6 @@ description: Direct browser control via CDP. Use when the user wants to automate
 
 Direct browser control via CDP. For task-specific edits, use `agent-workspace/agent_helpers.py`. For setup, install, or connection problems, read install.md.
 
-Domain skills (community-contributed per-site playbooks under `agent-workspace/domain-skills/`) are off by default. Set `BH_DOMAIN_SKILLS=1` to enable them; see the bottom section.
-
-**If `BH_DOMAIN_SKILLS=1` and the task is site-specific, read every file in the matching `agent-workspace/domain-skills/<site>/` directory before inventing an approach.**
-
 ## Usage
 
 ```bash
@@ -83,6 +79,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 
 - Screenshots first: use capture_screenshot() to understand the current page quickly, find visible targets, and decide whether you need a click, a selector, or more navigation.
 - Clicking: capture_screenshot() → read the pixel off the image → click_at_xy(x, y) → capture_screenshot() to verify. Suppress the Playwright-habit reflex of "locate first, then click" — no getBoundingClientRect, no selector hunt. Drop to DOM only when the target has no visible geometry (hidden input, 0×0 node). Hit-testing happens in Chrome's browser process, so clicks go through iframes / shadow DOM / cross-origin without extra work.
+- New tabs after clicks: when a click may open a new tab, record list_tabs(include_chrome=False) before the click, compare after the click, and inspect any new tab's title/url. Switch with switch_tab(target) only when the new tab is the expected continuation of the task. If it is an auth wall, payment/approval flow, download page, or unrelated content, stop or ask the user before continuing.
 - Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
 - After goto: wait_for_load().
 - Wrong/stale tab: ensure_real_tab(). Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
@@ -91,6 +88,31 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - Iframe sites (Azure blades, Salesforce): click_at_xy(x, y) passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
 - Auth wall: redirected to login → stop and ask the user. Don't type credentials from screenshots.
 - Raw CDP for anything helpers don't cover: cdp("Domain.method", params).
+
+When a click may open a new tab, detect and decide explicitly:
+
+```python
+before = {t["targetId"] for t in list_tabs(include_chrome=False)}
+
+click_at_xy(x, y)
+wait(1)
+
+new_tabs = [
+    t for t in list_tabs(include_chrome=False)
+    if t["targetId"] not in before
+]
+print(new_tabs)
+
+# Decide from title/url and the user's task. Switch only if it is the expected next page.
+if new_tabs:
+    target = new_tabs[-1]
+    if "expected-host-or-title" in (target.get("url", "") + " " + target.get("title", "")):
+        switch_tab(target)
+        wait_for_load()
+        print(page_info())
+    else:
+        print("New tab opened; not switching until it is confirmed relevant:", target)
+```
 
 ## Common form/search workflow
 
@@ -109,10 +131,10 @@ print(js("document.body.innerText"))
 
 - Open or switch to the correct page first: use `new_tab(url)` for first navigation and `ensure_real_tab()` if the current tab may be stale, internal, or not the intended page.
 - Wait before interacting: after navigation use `wait_for_load()`, and before touching dynamic fields use `wait_for_element(selector, timeout=5, visible=True)`.
-- `getBoundingClientRect()` already returns viewport coordinates. If it returns zero, do not assume a coordinate-system mismatch; first check current tab, selector correctness, load state, and element visibility.
-- For normal inputs, use `fill_input(selector, text, timeout=5)`. It focuses, clears, types, and dispatches input/change events for framework-managed fields.
-- `type_text(text)` only types into the currently focused element. Do not use it unless focus was just set intentionally by a coordinate click, `fill_input`, or explicit JS focus.
-- Use exact helper names. Use `press_key("Enter")`; do not invent `press_enter()` or similar helpers.
+- `getBoundingClientRect()` already returns viewport coordinates suitable for click_at_xy(). If it returns zero, do not assume a coordinate-system mismatch; first check current tab, selector correctness, load state, and element visibility.
+- For normal inputs, use `fill_input(selector, text, timeout=5)`. It focuses, clears, inserts the full text with `Input.insertText`, and dispatches input/change events for framework-managed fields. This avoids duplicate non-ASCII input such as `你你好好`.
+- `type_text(text)` only inserts into the currently focused element. Do not use it unless focus was just set intentionally by a coordinate click, `fill_input`, or explicit JS focus.
+- Use exact helper names. Use `press_key("Enter")`; do not invent `press_enter()` or similar helpers. Use `press_key()` for keys such as Enter, Tab, Backspace, Escape, and arrows, not for general text input.
 - Submit forms with `press_key("Enter")` or a visible `click_at_xy(x, y)` first. Use DOM fallbacks such as `form.submit()` only after helper-based interaction fails.
 - Avoid raw `cdp("Input.dispatchKeyEvent", ...)` for keyboard input unless existing helpers are insufficient and the active session has been verified.
 
@@ -137,11 +159,3 @@ print(js("document.body.innerText"))
 - Use screenshots to drive exploration. They are often the fastest way to find the next click target, notice hidden blockers, and decide if a selector is even worth writing.
 - Prefer compositor-level actions over framework hacks. Try screenshots, coordinate clicks, and raw key input before adding DOM-specific workarounds.
 - If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
-
-## Domain skills (opt-in)
-
-Only applies when `BH_DOMAIN_SKILLS=1`. Otherwise ignore — `agent-workspace/domain-skills/` is dormant and `goto_url` won't surface skill files.
-
-When enabled, search `agent-workspace/domain-skills/<host>/` before inventing an approach. `goto_url` returns up to 10 skill filenames for the navigated host.
-
-If you learn anything non-obvious — a private API, stable selector, framework quirk, URL pattern, hidden wait, or site-specific trap — open a PR to `agent-workspace/domain-skills/<site>/`. Capture the durable shape of the site (the map, not the diary). Don't write pixel coordinates (break on layout), task narration, or secrets — the directory is public.
