@@ -193,3 +193,26 @@ def test_generate_default_system_prompt_falls_back_without_llm(tmp_path: Path) -
     assert "禁用工具：bash" in prompt
     assert "不要声称完成未经验证的事项" in prompt
     assert "结论：一句话说明结果或建议" in prompt
+
+
+def test_write_agent_file_preserves_unicode_frontmatter(tmp_path: Path) -> None:
+    handler = AgentSlashHandler(workspace_root=tmp_path, llm=None, model_presets={})
+    target_dir = tmp_path / ".tg_agent" / "agents"
+
+    asyncio.run(
+        handler._write_agent_file(
+            target_dir=target_dir,
+            name="code-reviewer",
+            description="代码审查 agent，重点关注 bug、回归风险和测试缺口。",
+            model="inherit",
+            temperature=None,
+            tools=["read", "grep"],
+            disallowed_tools=None,
+            system_prompt="你是代码审查 agent。",
+        )
+    )
+
+    content = (target_dir / "code-reviewer.md").read_text(encoding="utf-8")
+
+    assert "description: 代码审查 agent，重点关注 bug、回归风险和测试缺口。" in content
+    assert "\\u4EE3" not in content

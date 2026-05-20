@@ -790,7 +790,7 @@ class AgentSlashHandler:
 
         content = (
             f"---\n"
-            f"{yaml.dump(front_matter, default_flow_style=False, sort_keys=False)}"
+            f"{yaml.dump(front_matter, default_flow_style=False, sort_keys=False, allow_unicode=True)}"
             f"---\n\n{system_prompt}"
         )
         file_path.write_text(content, encoding="utf-8")
