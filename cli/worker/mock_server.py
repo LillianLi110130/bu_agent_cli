@@ -417,29 +417,6 @@ class MockGatewayState:
         if queue in record.subscribers:
             record.subscribers.remove(queue)
 
-    async def stop_request_if_current_worker_stream_closed(self, *, worker_id: str, request_id: str) -> None:
-        current_request_id = self._active_web_request_id_by_worker.get(worker_id)
-        if current_request_id != request_id:
-            return
-        record = self._requests.get(request_id)
-        if record is None or record.is_terminal:
-            return
-        record.status = "stopped"
-        record.error_message = "stopped_by_web_disconnect"
-        record.finished_at = _utc_now_iso()
-        self._append_request_event(
-            record,
-            {
-                "type": "failed",
-                "requestId": request_id,
-                "workerId": worker_id,
-                "errorMessage": record.error_message,
-                "finishedAt": record.finished_at,
-            },
-        )
-        self._finish_request(record)
-        self._active_web_request_id_by_worker.pop(worker_id, None)
-
     async def get_request_result(self, request_id: str) -> dict[str, Any]:
         record = self._requests.get(request_id)
         if record is None:
@@ -714,10 +691,6 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
                     yield _encode_web_sse(payload)
             finally:
                 await state.remove_subscriber(request_id, queue)
-                await state.stop_request_if_current_worker_stream_closed(
-                    worker_id=worker_id,
-                    request_id=request_id,
-                )
 
         return StreamingResponse(
             event_stream(),

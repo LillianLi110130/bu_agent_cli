@@ -15,7 +15,7 @@ import type {
   WorkerSummary
 } from '../types';
 
-const STREAM_ROTATE_INTERVAL_MS = 10 * 1000;
+const STREAM_ROTATE_INTERVAL_MS = 20 * 60 * 1000;
 const STREAM_RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000];
 const MAX_STREAM_RECONNECT_ATTEMPTS = 8;
 
@@ -684,7 +684,8 @@ export function useRemoteConsole() {
     createSession,
     draft,
     emptyStateSuggestions: EMPTY_STATE_SUGGESTIONS,
-    canStopStream:
+    isActionLoading:
+      isSubmitting ||
       viewState.submitStatus === 'submitted' ||
       viewState.submitStatus === 'processing' ||
       viewState.submitStatus === 'reconnecting',
@@ -698,7 +699,6 @@ export function useRemoteConsole() {
     messages,
     sessionTitle: buildSessionTitle(sessionIndex),
     setDraft,
-    stopCurrentStream,
     submitCurrentDraft,
     viewState,
     workerSummary

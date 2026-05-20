@@ -13,10 +13,8 @@ type ComposerPanelProps = {
   status: SubmitStatus;
   disabled: boolean;
   loading: boolean;
-  canStopStream: boolean;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  onStopStream: () => void;
 };
 
 function buildHelperCopy(status: SubmitStatus) {
@@ -37,10 +35,8 @@ export function ComposerPanel({
   status,
   disabled,
   loading,
-  canStopStream,
   onChange,
-  onSubmit,
-  onStopStream
+  onSubmit
 }: ComposerPanelProps) {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -68,11 +64,6 @@ export function ComposerPanel({
             <Text className={styles.helperText}>{buildHelperCopy(status)}</Text>
             <div className={styles.actions}>
               <Text className={styles.statusText}>{SUBMIT_STATUS_LABEL[status]}</Text>
-              {canStopStream ? (
-                <Button className={styles.stopButton} onClick={onStopStream}>
-                  停止接收
-                </Button>
-              ) : null}
               <Button
                 className={styles.sendButton}
                 disabled={disabled || !value.trim()}

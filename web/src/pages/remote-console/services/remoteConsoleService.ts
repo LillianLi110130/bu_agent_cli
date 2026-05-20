@@ -117,9 +117,11 @@ export async function submitMessage(
 export async function streamWorkerEvents(
   workerId: string,
   {
+    onOpen,
     onEvent,
     signal
   }: {
+    onOpen?: () => void;
     onEvent: (event: RequestEvent) => void;
     signal?: AbortSignal;
   }
@@ -129,6 +131,8 @@ export async function streamWorkerEvents(
     if (!record) {
       throw new Error('当前没有可供订阅的模拟请求。');
     }
+
+    onOpen?.();
 
     onEvent({
       type: 'submitted',
@@ -182,6 +186,8 @@ export async function streamWorkerEvents(
   if (!response.ok || !response.body) {
     throw new Error(`连接消息事件流失败，状态码：${response.status}`);
   }
+
+  onOpen?.();
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
