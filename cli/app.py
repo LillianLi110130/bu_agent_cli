@@ -1544,6 +1544,7 @@ class TGAgentCLI:
         user_input: str,
         *,
         source: str = "local",
+        cancel_event: asyncio.Event | None = None,
     ) -> tuple[bool, str]:
         """Execute one slash command with live colored output and plain-text recording."""
         original_console = self._console
@@ -1553,7 +1554,11 @@ class TGAgentCLI:
         self._model_switch_service._console = mirror
         self._store_command_final_content("")
         try:
-            handled = await self._handle_slash_command(user_input, source=source)
+            handled = await self._handle_slash_command(
+                user_input,
+                source=source,
+                cancel_event=cancel_event,
+            )
         finally:
             self._console = original_console
             self._model_switch_service._console = original_model_console
@@ -1923,7 +1928,13 @@ class TGAgentCLI:
 
         self._console.print()
 
-    async def _handle_slash_command(self, text: str, *, source: str = "local") -> bool:
+    async def _handle_slash_command(
+        self,
+        text: str,
+        *,
+        source: str = "local",
+        cancel_event: asyncio.Event | None = None,
+    ) -> bool:
         """Handle a slash command.
 
         Args:
@@ -2154,9 +2165,12 @@ class TGAgentCLI:
                 plugin_manager=self._plugin_manager,
                 model_presets=self._model_presets,
                 markdown_output_callback=self._store_command_final_content,
+                llm=self._agent.llm,
             )
             handled = await handler.handle(args)
             self._agent_registry = handler.registry
+            if handled and handler.system_prompt_refresh_requested:
+                self._refresh_system_prompt("agent 配置变更后会话上下文已重置。")
             return handled
 
         if command_name == "team":
@@ -2192,7 +2206,11 @@ class TGAgentCLI:
                 ).start_dashboard([])
                 self._console.print("[cyan]进入 team lead 自动编排模式...[/cyan]")
                 prompt = build_team_auto_prompt(request)
-                final_content = await self._run_agent(prompt, has_image=False)
+                final_content = await self._run_agent(
+                    prompt,
+                    has_image=False,
+                    cancel_event=cancel_event,
+                )
                 self._store_command_final_content(final_content or "")
                 return True
             if team_args and team_args[0].lower() == "inbox" and "--peek" not in team_args[1:]:
@@ -2225,7 +2243,11 @@ class TGAgentCLI:
                     team_id=team_id,
                     messages=messages,
                 )
-                final_content = await self._run_agent(prompt, has_image=False)
+                final_content = await self._run_agent(
+                    prompt,
+                    has_image=False,
+                    cancel_event=cancel_event,
+                )
                 self._store_command_final_content(final_content or "")
                 return True
 
@@ -2286,14 +2308,14 @@ class TGAgentCLI:
         self._console.print(f"[dim]输入 /help 查看可用命令。[/dim]")
         return True
 
-    def _refresh_system_prompt(self) -> None:
+    def _refresh_system_prompt(self, reset_message: str = "插件重载后会话上下文已重置。") -> None:
         """Rebuild the agent system prompt after plugin registry changes."""
         if self._system_prompt_builder is None:
             return
         self._agent.system_prompt = self._system_prompt_builder()
         self._agent.clear_history()
         self._reset_current_session_persistence_cursor()
-        self._console.print("[yellow]插件重载后会话上下文已重置。[/yellow]")
+        self._console.print(f"[yellow]{reset_message}[/yellow]")
 
     def _print_available_skills(self):
         """Print all available @ skills grouped by category."""
@@ -2812,6 +2834,7 @@ class TGAgentCLI:
                 handled, final_content = await self._run_slash_command_with_live_capture(
                     user_input,
                     source=source,
+                    cancel_event=cancel_event,
                 )
                 if handled:
                     return _ExecutionOutcome(final_content=final_content)

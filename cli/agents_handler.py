@@ -5,6 +5,7 @@ Handles the /agents slash command for managing agent configurations.
 """
 
 import asyncio
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,6 +16,8 @@ from rich.panel import Panel
 
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources, get_agent_registry
+from agent_core.llm.base import BaseChatModel
+from agent_core.llm.messages import SystemMessage, UserMessage
 from agent_core.plugin import PluginManager
 from config.model_config import ModelPreset, load_model_presets
 
@@ -60,6 +63,7 @@ class AgentSlashHandler:
         plugin_manager: PluginManager | None = None,
         model_presets: dict[str, ModelPreset] | None = None,
         markdown_output_callback: Callable[[str], None] | None = None,
+        llm: BaseChatModel | None = None,
     ):
         """Initialize the handler."""
         self.console = console or Console()
@@ -73,6 +77,8 @@ class AgentSlashHandler:
         self.plugin_manager = plugin_manager
         self.model_presets = model_presets if model_presets is not None else load_model_presets()
         self._markdown_output_callback = markdown_output_callback
+        self.llm = llm
+        self.system_prompt_refresh_requested = False
         self.registry = registry or get_agent_registry(
             self.workspace_root,
             builtin_agents_dir=self.builtin_agents_dir,
@@ -478,10 +484,31 @@ class AgentSlashHandler:
         )
 
         self.console.print()
+        system_prompt_source = await self._prompt_system_prompt_source()
+        if system_prompt_source == "大模型生成":
+            default_system_prompt = await self._generate_default_system_prompt(
+                name=name,
+                description=description,
+                model=model,
+                tools=tools or None,
+                disallowed_tools=disallowed_tools,
+            )
+        else:
+            default_system_prompt = self._build_fallback_system_prompt(
+                name=name,
+                description=description,
+                tools=tools or None,
+                disallowed_tools=disallowed_tools,
+            )
+
+        self.console.print()
         self.console.print("[5/5] 编辑系统提示词：")
+        self.console.print(
+            f"[dim]当前草稿来源：{system_prompt_source}。你可以直接编辑，或按 Ctrl+Q 接受。[/dim]"
+        )
         system_prompt = await self.prompter.prompt_multiline(
             "系统提示词",
-            default=f"You are a {name} agent.",
+            default=default_system_prompt,
         )
 
         self.console.print()
@@ -517,7 +544,221 @@ class AgentSlashHandler:
 
         self._reload_registry()
         self.console.print(f"[green]✓ 已创建智能体：{name}[/green]")
+        self._print_system_prompt_refresh_hint()
         return True
+
+    async def _prompt_system_prompt_source(self) -> str:
+        """Ask how to seed the editable system prompt draft."""
+        choices = ["默认模板"]
+        default = "默认模板"
+        if self.llm is not None:
+            choices.append("大模型生成")
+            default = "大模型生成"
+        return await self.prompter.prompt_choice(
+            "[5/5] 选择系统提示词草稿来源",
+            choices=choices,
+            default=default,
+        )
+
+    async def _generate_default_system_prompt(
+        self,
+        *,
+        name: str,
+        description: str,
+        model: str | None,
+        tools: list[str] | None,
+        disallowed_tools: list[str] | None,
+    ) -> str:
+        """Generate an editable system prompt draft for a new agent."""
+        fallback = self._build_fallback_system_prompt(
+            name=name,
+            description=description,
+            tools=tools,
+            disallowed_tools=disallowed_tools,
+        )
+        if self.llm is None:
+            return fallback
+
+        self.console.print("[dim]正在根据名称和描述生成系统提示词草稿...（按 q 可取消并使用默认模板）[/dim]")
+        generation_task = asyncio.create_task(
+            self._request_generated_system_prompt(
+                name=name,
+                description=description,
+                model=model,
+                tools=tools,
+                disallowed_tools=disallowed_tools,
+            )
+        )
+        cancel_task = asyncio.create_task(self._wait_for_system_prompt_generation_cancel())
+        try:
+            done, _ = await asyncio.wait(
+                {generation_task, cancel_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancel_task in done and cancel_task.result():
+                generation_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await generation_task
+                self.console.print("[yellow]已取消生成，改用默认模板。[/yellow]")
+                return fallback
+
+            if generation_task in done:
+                cancel_task.cancel()
+                with suppress(asyncio.CancelledError, EOFError, KeyboardInterrupt):
+                    await cancel_task
+                generated = self._clean_generated_system_prompt(generation_task.result())
+                return generated or fallback
+
+            return fallback
+        finally:
+            if not generation_task.done():
+                generation_task.cancel()
+            if not cancel_task.done():
+                cancel_task.cancel()
+
+    async def _request_generated_system_prompt(
+        self,
+        *,
+        name: str,
+        description: str,
+        model: str | None,
+        tools: list[str] | None,
+        disallowed_tools: list[str] | None,
+    ) -> str:
+        """Request a generated prompt draft from the configured model."""
+        if self.llm is None:
+            return ""
+        allowed_tools = ", ".join(tools or []) or "未显式限制"
+        blocked_tools = ", ".join(disallowed_tools or []) or "无"
+        agent_model = model or "inherit"
+        try:
+            response = await self.llm.ainvoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "You are a senior agent prompt architect. Your job is to turn a "
+                            "brief local CLI subagent configuration into a precise, usable "
+                            "system prompt. Return only the final system prompt text. Do not "
+                            "include YAML front matter, Markdown fences, analysis, explanations, "
+                            "or placeholders."
+                        )
+                    ),
+                    UserMessage(
+                        content=(
+                            "请基于以下信息生成一个可直接作为 agent system prompt 的中文草稿。\n"
+                            f"- agent 名称：{name}\n"
+                            f"- agent 描述：{description or '未填写'}\n"
+                            f"- agent 模型：{agent_model}\n"
+                            f"- 允许工具：{allowed_tools}\n"
+                            f"- 禁用工具：{blocked_tools}\n\n"
+                            "生成目标：\n"
+                            "- 让这个 agent 能稳定理解自己的职责、边界和交付标准。\n"
+                            "- 内容应具体到该 agent 的名称和描述，不要产出通用助手模板。\n"
+                            "- 如果描述里包含领域、风险点、优先级或输出偏好，要显式吸收进提示词。\n\n"
+                            "必须覆盖这些部分，但标题可以自然调整：\n"
+                            "1. 角色定位：这个 agent 是谁，主要服务什么任务。\n"
+                            "2. 核心职责：列出 3-6 条具体职责，避免空泛口号。\n"
+                            "3. 职责边界：说明不应该做什么，什么时候应请求澄清或停止。\n"
+                            "4. 工作流程：给出可执行的步骤，例如理解目标、检查上下文、行动、验证、总结。\n"
+                            "5. 工具使用原则：只依据允许/禁用工具描述能力；不要声称拥有未列出的工具或外部权限。\n"
+                            "6. 输出格式：规定默认输出结构，适合该 agent 的任务类型。\n"
+                            "7. 质量标准：说明什么情况下算完成，如何处理不确定性、风险和缺口。\n\n"
+                            "风格要求：\n"
+                            "- 使用中文。\n"
+                            "- 直接写给 agent 本身，例如“你是...”。\n"
+                            "- 可以使用 Markdown 小标题和列表，但不要使用代码块。\n"
+                            "- 保持可编辑、可执行、不过度冗长。\n"
+                            "- 长度控制在 500-900 个中文字之间。"
+                        )
+                    ),
+                ],
+                tool_choice="none",
+            )
+        except Exception as exc:
+            self.console.print(f"[yellow]生成系统提示词失败，已使用本地默认草稿：{exc}[/yellow]")
+            return ""
+
+        return response.text
+
+    async def _wait_for_system_prompt_generation_cancel(self) -> bool:
+        """Return True when the user presses q while prompt generation is running."""
+        from prompt_toolkit.key_binding import KeyBindings
+
+        kb = KeyBindings()
+
+        @kb.add("q")
+        @kb.add("Q")
+        def _(event):
+            event.app.exit(result="q")
+
+        while True:
+            try:
+                result = await self.prompter._session.prompt_async(
+                    "",
+                    key_bindings=kb,
+                    completer=None,
+                    complete_while_typing=False,
+                    multiline=False,
+                )
+            except (EOFError, KeyboardInterrupt):
+                return True
+
+            if result.strip().lower() == "q":
+                return True
+
+    def _build_fallback_system_prompt(
+        self,
+        *,
+        name: str,
+        description: str,
+        tools: list[str] | None,
+        disallowed_tools: list[str] | None,
+    ) -> str:
+        """Build a deterministic fallback prompt when model generation is unavailable."""
+        focus = description.strip() or f"完成与 {name} 相关的任务"
+        allowed_tools = ", ".join(tools or []) or "根据任务需要使用可用工具"
+        blocked_tools = ", ".join(disallowed_tools or []) or "无"
+        return (
+            f"你是 {name} agent。\n\n"
+            f"职责：\n{focus}\n\n"
+            "职责边界：\n"
+            "- 聚焦用户给定目标，不主动扩大任务范围。\n"
+            "- 不要声称完成未经验证的事项。\n"
+            "- 如果信息不足，基于合理假设推进；只有在风险较高或会改变结果时再请求确认。\n"
+            "- 如果请求超出你的工具或权限范围，说明限制并给出可行替代方案。\n\n"
+            "工作流程：\n"
+            "1. 理解目标、约束和已有上下文。\n"
+            "2. 判断是否需要使用工具；只在有明确收益时使用。\n"
+            "3. 执行核心任务，并保留关键依据。\n"
+            "4. 检查结果是否满足职责和完成标准。\n"
+            "5. 输出结论、依据、风险和后续建议。\n\n"
+            "工具使用：\n"
+            f"- 允许工具：{allowed_tools}\n"
+            f"- 禁用工具：{blocked_tools}\n"
+            "- 不要声称拥有未列出的工具或外部权限。\n"
+            "- 使用工具前判断必要性，避免无意义调用。\n\n"
+            "输出格式：\n"
+            "- 结论：一句话说明结果或建议。\n"
+            "- 关键内容：列出发现、完成事项或建议动作。\n"
+            "- 风险与缺口：如有，说明限制、风险、测试缺口或待确认问题。\n\n"
+            "完成标准：\n"
+            "- 输出具体、可执行，不停留在泛泛建议。\n"
+            "- 明确说明完成了什么、依据是什么。\n"
+            "- 对不确定事项清楚标注，不伪装成事实。"
+        )
+
+    @staticmethod
+    def _clean_generated_system_prompt(content: str) -> str:
+        """Remove common wrappers from model-generated prompt text."""
+        text = content.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        return text
 
     async def _write_agent_file(
         self,
@@ -594,6 +835,7 @@ class AgentSlashHandler:
             file_path.unlink()
             self._reload_registry()
             self.console.print(f"[green]✓ 已删除智能体：{name}[/green]")
+            self._print_system_prompt_refresh_hint()
         else:
             self.console.print(f"[red]未找到文件：{file_path}[/red]")
 
@@ -712,6 +954,7 @@ class AgentSlashHandler:
                 )
                 self._reload_registry()
                 self.console.print(f"[green]✓ 已更新智能体：{name}[/green]")
+                self._print_system_prompt_refresh_hint()
                 return True
             except (EOFError, KeyboardInterrupt):
                 self.console.print("\n[yellow]已取消[/yellow]")
@@ -747,6 +990,7 @@ class AgentSlashHandler:
             await process.wait()
             self._reload_registry()
             self.console.print(f"[green]✓ 已重新加载智能体：{name}[/green]")
+            self._print_system_prompt_refresh_hint()
             return True
         except Exception as e:
             self.console.print(f"[red]打开编辑器失败：{e}[/red]")
@@ -754,7 +998,17 @@ class AgentSlashHandler:
 
     async def _reload(self, _args: list[str] | None = None) -> bool:
         """Reload all agent configurations."""
+        self.console.print()
+        confirmed = await self.prompter.prompt_yes_no(
+            "/agents reload 会重建主 agent 系统提示词并重置当前会话上下文，确认继续吗？",
+            default=False,
+        )
+        if not confirmed:
+            self.console.print("[yellow]已取消重新加载[/yellow]")
+            return True
+
         self._reload_registry()
+        self.system_prompt_refresh_requested = True
         count = len(self.registry.list_agents())
         self.console.print(f"[green]✓ 已重新加载 {count} 个智能体[/green]")
         return True
@@ -806,3 +1060,9 @@ class AgentSlashHandler:
         registry_module._global_registry = self.registry
         if self.plugin_manager is not None:
             self.plugin_manager.reload_all()
+
+    def _print_system_prompt_refresh_hint(self) -> None:
+        """Tell users how to refresh the main agent prompt after config edits."""
+        self.console.print(
+            "[dim]如需让当前主 agent 的系统提示词看到 agent 注册变更，请重启 CLI 或运行 /agents reload。[/dim]"
+        )

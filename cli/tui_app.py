@@ -333,7 +333,7 @@ class TGAgentTUI:
         if command.name != "agents":
             return False
         subcommand = command.args[0].lower() if command.args else ""
-        return subcommand in {"create", "edit", "delete"}
+        return subcommand in {"create", "edit", "delete", "reload"}
 
     def _print_user_input_record(self, user_input: str) -> None:
         self._cli._console.print()
