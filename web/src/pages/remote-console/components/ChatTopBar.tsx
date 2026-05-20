@@ -18,7 +18,7 @@ function resolveStatusColor(status: SubmitStatus) {
   if (status === 'failed') {
     return 'error';
   }
-  if (status === 'processing' || status === 'submitted') {
+  if (status === 'processing' || status === 'submitted' || status === 'reconnecting') {
     return 'warning';
   }
   if (status === 'completed') {

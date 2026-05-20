@@ -329,19 +329,6 @@ class _WebConsoleState:
             if queue in record.subscribers:
                 record.subscribers.remove(queue)
 
-    async def stop_request_if_current_worker_stream_closed(
-        self,
-        *,
-        worker_id: str,
-        request_id: str,
-    ) -> None:
-        async with self._lock:
-            active_request_id = self._active_web_request_id_by_worker.get(worker_id)
-            record = self._requests.get(request_id)
-            if active_request_id != request_id or record is None or record.is_terminal:
-                return
-        await self.stop_request(request_id)
-
     async def worker_dequeue_next(self, worker_id: str) -> _RequestRecord | None:
         request_id: str | None = None
         async with self._lock:
@@ -776,10 +763,6 @@ def install_web_console_routes(app: FastAPI) -> None:
                     yield _serialize_sse(payload)
             finally:
                 await state.remove_subscriber(request_id, queue)
-                await state.stop_request_if_current_worker_stream_closed(
-                    worker_id=worker_id,
-                    request_id=request_id,
-                )
 
         return StreamingResponse(
             event_stream(),

@@ -23,6 +23,9 @@ function buildHelperCopy(status: SubmitStatus) {
   if (status === 'submitted' || status === 'processing') {
     return '本地终端正在处理中，请稍候。';
   }
+  if (status === 'reconnecting') {
+    return '连接已断开，正在重新连接，请稍候。';
+  }
   if (status === 'failed') {
     return '发送失败，请调整后重试。';
   }

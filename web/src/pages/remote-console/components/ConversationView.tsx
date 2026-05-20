@@ -20,13 +20,25 @@ function formatTimestamp(value: string) {
   return new Date(value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function getAssistantLabel(status?: SubmitStatus) {
+  return status === 'processing' ? '执行中' : '最终结果';
+}
+
+function getSystemLabel(status?: SubmitStatus) {
+  if (status === 'processing') {
+    return '终端处理中';
+  }
+  if (status === 'reconnecting') {
+    return '正在重连';
+  }
+  return '请求状态';
+}
+
 function renderMessageBody(message: ConversationMessage) {
   if (message.role === 'assistant') {
     return (
       <div className={styles.assistantCard}>
-        <Text className={styles.assistantLabel}>
-          {message.status === 'processing' ? '正在回复' : '助手'}
-        </Text>
+        <Text className={styles.assistantLabel}>{getAssistantLabel(message.status)}</Text>
         <div className={styles.markdownBody}>
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
         </div>
@@ -55,9 +67,7 @@ function renderMessageBody(message: ConversationMessage) {
 
   return (
     <div className={styles.systemCard}>
-      <Text className={styles.systemEyebrow}>
-        {message.status === 'processing' ? '处理中' : '系统提示'}
-      </Text>
+      <Text className={styles.systemEyebrow}>{getSystemLabel(message.status)}</Text>
       <Paragraph className={styles.systemCopy}>{message.content}</Paragraph>
     </div>
   );
@@ -98,12 +108,12 @@ export function ConversationView({
       <section className={styles.shell}>
         <div className={styles.centerColumn}>
           <div className={styles.emptyState}>
-            <Text className={styles.emptyEyebrow}>本地终端对话</Text>
+            <Text className={styles.emptyEyebrow}>远程控制台</Text>
             <Title className={styles.emptyTitle} level={2}>
-              你想聊点什么？
+              向本地终端发送任务
             </Title>
             <Paragraph className={styles.emptyBody}>
-              可以直接输入问题，或者先试试下面这些示例。
+              开始一个会话，发送任务后，你可以在对话中按卡片形式查看每次流式更新和最终结果。
             </Paragraph>
             <div className={styles.suggestionGrid}>
               {suggestions.map((suggestion) => (
