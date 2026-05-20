@@ -44,6 +44,17 @@ This makes new Codex or Claude Code sessions in other folders load the runtime b
 
 - browser-harness --doctor — show version, install mode, daemon and Chrome state, and whether an update is pending.
 
+## Runtime files
+
+By default browser-harness writes runtime files under the user's fixed agent directory:
+
+```text
+~/.tg_agent/tmp/browser-harness  # screenshots, debug click overlays, daemon logs
+~/.tg_agent/run/browser-harness  # daemon socket / pid / port files
+```
+
+Override these locations with `BH_TMP_DIR` and `BH_RUNTIME_DIR` when a specific sandbox or deployment requires it. Keep `BH_RUNTIME_DIR` short enough for POSIX Unix socket path limits.
+
 ## Architecture
 
 ```text
@@ -53,7 +64,7 @@ Chrome / Browser Use cloud -> CDP WS -> browser_harness.daemon -> IPC -> browser
 - Protocol is one JSON line each way.
 - Requests are {method, params, session_id} for CDP or {meta: ...} for daemon control.
 - Responses are {result} / {error} / {events} / {session_id}.
-- IPC: Unix socket at `/tmp/bu-<NAME>.sock` on POSIX, TCP loopback + port file on Windows.
+- IPC: Unix socket at `~/.tg_agent/run/browser-harness/bu-<NAME>.sock` on POSIX, TCP loopback + port file on Windows.
 - BU_NAME namespaces the daemon's IPC, pid, and log files.
 - BU_CDP_WS overrides local Chrome discovery for remote browsers.
 - BU_CDP_URL overrides local Chrome discovery with a specific DevTools HTTP endpoint (used for Way 2).
@@ -127,7 +138,7 @@ If the user hasn't said which connection method to use, default to Way 1 if Chro
      PY
      ```
 
-     If that hangs, escalate: kill all Chrome and daemon processes, then reopen Chrome and retry. On macOS/Linux, also remove `/tmp/bu-default.sock` and `/tmp/bu-default.pid` if they linger.
+     If that hangs, escalate: kill all Chrome and daemon processes, then reopen Chrome and retry. On macOS/Linux, also remove `~/.tg_agent/run/browser-harness/bu-default.sock` and `~/.tg_agent/run/browser-harness/bu-default.pid` if they linger.
 
 4. After any fix, retry step 1.
 

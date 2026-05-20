@@ -3,6 +3,7 @@
 from tools.agent_tool import delegate, delegate_parallel
 from tools.bash import bash
 from tools.files import edit, read, write
+from tools.image_analysis import analyze_image
 from tools.message import message
 from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, SecurityError, get_sandbox_context
@@ -30,6 +31,7 @@ ALL_TOOLS = [
     resolve_path,
     read,
     read_excel,
+    analyze_image,
     # read_excel,
     write,
     edit,
@@ -65,6 +67,7 @@ __all__ = [
     "resolve_path",
     "read",
     "read_excel",
+    "analyze_image",
     "write",
     "edit",
     "glob_search",
