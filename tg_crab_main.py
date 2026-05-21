@@ -77,6 +77,7 @@ from cli.worker.auth import (
     _resolve_auth_config_path,
     authenticate_startup,
     load_auth_config,
+    load_persisted_auth_result,
 )
 from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
@@ -591,12 +592,22 @@ async def _mark_worker_offline(
     *,
     worker_id: str | None,
     gateway_base_url: str | None,
+    base_dir: Path | str | None = None,
 ) -> None:
     """Best-effort offline notification sent by the parent CLI process."""
     if not worker_id or not gateway_base_url:
         return
 
-    client = WorkerGatewayClient(base_url=gateway_base_url)
+    authorization: str | None = None
+    persisted_auth = load_persisted_auth_result(base_dir=base_dir)
+    if persisted_auth is not None:
+        authorization = persisted_auth.authorization
+
+    client = WorkerGatewayClient(
+        base_url=gateway_base_url,
+        authorization=authorization,
+        base_dir=base_dir,
+    )
     try:
         await client.offline(worker_id=worker_id)
     except Exception:
@@ -834,6 +845,7 @@ async def main():
         await _mark_worker_offline(
             worker_id=args.im_worker_id,
             gateway_base_url=args.im_gateway_base_url,
+            base_dir=args.config_dir,
         )
         await _stop_im_worker_process(worker_process)
 
