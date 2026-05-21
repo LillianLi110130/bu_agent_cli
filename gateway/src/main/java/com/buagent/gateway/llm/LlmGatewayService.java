@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 import reactor.netty.http.client.HttpClient;
 
 import java.nio.charset.StandardCharsets;
@@ -92,19 +93,33 @@ public class LlmGatewayService {
             );
             // 下游只看到统一的 SSE 事件；上游请求格式
             // 由 OpenAiRequestBuilder 负责适配。
-            return webClient.post()
+            Flux<DataBuffer> upstream = webClient.post()
                 .uri(route.getCompletionUrl())
                 .accept(MediaType.TEXT_EVENT_STREAM)
                 .contentType(MediaType.APPLICATION_JSON)
                 .headers(headers -> applyHeaders(route, inboundHeaders, headers))
                 .bodyValue(payload)
                 .exchangeToFlux(this::handleResponse);
+            return applyTotalTimeout(upstream);
         }).onErrorResume(exception -> {
             logger.warn("LLM gateway stream failed: {}", exception.getMessage());
             return Flux.just(errorDataBuffer(
                 "LLM gateway stream failed: " + exception.getMessage()
             ));
         });
+    }
+
+    private Flux<DataBuffer> applyTotalTimeout(Flux<DataBuffer> stream) {
+        int totalTimeoutMillis = properties.getTotalTimeoutMillis();
+        if (totalTimeoutMillis <= 0) {
+            return stream;
+        }
+        // responseTimeout 只限制两次网络 read 之间的空闲时间；
+        // 这里额外限制整条 LLM 流从订阅到结束的总耗时。
+        Mono<Long> timeoutSignal = Mono.delay(Duration.ofMillis(totalTimeoutMillis));
+        return stream.takeUntilOther(timeoutSignal.flatMap(ignored ->
+            Mono.error(new TotalStreamTimeoutException(totalTimeoutMillis))
+        ));
     }
 
     /**
@@ -133,7 +148,19 @@ public class LlmGatewayService {
             // 不能跨请求复用。
             LlmStreamEventTransformer transformer = new LlmStreamEventTransformer(objectMapper);
             return response.bodyToFlux(DataBuffer.class)
-                .concatMap(dataBuffer -> toDataBuffers(transformer.accept(readUtf8(dataBuffer))))
+                .concatMap(dataBuffer -> {
+                    Flux<DataBuffer> events = toDataBuffers(transformer.accept(readUtf8(dataBuffer)));
+                    if (transformer.shouldAbortUpstream()) {
+                        // Transformer 已经给下游产出了 error + done。这里抛内部异常只为
+                        // 短路上游订阅，避免继续读取不可恢复的坏流。
+                        return events.concatWith(Flux.error(new TerminalStreamException()));
+                    }
+                    return events;
+                })
+                .onErrorResume(
+                    TerminalStreamException.class,
+                    exception -> Flux.empty()
+                )
                 .concatWith(Flux.defer(() -> toDataBuffers(transformer.finish())));
         });
     }
@@ -301,6 +328,20 @@ public class LlmGatewayService {
 
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
+    }
+
+    /**
+     * 内部控制流异常：只表示当前 SSE 解析已终止，需要停止继续消费上游。
+     * 它会在本类内被吞掉，不会作为网关错误暴露给调用方。
+     */
+    private static final class TerminalStreamException extends RuntimeException {
+    }
+
+    private static final class TotalStreamTimeoutException extends RuntimeException {
+
+        private TotalStreamTimeoutException(int timeoutMillis) {
+            super("LLM gateway stream exceeded total timeout: " + timeoutMillis + " ms");
+        }
     }
 
     /**
