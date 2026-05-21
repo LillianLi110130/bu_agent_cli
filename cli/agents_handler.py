@@ -631,54 +631,80 @@ class AgentSlashHandler:
         allowed_tools = ", ".join(tools or []) or "未显式限制"
         blocked_tools = ", ".join(disallowed_tools or []) or "无"
         agent_model = model or "inherit"
+        messages = [
+            SystemMessage(
+                content=(
+                    "You are a senior agent prompt architect. Your job is to turn a "
+                    "brief local CLI subagent configuration into a precise, usable "
+                    "system prompt. Return only the final system prompt text. Do not "
+                    "include YAML front matter, Markdown fences, analysis, explanations, "
+                    "or placeholders."
+                )
+            ),
+            UserMessage(
+                content=(
+                    "请基于以下信息生成一个可直接作为 agent system prompt 的中文草稿。\n"
+                    f"- agent 名称：{name}\n"
+                    f"- agent 描述：{description or '未填写'}\n"
+                    f"- agent 模型：{agent_model}\n"
+                    f"- 允许工具：{allowed_tools}\n"
+                    f"- 禁用工具：{blocked_tools}\n\n"
+                    "生成目标：\n"
+                    "- 让这个 agent 能稳定理解自己的职责、边界和交付标准。\n"
+                    "- 内容应具体到该 agent 的名称和描述，不要产出通用助手模板。\n"
+                    "- 如果描述里包含领域、风险点、优先级或输出偏好，要显式吸收进提示词。\n\n"
+                    "必须覆盖这些部分，但标题可以自然调整：\n"
+                    "1. 角色定位：这个 agent 是谁，主要服务什么任务。\n"
+                    "2. 核心职责：列出 3-6 条具体职责，避免空泛口号。\n"
+                    "3. 职责边界：说明不应该做什么，什么时候应请求澄清或停止。\n"
+                    "4. 工作流程：给出可执行的步骤，例如理解目标、检查上下文、行动、验证、总结。\n"
+                    "5. 工具使用原则：只依据允许/禁用工具描述能力；不要声称拥有未列出的工具或外部权限。\n"
+                    "6. 输出格式：规定默认输出结构，适合该 agent 的任务类型。\n"
+                    "7. 质量标准：说明什么情况下算完成，如何处理不确定性、风险和缺口。\n\n"
+                    "风格要求：\n"
+                    "- 使用中文。\n"
+                    "- 直接写给 agent 本身，例如“你是...”。\n"
+                    "- 可以使用 Markdown 小标题和列表，但不要使用代码块。\n"
+                    "- 保持可编辑、可执行、不过度冗长。\n"
+                    "- 长度控制在 500-900 个中文字之间。"
+                )
+            ),
+        ]
         try:
-            response = await self.llm.ainvoke(
-                [
-                    SystemMessage(
-                        content=(
-                            "You are a senior agent prompt architect. Your job is to turn a "
-                            "brief local CLI subagent configuration into a precise, usable "
-                            "system prompt. Return only the final system prompt text. Do not "
-                            "include YAML front matter, Markdown fences, analysis, explanations, "
-                            "or placeholders."
-                        )
-                    ),
-                    UserMessage(
-                        content=(
-                            "请基于以下信息生成一个可直接作为 agent system prompt 的中文草稿。\n"
-                            f"- agent 名称：{name}\n"
-                            f"- agent 描述：{description or '未填写'}\n"
-                            f"- agent 模型：{agent_model}\n"
-                            f"- 允许工具：{allowed_tools}\n"
-                            f"- 禁用工具：{blocked_tools}\n\n"
-                            "生成目标：\n"
-                            "- 让这个 agent 能稳定理解自己的职责、边界和交付标准。\n"
-                            "- 内容应具体到该 agent 的名称和描述，不要产出通用助手模板。\n"
-                            "- 如果描述里包含领域、风险点、优先级或输出偏好，要显式吸收进提示词。\n\n"
-                            "必须覆盖这些部分，但标题可以自然调整：\n"
-                            "1. 角色定位：这个 agent 是谁，主要服务什么任务。\n"
-                            "2. 核心职责：列出 3-6 条具体职责，避免空泛口号。\n"
-                            "3. 职责边界：说明不应该做什么，什么时候应请求澄清或停止。\n"
-                            "4. 工作流程：给出可执行的步骤，例如理解目标、检查上下文、行动、验证、总结。\n"
-                            "5. 工具使用原则：只依据允许/禁用工具描述能力；不要声称拥有未列出的工具或外部权限。\n"
-                            "6. 输出格式：规定默认输出结构，适合该 agent 的任务类型。\n"
-                            "7. 质量标准：说明什么情况下算完成，如何处理不确定性、风险和缺口。\n\n"
-                            "风格要求：\n"
-                            "- 使用中文。\n"
-                            "- 直接写给 agent 本身，例如“你是...”。\n"
-                            "- 可以使用 Markdown 小标题和列表，但不要使用代码块。\n"
-                            "- 保持可编辑、可执行、不过度冗长。\n"
-                            "- 长度控制在 500-900 个中文字之间。"
-                        )
-                    ),
-                ],
-                tool_choice="none",
-            )
+            streamed_text = await self._stream_generated_system_prompt(messages)
+            if streamed_text:
+                return streamed_text
+
+            response = await self.llm.ainvoke(messages, tool_choice="none")
         except Exception as exc:
             self.console.print(f"[yellow]生成系统提示词失败，已使用本地默认草稿：{exc}[/yellow]")
             return ""
 
         return response.text
+
+    async def _stream_generated_system_prompt(
+        self,
+        messages: list[SystemMessage | UserMessage],
+    ) -> str:
+        """Stream a generated prompt draft to the console while collecting it."""
+        if self.llm is None:
+            return ""
+
+        parts: list[str] = []
+        try:
+            async for chunk in self.llm.astream(messages, tool_choice="none"):
+                if not chunk.delta:
+                    continue
+                parts.append(chunk.delta)
+                self.console.print(chunk.delta, end="", markup=False, highlight=False)
+        except Exception:
+            if parts:
+                self.console.print()
+            raise
+
+        if parts:
+            self.console.print()
+        return "".join(parts)
 
     async def _wait_for_system_prompt_generation_cancel(self) -> bool:
         """Return True when the user presses q while prompt generation is running."""
