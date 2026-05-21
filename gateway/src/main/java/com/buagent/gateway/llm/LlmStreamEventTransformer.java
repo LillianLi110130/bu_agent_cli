@@ -12,10 +12,20 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 上游 LLM SSE 流到网关统一事件流的转换器。
+ *
+ * <p>这个类是有状态的：一次请求创建一个实例，持续缓存尚未成行的文本和未完成的
+ * tool call，直到上游结束或网关主动收尾。</p>
+ */
 class LlmStreamEventTransformer {
 
     private final ObjectMapper objectMapper;
+    // 网络分块不保证刚好按 SSE 行切开，
+    // 未遇到换行的尾部内容会暂存在这里。
     private final StringBuilder pendingText = new StringBuilder();
+    // tool call 的 arguments 通常分多段返回，
+    // 先缓存，等模型结束时再统一输出。
     private final Map<String, ToolCallBuffer> toolCalls =
         new LinkedHashMap<String, ToolCallBuffer>();
     private final Map<String, String> toolCallIndexAliases = new LinkedHashMap<String, String>();
@@ -28,6 +38,9 @@ class LlmStreamEventTransformer {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 接收一段上游流文本，只处理其中已经完整到达的 SSE 行。
+     */
     List<String> accept(String text) {
         if (text == null || text.isEmpty()) {
             return Collections.emptyList();
@@ -44,6 +57,9 @@ class LlmStreamEventTransformer {
         return events;
     }
 
+    /**
+     * 上游 Flux 完成时的兜底收尾，确保残留文本、tool call 和 done 事件不会丢失。
+     */
     List<String> finish() {
         List<String> events = new ArrayList<String>();
         if (pendingText.length() > 0) {
@@ -63,6 +79,9 @@ class LlmStreamEventTransformer {
         return events;
     }
 
+    /**
+     * 只处理 SSE 的 data 行；注释行、空行和其他字段当前不参与业务转换。
+     */
     private List<String> processLine(String line) {
         String trimmedLine = line == null ? "" : line.trim();
         if (trimmedLine.isEmpty() || trimmedLine.startsWith(":")) {
@@ -79,6 +98,11 @@ class LlmStreamEventTransformer {
         return processJsonData(data);
     }
 
+    /**
+     * 解析 OpenAI-compatible 的流式 JSON。
+     *
+     * <p>根据上游字段转换成 text、thinking、tool_call、usage 或 done 事件。</p>
+     */
     private List<String> processJsonData(String data) {
         List<String> events = new ArrayList<String>();
         try {
@@ -105,6 +129,9 @@ class LlmStreamEventTransformer {
         }
     }
 
+    /**
+     * 当前网关只消费 choices[0]，因为调用方期望的是一条连续的助手回复流。
+     */
     private String processChoices(JsonNode choices, List<String> events) {
         if (!choices.isArray() || choices.size() == 0) {
             return null;
@@ -123,6 +150,9 @@ class LlmStreamEventTransformer {
         return null;
     }
 
+    /**
+     * 兼容不同供应商的推理字段命名，并统一输出为 thinking 事件。
+     */
     private void addThinkingEvent(JsonNode delta, List<String> events) {
         String reasoning = firstNonBlankText(
             delta.get("reasoning"),
@@ -159,6 +189,12 @@ class LlmStreamEventTransformer {
         }
     }
 
+    /**
+     * 把一段 tool call chunk 归并到同一个 buffer。
+     *
+     * <p>有些上游首个 chunk 带 id，后续 chunk 只带 index，所以这里同时维护
+     * id 和 index 两种定位方式。</p>
+     */
     private void appendToolCallBuffer(JsonNode toolCallNode) {
         String id = textOrNull(toolCallNode.get("id"));
         String index = textOrNull(toolCallNode.get("index"));
@@ -186,6 +222,9 @@ class LlmStreamEventTransformer {
         }
     }
 
+    /**
+     * 统一网关的 token 统计字段，调用方不用关心上游 usage 的细节结构。
+     */
     private List<String> buildUsageEvents(JsonNode usage) {
         if (usage == null || usage.isMissingNode() || usage.isNull()) {
             return Collections.emptyList();
@@ -215,6 +254,9 @@ class LlmStreamEventTransformer {
         return events;
     }
 
+    /**
+     * 将缓存的 tool call 转成事件。只有拿到工具名的调用才会输出。
+     */
     private List<String> flushToolCalls() {
         if (toolCalls.isEmpty()) {
             return Collections.emptyList();
@@ -237,6 +279,9 @@ class LlmStreamEventTransformer {
         return events;
     }
 
+    /**
+     * tool arguments 理论上是 JSON 对象；解析失败时保留原始字符串，避免信息丢失。
+     */
     private Map<String, Object> parseToolArguments(String arguments) {
         if (isBlank(arguments)) {
             return new LinkedHashMap<String, Object>();
@@ -282,6 +327,9 @@ class LlmStreamEventTransformer {
         }
     }
 
+    /**
+     * 根据上游 chunk 中可用的 id/index 选择稳定的缓存 key。
+     */
     private String resolveToolCallKey(String id, String index) {
         if (!isBlank(id)) {
             String key = "id:" + id;
@@ -376,6 +424,9 @@ class LlmStreamEventTransformer {
         return value == null || value.trim().isEmpty();
     }
 
+    /**
+     * 保存一个 tool call 在流式传输过程中的中间状态。
+     */
     private static final class ToolCallBuffer {
 
         private String id;

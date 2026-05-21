@@ -24,6 +24,12 @@ import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * 模型代理网关的核心服务。
+ *
+ * <p>它负责把内部的 LLM 请求转成上游 OpenAI-compatible 请求，并把上游的 SSE
+ * 流式响应转换回网关统一事件格式。</p>
+ */
 @Service
 public class LlmGatewayService {
 
@@ -64,6 +70,12 @@ public class LlmGatewayService {
         return httpClient;
     }
 
+    /**
+     * 网关对外的流式查询入口。
+     *
+     * <p>这里延迟到订阅时才解析路由、组装请求和访问上游，避免在 Reactor 链路创建阶段
+     * 提前执行有副作用的网络逻辑。</p>
+     */
     public Flux<DataBuffer> queryStream(
         LlmQueryRequest request,
         HttpHeaders inboundHeaders
@@ -78,6 +90,8 @@ public class LlmGatewayService {
                 route.getUpstreamModel(),
                 route.getMaxOutputTokens()
             );
+            // 下游只看到统一的 SSE 事件；上游请求格式
+            // 由 OpenAiRequestBuilder 负责适配。
             return webClient.post()
                 .uri(route.getCompletionUrl())
                 .accept(MediaType.TEXT_EVENT_STREAM)
@@ -93,6 +107,12 @@ public class LlmGatewayService {
         });
     }
 
+    /**
+     * 处理上游 HTTP 响应。
+     *
+     * <p>错误响应会转换成一条 error SSE；正常响应则逐块读取上游 SSE，
+     * 再通过 LlmStreamEventTransformer 做协议转换。</p>
+     */
     private Flux<DataBuffer> handleResponse(ClientResponse response) {
         if (response.statusCode().isError()) {
             int statusCode = response.statusCode().value();
@@ -109,6 +129,8 @@ public class LlmGatewayService {
         }
 
         return Flux.defer(() -> {
+            // Transformer 持有流式解析状态，必须按请求新建，
+            // 不能跨请求复用。
             LlmStreamEventTransformer transformer = new LlmStreamEventTransformer(objectMapper);
             return response.bodyToFlux(DataBuffer.class)
                 .concatMap(dataBuffer -> toDataBuffers(transformer.accept(readUtf8(dataBuffer))))
@@ -138,6 +160,8 @@ public class LlmGatewayService {
     ) {
         String apiKey = route.getApiKey();
         if (!isBlank(apiKey)) {
+            // 配置里可以只写裸 token，这里统一补齐
+            // Authorization 认证方案。
             outboundHeaders.set(HEADER_AUTHORIZATION, normalizeBearerToken(apiKey));
         }
         forwardHeader(inboundHeaders, outboundHeaders, HEADER_REQUEST_ID);
@@ -158,6 +182,12 @@ public class LlmGatewayService {
         outboundHeaders.set(headerName, headerValue);
     }
 
+    /**
+     * 把客户端传入的模型名解析成真实上游路由。
+     *
+     * <p>当配置了 routes 时，模型名被视为网关别名，必须能匹配到一条路由；
+     * 未配置 routes 时，则走 defaultBaseUrl/defaultModel 的简单默认路由。</p>
+     */
     private ResolvedRoute resolveRoute(String requestedModel) {
         String model = cleanOrNull(requestedModel);
         LlmGatewayProperties.Route configuredRoute = null;
@@ -208,6 +238,9 @@ public class LlmGatewayService {
         return cleanOrNull(properties.getDefaultApiKey());
     }
 
+    /**
+     * 允许配置方填写 baseUrl 或完整的 /chat/completions 地址。
+     */
     private String completionUrl(String baseUrl) {
         String cleaned = trimTrailingSlash(baseUrl);
         if (cleaned.endsWith("/chat/completions")) {
@@ -216,6 +249,9 @@ public class LlmGatewayService {
         return cleaned + "/chat/completions";
     }
 
+    /**
+     * 构造网关自身的错误 SSE，保证调用方即使在失败场景也能按流式协议收尾。
+     */
     private DataBuffer errorDataBuffer(String message) {
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("type", "error");
@@ -267,6 +303,9 @@ public class LlmGatewayService {
         return value == null || value.trim().isEmpty();
     }
 
+    /**
+     * 解析后的路由快照，避免后续代码反复读取和合并配置对象。
+     */
     private static final class ResolvedRoute {
 
         private final String upstreamModel;

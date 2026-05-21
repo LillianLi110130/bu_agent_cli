@@ -6,6 +6,12 @@ import org.springframework.stereotype.Component;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+/**
+ * LLM 网关的配置入口，对应 application.yml 中的 gateway.llm 配置段。
+ *
+ * <p>这里把“客户端请求的模型名”和“真实上游模型配置”分开，便于后续通过模型别名
+ * 切换供应商、baseUrl 或 token 限制，而不影响调用方。</p>
+ */
 @Component
 @ConfigurationProperties(prefix = "gateway.llm")
 public class LlmGatewayProperties {
@@ -85,6 +91,12 @@ public class LlmGatewayProperties {
         this.routes = routes;
     }
 
+    /**
+     * 单个模型别名的上游路由配置。
+     *
+     * <p>例如客户端请求 GLM-4.7，实际可以在这里配置它转发到哪个 OpenAI-compatible
+     * 上游地址、上游模型名和 API Key。</p>
+     */
     public static class Route {
 
         private String provider = "openai";
