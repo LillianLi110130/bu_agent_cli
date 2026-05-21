@@ -6,6 +6,7 @@ export const SUBMIT_STATUS_LABEL: Record<SubmitStatus, string> = {
   idle: '就绪',
   submitting: '发送中',
   submitted: '已提交',
+  reconnecting: '重连中',
   processing: '处理中',
   completed: '已完成',
   failed: '失败'

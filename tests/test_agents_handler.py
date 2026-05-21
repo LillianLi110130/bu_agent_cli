@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from agent_core.llm.views import ChatInvokeCompletion
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 from cli.agents_handler import AgentSlashHandler
 
 
@@ -22,8 +22,11 @@ class PromptDraftLLM:
         return ChatInvokeCompletion(content="```markdown\n你是代码审查 agent。\n```")
 
     async def astream(self, messages, tools=None, tool_choice=None, **kwargs):
-        if False:
-            yield None
+        self.messages = messages
+        self.tool_choice = tool_choice
+        yield ChatInvokeCompletionChunk(delta="```markdown\n")
+        yield ChatInvokeCompletionChunk(delta="你是代码审查 agent。")
+        yield ChatInvokeCompletionChunk(delta="\n```")
 
 
 class SlowPromptDraftLLM(PromptDraftLLM):
@@ -37,6 +40,14 @@ class SlowPromptDraftLLM(PromptDraftLLM):
             self.cancelled = True
             raise
         return ChatInvokeCompletion(content="不会返回")
+
+    async def astream(self, messages, tools=None, tool_choice=None, **kwargs):
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        yield ChatInvokeCompletionChunk(delta="不会返回")
 
 
 class ChoicePrompter:

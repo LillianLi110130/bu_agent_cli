@@ -71,11 +71,9 @@ export function RemoteConsolePage() {
         />
 
         <ComposerPanel
-          canStopStream={controller.canStopStream}
           disabled={controller.isComposerDisabled}
-          loading={controller.isSubmitting}
+          loading={controller.isActionLoading}
           onChange={controller.setDraft}
-          onStopStream={controller.stopCurrentStream}
           onSubmit={() => controller.submitCurrentDraft()}
           status={controller.viewState.submitStatus}
           value={controller.draft}

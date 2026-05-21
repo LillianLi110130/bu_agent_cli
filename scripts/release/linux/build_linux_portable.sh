@@ -539,6 +539,8 @@ fi
 user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 command_shim="${install_root}/bin/crab"
+settings_file="${install_root}/settings.json"
+settings_python="${install_root}/.venv/bin/python"
 
 if [[ ! -x "${command_shim}" ]]; then
   echo "crab is not installed." >&2
@@ -546,13 +548,116 @@ if [[ ! -x "${command_shim}" ]]; then
   exit 1
 fi
 
-if [[ -d "${user_home}/Desktop" ]]; then
-  cd "${user_home}/Desktop"
-else
-  cd "${user_home}"
+read_default_workspace() {
+  if [[ ! -x "${settings_python}" || ! -f "${settings_file}" ]]; then
+    return 0
+  fi
+
+  "${settings_python}" - "${settings_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+
+value = data.get("default_workspace")
+if isinstance(value, str) and value.strip():
+    print(value)
+PY
+}
+
+save_default_workspace() {
+  local workspace_path="$1"
+
+  if [[ ! -x "${settings_python}" ]]; then
+    return 1
+  fi
+
+  "${settings_python}" - "${settings_file}" "${workspace_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+workspace = sys.argv[2]
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+data = {}
+if settings_path.exists():
+    try:
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+    except Exception:
+        data = {}
+
+data["default_workspace"] = workspace
+settings_path.write_text(
+    json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+desktop_dir="${user_home}/Desktop"
+if [[ ! -d "${desktop_dir}" ]]; then
+  desktop_dir="${user_home}"
 fi
 
-exec "${command_shim}"
+workspace="$(read_default_workspace || true)"
+workspace="${workspace//$'\r'/}"
+manual_workspace=0
+
+if [[ -z "${workspace}" ]]; then
+  echo "当前启动目录: ${desktop_dir}"
+  read -r -p "请输入工作区路径(直接回车使用桌面): " workspace_input
+  if [[ -z "${workspace_input}" ]]; then
+    workspace="${desktop_dir}"
+  else
+    workspace="${workspace_input}"
+    manual_workspace=1
+  fi
+fi
+
+if [[ ! -d "${workspace}" ]]; then
+  echo "工作区不存在: ${workspace}" >&2
+  read -r -n 1 -s -p "按任意键关闭此窗口..."
+  echo
+  exit 1
+fi
+
+if ((manual_workspace)); then
+  read -r -p "是否将该路径设为默认工作路径(以后打开小螃蟹都将这个路径作为工作路径)? [y/N]: " save_choice
+  case "${save_choice}" in
+    [Yy]|[Yy][Ee][Ss])
+      if save_default_workspace "${workspace}"; then
+        echo "已将默认工作区设置为: ${workspace}"
+      else
+        echo "保存默认工作区失败，但仍会使用当前工作区启动。" >&2
+      fi
+      ;;
+  esac
+fi
+
+if ! cd "${workspace}"; then
+  echo "切换工作区失败: ${workspace}" >&2
+  read -r -n 1 -s -p "按任意键关闭此窗口..."
+  echo
+  exit 1
+fi
+
+"${command_shim}"
+exit_code=$?
+if ((exit_code != 0)); then
+  echo "crab 已退出，退出码: ${exit_code}" >&2
+  read -r -n 1 -s -p "按任意键关闭此窗口..."
+  echo
+fi
+exit "${exit_code}"
 SH
 chmod +x "${protocol_launcher}"
 

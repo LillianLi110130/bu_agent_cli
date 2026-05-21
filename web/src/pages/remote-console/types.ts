@@ -2,6 +2,7 @@ export type SubmitStatus =
   | 'idle'
   | 'submitting'
   | 'submitted'
+  | 'reconnecting'
   | 'processing'
   | 'completed'
   | 'failed';

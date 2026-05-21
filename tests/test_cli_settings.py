@@ -89,6 +89,11 @@ async def test_settings_command_can_set_default_workspace(
     await cli._execute_input_text(str(target_workspace))
 
     assert get_default_workspace() == target_workspace.resolve()
+    assert cli._ctx.working_dir == target_workspace.resolve()
+    assert cli._ctx.root_dir == target_workspace.resolve()
+    assert cli._resume_handler._workspace_dir == target_workspace.resolve()
+    assert cli._settings_handler._workspace_dir == target_workspace.resolve()
+    assert cli._at_registry._skill_dirs[-1] == target_workspace.resolve() / "skills"
     assert "默认工作区已保存：" in output.getvalue()
     assert cli._settings_handler.active is True
 
