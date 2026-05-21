@@ -51,6 +51,9 @@ class ResumeSlashHandler:
     def bind_store(self, store: CLISessionStore | None) -> None:
         self._store = store
 
+    def bind_workspace_dir(self, workspace_dir: Path) -> None:
+        self._workspace_dir = workspace_dir
+
     def start_pick_mode(self, *, current_session_id: str) -> None:
         """List resumable sessions for the current workspace and enter picker mode."""
         if self._store is None:

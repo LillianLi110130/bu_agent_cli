@@ -598,9 +598,32 @@ class TGAgentCLI:
         self._settings_handler = SettingsSlashHandler(
             console=self._console,
             workspace_dir=self._ctx.working_dir,
+            on_workspace_selected=self._apply_workspace_selection,
         )
         if self._bridge_store is not None:
             self._bridge_store.initialize()
+
+    def _workspace_skill_dirs(self, workspace_dir: Path | None = None) -> list[Path]:
+        resolved_workspace = (workspace_dir or self._ctx.working_dir).resolve()
+        return [
+            builtin_skills_dir(),
+            user_skills_dir(),
+            resolved_workspace / "skills",
+        ]
+
+    def _apply_workspace_selection(self, workspace_dir: Path) -> None:
+        resolved_workspace = workspace_dir.expanduser().resolve()
+        self._ctx.root_dir = resolved_workspace
+        self._ctx.working_dir = resolved_workspace
+        self._ctx.allowed_dirs = [resolved_workspace, tg_agent_home().resolve()]
+        self._ctx.load_ignore_rules()
+
+        self._resume_handler.bind_workspace_dir(resolved_workspace)
+        self._settings_handler.bind_workspace_dir(resolved_workspace)
+
+        self._at_registry.discover_skills(skill_dirs=self._workspace_skill_dirs(resolved_workspace))
+        if self._skill_runtime_service is not None:
+            self._skill_runtime_service.refresh_agent_prompt()
 
     def _initialize_session_store(self) -> None:
         """Initialize user-level conversation history storage if available."""

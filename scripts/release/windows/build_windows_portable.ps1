@@ -644,6 +644,7 @@ $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
 $BashCommandShim = Join-Path $BinDir "crab"
 $ProtocolLauncher = Join-Path $BinDir "crab-protocol-launcher.bat"
+$ProtocolLauncherPs1 = Join-Path $BinDir "crab-protocol-launcher.ps1"
 $LegacyCommandExe = Join-Path $BinDir "crab.exe"
 $LegacyCommandScript = Join-Path $BinDir "crab-script.py"
 $LegacyTgAgentEntryShim = Join-Path $BinDir "tg-agent-entry.py"
@@ -760,7 +761,7 @@ function Add-UserPathEntry {
 
 function Notify-EnvironmentChange {
     try {
-        Add-Type -Namespace TgAgentPortable -Name NativeMethods -MemberDefinition @"
+        $nativeMethodsDefinition = @"
 using System;
 using System.Runtime.InteropServices;
 
@@ -776,7 +777,9 @@ public static class NativeMethods
         uint uTimeout,
         out UIntPtr lpdwResult);
 }
-"@ -ErrorAction SilentlyContinue | Out-Null
+"@
+
+        Add-Type -Namespace TgAgentPortable -Name NativeMethods -MemberDefinition $nativeMethodsDefinition -ErrorAction SilentlyContinue | Out-Null
 
         $HWND_BROADCAST = [IntPtr]0xffff
         $WM_SETTINGCHANGE = 0x001A
@@ -978,35 +981,173 @@ Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encodi
 $protocolLauncherContent = @(
     '@echo off',
     'setlocal',
-    'set "CRAB_URL=%~1"',
-    'if /I "%CRAB_URL:~0,11%"=="crab://open" goto launch',
-    'if /I "%CRAB_URL:~0,13%"=="crab://launch" goto launch',
-    'exit /b 1',
-    '',
-    ':launch',
-    'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
-    'set "COMMAND_SHIM=%INSTALL_ROOT%\bin\crab.cmd"',
-    'if not exist "%COMMAND_SHIM%" (',
-    '    echo crab is not installed.',
-    '    echo Run deploy.bat from the portable bundle first.',
-    '    exit /b 1',
-    ')',
-    'if exist "%USERPROFILE%\Desktop" (',
-    '    cd /d "%USERPROFILE%\Desktop"',
-    ') else (',
-    '    cd /d "%USERPROFILE%"',
-    ')',
-    'call "%COMMAND_SHIM%"',
+    'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dpn0.ps1" %*',
     'set "EXITCODE=%ERRORLEVEL%"',
-    'if not "%EXITCODE%"=="0" (',
-    '    echo.',
-    '    echo crab exited with code %EXITCODE%.',
-    '    echo Press any key to close this window.',
-    '    pause >nul',
-    ')',
+    'if not "%EXITCODE%"=="0" pause',
     'exit /b %EXITCODE%'
 ) -join "`r`n"
 Set-Content -LiteralPath $ProtocolLauncher -Value $protocolLauncherContent -Encoding ASCII
+
+$protocolLauncherPs1Content = @"
+param(
+    [Parameter(ValueFromRemainingArguments = __PS_DOLLAR__true)]
+    [string[]]__PS_DOLLAR__ProtocolArgs
+)
+
+__PS_DOLLAR__ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+function Decode-Text {
+    param([string]__PS_DOLLAR__Base64)
+
+    return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String(__PS_DOLLAR__Base64))
+}
+
+__PS_DOLLAR__protocolUrl = if (__PS_DOLLAR__ProtocolArgs.Count -gt 0) { __PS_DOLLAR__ProtocolArgs[0] } else { "" }
+if (-not (__PS_DOLLAR__protocolUrl.StartsWith("crab://open", [System.StringComparison]::OrdinalIgnoreCase) -or
+          __PS_DOLLAR__protocolUrl.StartsWith("crab://launch", [System.StringComparison]::OrdinalIgnoreCase))) {
+    exit 1
+}
+
+__PS_DOLLAR__installRoot = Join-Path __PS_DOLLAR__env:USERPROFILE ".tg_agent"
+__PS_DOLLAR__commandShim = Join-Path __PS_DOLLAR__installRoot "bin\crab.cmd"
+__PS_DOLLAR__settingsPath = Join-Path __PS_DOLLAR__installRoot "settings.json"
+__PS_DOLLAR__desktopPath = Join-Path __PS_DOLLAR__env:USERPROFILE "Desktop"
+__PS_DOLLAR__workspace = if (Test-Path -LiteralPath __PS_DOLLAR__desktopPath -PathType Container) { __PS_DOLLAR__desktopPath } else { __PS_DOLLAR__env:USERPROFILE }
+__PS_DOLLAR__defaultWorkspace = ""
+__PS_DOLLAR__manualWorkspaceSelected = __PS_DOLLAR__false
+
+function Save-DefaultWorkspace {
+    param(
+        [Parameter(Mandatory = __PS_DOLLAR__true)]
+        [string]__PS_DOLLAR__SettingsFilePath,
+        [Parameter(Mandatory = __PS_DOLLAR__true)]
+        [string]__PS_DOLLAR__WorkspacePath
+    )
+
+    __PS_DOLLAR__settings = @{}
+    if (Test-Path -LiteralPath __PS_DOLLAR__SettingsFilePath) {
+        try {
+            __PS_DOLLAR__loaded = Get-Content -LiteralPath __PS_DOLLAR__SettingsFilePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
+            if (__PS_DOLLAR__loaded -is [hashtable]) {
+                __PS_DOLLAR__settings = __PS_DOLLAR__loaded
+            }
+        }
+        catch {
+        }
+    }
+
+    __PS_DOLLAR__settings["default_workspace"] = [System.IO.Path]::GetFullPath(__PS_DOLLAR__WorkspacePath)
+    __PS_DOLLAR__settingsDir = Split-Path -Parent __PS_DOLLAR__SettingsFilePath
+    if (__PS_DOLLAR__settingsDir) {
+        New-Item -ItemType Directory -Path __PS_DOLLAR__settingsDir -Force | Out-Null
+    }
+
+    __PS_DOLLAR__json = __PS_DOLLAR__settings | ConvertTo-Json -Depth 10
+    [System.IO.File]::WriteAllText(__PS_DOLLAR__SettingsFilePath, __PS_DOLLAR__json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new(__PS_DOLLAR__false))
+}
+
+__PS_DOLLAR__msgCrabNotInstalled = Decode-Text "Y3JhYiDlsJrlsJrmnKrlronoo4U="
+__PS_DOLLAR__msgRunDeployFirst = Decode-Text "6K+35YWI5Zyo5L6/5pC65YyF5qC555uu5b2V6L+Q6KGMIGRlcGxveS5iYXQ="
+__PS_DOLLAR__msgCurrentStartupDir = Decode-Text "5b2T5YmN5ZCv5Yqo55uu5b2VOiB7MH0="
+__PS_DOLLAR__msgWorkspacePrompt = Decode-Text "6K+36L6T5YWl5bel5L2c5Yy66Lev5b6EKOebtOaOpeWbnui9puS9v+eUqOahjOmdoik="
+__PS_DOLLAR__msgWorkspaceMissing = Decode-Text "5bel5L2c5Yy655uu5b2V5LiN5a2Y5ZyoOiB7MH0="
+__PS_DOLLAR__msgSwitchFailed = Decode-Text "5peg5rOV5YiH5o2i5Yiw6YCJ5a6a55qE5bel5L2c5Yy6"
+__PS_DOLLAR__msgExitCode = Decode-Text "Y3JhYiDlt7LpgIDlh7osIOmAgOWHuueggTogezB9"
+__PS_DOLLAR__msgPressAnyKey = Decode-Text "6K+35oyJ5Lu75oSP6ZSu5YWz6Zet5q2k56qX5Y+j"
+__PS_DOLLAR__msgConfirmDefaultWorkspace = Decode-Text "5piv5ZCm5bCG6K+l6Lev5b6E6K6+5Li66buY6K6k5bel5L2c6Lev5b6E77yf5Lul5ZCO5omT5byA5bCP6J6D6J+56YO95bCG6L+Z5Liq6Lev5b6E5L2c5Li65bel5L2c6Lev5b6EICh5L04p"
+__PS_DOLLAR__msgDefaultWorkspaceSaved = Decode-Text "5bey5bCG6K+l6Lev5b6E5L+d5a2Y5Li66buY6K6k5bel5L2c6Lev5b6E"
+__PS_DOLLAR__msgDefaultWorkspaceUnchanged = Decode-Text "5pyq5L+u5pS56buY6K6k5bel5L2c6Lev5b6E"
+__PS_DOLLAR__msgDefaultWorkspaceSaveFailed = Decode-Text "5L+d5a2Y6buY6K6k5bel5L2c6Lev5b6E5aSx6LSlOiB7MH0="
+__PS_DOLLAR__msgUnexpectedError = Decode-Text "5ZCv5Yqo5aSx6LSlOiB7MH0="
+
+function Pause-OnError {
+    Write-Host __PS_DOLLAR__msgPressAnyKey
+    __PS_DOLLAR__null = __PS_DOLLAR__Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+}
+
+try {
+    if (-not (Test-Path -LiteralPath __PS_DOLLAR__commandShim)) {
+        Write-Host __PS_DOLLAR__msgCrabNotInstalled
+        Write-Host __PS_DOLLAR__msgRunDeployFirst
+        Pause-OnError
+        exit 1
+    }
+
+    if (Test-Path -LiteralPath __PS_DOLLAR__settingsPath) {
+        try {
+            __PS_DOLLAR__settings = Get-Content -LiteralPath __PS_DOLLAR__settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            __PS_DOLLAR__value = [string]__PS_DOLLAR__settings.default_workspace
+            if (-not [string]::IsNullOrWhiteSpace(__PS_DOLLAR__value)) {
+                __PS_DOLLAR__defaultWorkspace = __PS_DOLLAR__value.Trim()
+            }
+        }
+        catch {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace(__PS_DOLLAR__defaultWorkspace)) {
+        Write-Host (__PS_DOLLAR__msgCurrentStartupDir -f __PS_DOLLAR__workspace)
+        __PS_DOLLAR__userWorkspaceInput = Read-Host __PS_DOLLAR__msgWorkspacePrompt
+        if (-not [string]::IsNullOrWhiteSpace(__PS_DOLLAR__userWorkspaceInput)) {
+            __PS_DOLLAR__workspace = __PS_DOLLAR__userWorkspaceInput.Trim().Trim('"')
+            __PS_DOLLAR__manualWorkspaceSelected = __PS_DOLLAR__true
+        }
+    } else {
+        __PS_DOLLAR__workspace = __PS_DOLLAR__defaultWorkspace
+    }
+
+    if (-not (Test-Path -LiteralPath __PS_DOLLAR__workspace -PathType Container)) {
+        Write-Host (__PS_DOLLAR__msgWorkspaceMissing -f __PS_DOLLAR__workspace)
+        Pause-OnError
+        exit 1
+    }
+
+    if (__PS_DOLLAR__manualWorkspaceSelected) {
+        __PS_DOLLAR__saveChoice = Read-Host __PS_DOLLAR__msgConfirmDefaultWorkspace
+        if (__PS_DOLLAR__saveChoice -match '^(?i:y|yes)$') {
+            try {
+                Save-DefaultWorkspace -SettingsFilePath __PS_DOLLAR__settingsPath -WorkspacePath __PS_DOLLAR__workspace
+                Write-Host __PS_DOLLAR__msgDefaultWorkspaceSaved
+            }
+            catch {
+                Write-Host (__PS_DOLLAR__msgDefaultWorkspaceSaveFailed -f __PS_DOLLAR___.Exception.Message)
+            }
+        }
+        else {
+            Write-Host __PS_DOLLAR__msgDefaultWorkspaceUnchanged
+        }
+    }
+
+    try {
+        Set-Location -LiteralPath __PS_DOLLAR__workspace
+    }
+    catch {
+        Write-Host __PS_DOLLAR__msgSwitchFailed
+        Pause-OnError
+        exit 1
+    }
+
+    & __PS_DOLLAR__commandShim
+    __PS_DOLLAR__exitCode = __PS_DOLLAR__LASTEXITCODE
+    if (__PS_DOLLAR__exitCode -ne 0) {
+        Write-Host ""
+        Write-Host (__PS_DOLLAR__msgExitCode -f __PS_DOLLAR__exitCode)
+        Pause-OnError
+    }
+
+    exit __PS_DOLLAR__exitCode
+}
+catch {
+    Write-Host ""
+    Write-Host (__PS_DOLLAR__msgUnexpectedError -f __PS_DOLLAR___.Exception.Message)
+    Pause-OnError
+    exit 1
+}
+"@
+$protocolLauncherPs1Content = $protocolLauncherPs1Content.Replace('__PS_DOLLAR__', '$')
+$utf8WithBom = New-Object System.Text.UTF8Encoding($true)
+[System.IO.File]::WriteAllText($ProtocolLauncherPs1, $protocolLauncherPs1Content, $utf8WithBom)
 
 foreach ($legacyPath in @(
     $LegacyCommandExe,
