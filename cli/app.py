@@ -594,7 +594,6 @@ class TGAgentCLI:
         )
         self._seen_team_inbox_message_ids: set[str] = set()
         self._team_auto_trigger_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._team_auto_trigger_suppressed_team_ids: set[str] = set()
         self._active_bridge_cancel_event: asyncio.Event | None = None
         self._active_bridge_request: BridgeRequest | None = None
         self._foreground_subagent_cancel_task: asyncio.Task[None] | None = None
@@ -2906,24 +2905,16 @@ class TGAgentCLI:
                 return
             self._team_auto_trigger_queue.task_done()
 
-    def _suppress_team_auto_triggers(self, team_id: str) -> None:
-        self._team_auto_trigger_suppressed_team_ids.add(team_id)
-        self._clear_team_auto_trigger_queue()
-
-    def _release_team_auto_trigger_suppression_if_inactive(self, team_id: str) -> None:
-        runtime = self._ctx.team_runtime
-        try:
-            active_team_id = runtime.get_active_team() if runtime is not None else None
-        except Exception:
-            active_team_id = None
-        if active_team_id != team_id:
-            self._team_auto_trigger_suppressed_team_ids.discard(team_id)
-
     def _is_suppressed_team_auto_trigger_request(self, request: BridgeRequest) -> bool:
         if request.source_meta.get("kind") != "team_inbox_auto_trigger":
             return False
         team_id = str(request.source_meta.get("team_id") or "")
-        return bool(team_id and team_id in self._team_auto_trigger_suppressed_team_ids)
+        runtime = self._ctx.team_runtime
+        return bool(
+            runtime is not None
+            and bool(team_id)
+            and getattr(runtime, "is_shutdown_in_progress", lambda _team_id: False)(team_id)
+        )
 
     def _request_active_team_shutdown_from_cancel(self) -> bool:
         runtime = self._ctx.team_runtime
@@ -2932,7 +2923,7 @@ class TGAgentCLI:
         team_id = runtime.get_active_team()
         if team_id is None:
             return False
-        self._suppress_team_auto_triggers(team_id)
+        getattr(runtime, "mark_shutdown_in_progress", lambda _team_id: None)(team_id)
         if (
             self._active_team_cancel_shutdown_task is not None
             and not self._active_team_cancel_shutdown_task.done()
@@ -2958,8 +2949,6 @@ class TGAgentCLI:
             self._console.print(f"[red]关闭 active team 失败：{exc}[/red]")
         else:
             self._console.print(f"[yellow]已关闭 active team：[/yellow]{team_id}")
-        finally:
-            self._release_team_auto_trigger_suppression_if_inactive(team_id)
 
     def _request_foreground_subagent_cancel_from_terminal(self) -> bool:
         executor = self._ctx.subagent_executor
@@ -3291,11 +3280,16 @@ class TGAgentCLI:
             except Exception:
                 continue
             if not team_id:
-                self._team_auto_trigger_suppressed_team_ids.clear()
                 self._clear_team_auto_trigger_queue()
                 continue
 
-            if team_id in self._team_auto_trigger_suppressed_team_ids:
+            shutdown_in_progress = getattr(
+                runtime,
+                "is_shutdown_in_progress",
+                lambda _team_id: False,
+            )(team_id)
+            if shutdown_in_progress:
+                self._clear_team_auto_trigger_queue()
                 continue
 
             try:
@@ -3394,7 +3388,19 @@ class TGAgentCLI:
 
     async def _drain_team_auto_trigger_queue(self) -> bool:
         """Run queued team inbox auto triggers when no bridge queue is configured."""
-        if self._team_auto_trigger_suppressed_team_ids:
+        runtime = getattr(self._ctx, "team_runtime", None)
+        try:
+            active_team_id = runtime.get_active_team() if runtime is not None else None
+        except Exception:
+            active_team_id = None
+        shutdown_in_progress = (
+            runtime is not None
+            and active_team_id is not None
+            and getattr(runtime, "is_shutdown_in_progress", lambda _team_id: False)(
+                active_team_id
+            )
+        )
+        if shutdown_in_progress:
             self._clear_team_auto_trigger_queue()
             return True
 

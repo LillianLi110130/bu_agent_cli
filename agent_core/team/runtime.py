@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -81,6 +82,8 @@ class TeamRuntime:
         self.store = TeamStore(self.teams_root)
         self._popen_factory = popen_factory or subprocess.Popen
         self._member_processes: dict[tuple[str, str], subprocess.Popen] = {}
+        self._shutdown_in_progress: set[str] = set()
+        self._shutdown_lock = threading.RLock()
 
     def create_team(self, *, name: str, goal: str) -> TeamConfig:
         return self.store.create_team(
@@ -121,6 +124,14 @@ class TeamRuntime:
         if not state.active:
             return None
         return config
+
+    def is_shutdown_in_progress(self, team_id: str) -> bool:
+        with self._shutdown_lock:
+            return team_id in self._shutdown_in_progress
+
+    def mark_shutdown_in_progress(self, team_id: str) -> None:
+        with self._shutdown_lock:
+            self._shutdown_in_progress.add(team_id)
 
     def ensure_can_start_team(self) -> None:
         active = self.get_active_running_team()
@@ -271,33 +282,39 @@ class TeamRuntime:
         return pending
 
     def shutdown_team(self, team_id: str, *, grace_seconds: float = 10.0) -> None:
-        config = self.store.load_config(team_id)
-        state = self.store.read_state(team_id)
-        if (
-            config.status in TERMINAL_TEAM_STATUSES
-            or not state.active
-        ):
-            raise ValueError(
-                f"Team '{team_id}' 已经关闭"
-                f"（status={config.status}, active={state.active}）。"
+        with self._shutdown_lock:
+            self._shutdown_in_progress.add(team_id)
+        try:
+            config = self.store.load_config(team_id)
+            state = self.store.read_state(team_id)
+            if (
+                config.status in TERMINAL_TEAM_STATUSES
+                or not state.active
+            ):
+                raise ValueError(
+                    f"Team '{team_id}' 已经关闭"
+                    f"（status={config.status}, active={state.active}）。"
+                )
+            requested: list[str] = []
+            for member in self.store.list_members(team_id):
+                if member.status not in {"stopped", "failed"}:
+                    self.request_stop_member(team_id, member.member_id)
+                    requested.append(member.member_id)
+            timed_out = self.wait_for_members_stopped(
+                team_id,
+                requested,
+                timeout_seconds=grace_seconds,
             )
-        requested: list[str] = []
-        for member in self.store.list_members(team_id):
-            if member.status not in {"stopped", "failed"}:
-                self.request_stop_member(team_id, member.member_id)
-                requested.append(member.member_id)
-        timed_out = self.wait_for_members_stopped(
-            team_id,
-            requested,
-            timeout_seconds=grace_seconds,
-        )
-        for member_id in timed_out:
-            self.terminate_member(team_id, member_id)
-        for member_id in requested:
-            self.reap_member_process(team_id, member_id, timeout_seconds=0.2)
-        self.store.update_config_status(team_id, "shutdown")
-        self.store.write_state(team_id, active=False)
-        self.clear_active_team(team_id)
+            for member_id in timed_out:
+                self.terminate_member(team_id, member_id)
+            for member_id in requested:
+                self.reap_member_process(team_id, member_id, timeout_seconds=0.2)
+            self.store.update_config_status(team_id, "shutdown")
+            self.store.write_state(team_id, active=False)
+            self.clear_active_team(team_id)
+        finally:
+            with self._shutdown_lock:
+                self._shutdown_in_progress.discard(team_id)
 
     def create_task(
         self,
