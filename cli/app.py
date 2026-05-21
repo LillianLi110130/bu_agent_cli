@@ -516,7 +516,8 @@ class TGAgentCLI:
         self._console_recording_suppressed = 0
         self._output_history: list[_OutputEntry] = []
         self._is_replaying_output_history = False
-        self._output_history_limit = 200
+        self._output_history_limit = 1000
+        self._output_history_hidden_count = 0
         self._console = _HistoryConsole(Console(), self._record_console_print)
         self._agent = agent
         self._ctx = context
@@ -1771,7 +1772,24 @@ class TGAgentCLI:
             return
         self._output_history.append(_OutputEntry(kind=kind, payload=payload))
         if len(self._output_history) > self._output_history_limit:
-            self._output_history = self._output_history[-self._output_history_limit :]
+            self._trim_output_history()
+
+    def _trim_output_history(self) -> None:
+        overflow = len(self._output_history) - self._output_history_limit
+        if overflow <= 0:
+            return
+        pinned_entries = []
+        start_index = 0
+        if self._output_history and self._output_history[0].kind == "welcome":
+            pinned_entries = [self._output_history[0]]
+            start_index = 1
+
+        trim_end = min(start_index + overflow, len(self._output_history))
+        hidden_now = max(0, trim_end - start_index)
+        if hidden_now <= 0:
+            return
+        self._output_history_hidden_count += hidden_now
+        self._output_history = pinned_entries + self._output_history[trim_end:]
 
     def _repaint_output_history(self, *, preserve_activity: bool = False) -> None:
         if not self._output_history or self._terminal_approval_prompt is not None:
@@ -1784,9 +1802,20 @@ class TGAgentCLI:
         try:
             for entry in self._output_history:
                 self._render_output_entry(entry)
+                if entry.kind == "welcome" and self._output_history_hidden_count:
+                    self._render_output_history_hidden_notice()
         finally:
             self._is_replaying_output_history = False
         self._invalidate_terminal_ui()
+
+    def _render_output_history_hidden_notice(self) -> None:
+        self._console.print(
+            Text(
+                f"... earlier {self._output_history_hidden_count} output entries hidden ...",
+                style="#9ca3af",
+            )
+        )
+        self._console.print()
 
     def _render_output_entry(self, entry: _OutputEntry) -> None:
         if entry.kind == "welcome":
@@ -3603,6 +3632,7 @@ class TGAgentCLI:
     def _print_welcome(self):
         """Print welcome message."""
         self._output_history.clear()
+        self._output_history_hidden_count = 0
         self._remember_output("welcome")
         with self._suspend_output_recording():
             self._render_welcome(clear=True)
