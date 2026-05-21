@@ -3379,14 +3379,17 @@ class TGAgentCLI:
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
             "Instructions:\n"
             "- Treat `clarification_request` messages as coordination blockers.\n"
-            "- Treat `task_done_notification` as a signal to inspect team_snapshot and decide whether to assign follow-up work, verify, or finish.\n"
-            "- Treat `task_blocked_notification` as a signal to inspect the blocked task, reply with `message` or `clarification_response`, or reassign/fix the task.\n"
-            "- Treat `worker_failed` as a signal to inspect member state and decide whether to reassign work or spawn a replacement.\n"
-            "- Treat `idle_notification` as a signal to inspect pending tasks and either assign more work or start completion/shutdown when the team is done.\n"
+            "- Treat `task_done_notification` as a signal to update or verify the referenced task from the message metadata/body. Do not call `team_snapshot` unless the message lacks the task state you need.\n"
+            "- Treat `task_blocked_notification` as a signal to answer, reassign, or fix the blocked task from the message metadata/body. Use `team_snapshot` only if the blocker cannot be identified from the message.\n"
+            "- Treat `worker_failed` as a signal to decide whether to reassign work or spawn a replacement. Prefer the message error and known task IDs before reading a full snapshot.\n"
+            "- Treat `idle_notification` as a signal that this teammate is standing by. Assign known pending work if you already know it; otherwise stop the turn and wait for the next event unless a single state read is necessary.\n"
+            "- `team_snapshot` is context-expensive. In this auto-trigger turn, call it at most once, and only when the inbox messages do not contain enough information to choose a safe next action.\n"
+            "- Prefer targeted tools over full snapshots: use `team_list_tasks` if you only need task statuses, `team_update_task` to change tasks, and `team_send_message` to reply.\n"
             "- Answer from available context when safe.\n"
             "- If the user must decide, ask the user one concise question before unblocking the teammate.\n"
             "- Reply to the teammate with `team_send_message`, using type `message` for coordination or `clarification_response` for answers to blocker questions.\n"
             "- Do not create a new team while handling this inbox trigger.\n"
+            "- Do not sleep/wait and then poll `team_snapshot`. If there is no actionable next step, end this turn.\n"
         )
 
     async def _drain_team_auto_trigger_queue(self) -> bool:
