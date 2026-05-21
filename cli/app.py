@@ -2614,6 +2614,34 @@ class TGAgentCLI:
             self._console.print(f"[yellow]{success_message}[/yellow]")
         return final_response
 
+    @staticmethod
+    def _disable_agent_tool_for_turn(
+        agent: Agent,
+        tool_name: str,
+    ) -> tuple[list[Any], dict[str, Any]] | None:
+        """Temporarily hide one tool from an agent for the current turn."""
+        if not any(tool.name == tool_name for tool in agent.tools):
+            return None
+
+        original_tools = list(agent.tools)
+        original_tool_map = dict(getattr(agent, "_tool_map", {}))
+        agent.tools = [tool for tool in agent.tools if tool.name != tool_name]
+        agent._tool_map = {
+            name: tool
+            for name, tool in getattr(agent, "_tool_map", {}).items()
+            if name != tool_name
+        }
+        return original_tools, original_tool_map
+
+    @staticmethod
+    def _restore_agent_tools(
+        agent: Agent,
+        snapshot: tuple[list[Any], dict[str, Any]] | None,
+    ) -> None:
+        if snapshot is None:
+            return
+        agent.tools, agent._tool_map = snapshot
+
     async def _run_agent(
         self,
         user_input: UserInputPayload,
@@ -2653,6 +2681,7 @@ class TGAgentCLI:
         thinking_line_buffer = ""
         thinking_line_started = False
         pending_leading_thinking_blank_lines = 0
+        disabled_tool_snapshot: tuple[list[Any], dict[str, Any]] | None = None
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2696,6 +2725,12 @@ class TGAgentCLI:
                 thinking_line_buffer = ""
 
         try:
+            if has_image:
+                disabled_tool_snapshot = self._disable_agent_tool_for_turn(
+                    active_agent,
+                    "analyze_image",
+                )
+
             # Pass cancel_event to agent for immediate cancellation
             async for event in active_agent.query_stream(
                 user_input,
@@ -2805,6 +2840,7 @@ class TGAgentCLI:
             if owns_cancel_event:
                 run_cancel_event.set()
             self._interactive_terminal_ui_enabled = previous_interactive_terminal_ui_enabled
+            self._restore_agent_tools(active_agent, disabled_tool_snapshot)
 
         # Ensure loading is stopped
         self._stop_loading(self._loading)
