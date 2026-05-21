@@ -17,8 +17,6 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
-from rich.text import Text
-
 from cli.at_commands import AtCommandCompleter, parse_at_command
 from cli.slash_commands import SlashCommandCompleter, parse_slash_command
 
@@ -40,6 +38,8 @@ class TGAgentTUI:
         self._suspend_prompt_for_active_task = False
         self._prompt_spinner_index = 0
         self._prompt_spinner_active = False
+        self._last_console_size = cli._console.size
+        self._resize_repaint_at: float | None = None
 
     async def run(self) -> None:
         old_tui_enabled = self._cli._fixed_input_tui_enabled
@@ -237,6 +237,9 @@ class TGAgentTUI:
                 return
 
         while True:
+            self._schedule_resize_repaint_if_needed()
+            self._repaint_after_resize_if_ready()
+
             if self._prompt_task is None and (
                 self._active_task is None or not self._suspend_prompt_for_active_task
             ):
@@ -288,6 +291,22 @@ class TGAgentTUI:
             if not should_continue:
                 return
 
+    def _schedule_resize_repaint_if_needed(self) -> None:
+        current_size = self._cli._console.size
+        if current_size == self._last_console_size:
+            return
+        self._last_console_size = current_size
+        self._resize_repaint_at = asyncio.get_running_loop().time() + 0.2
+
+    def _repaint_after_resize_if_ready(self) -> None:
+        if self._resize_repaint_at is None:
+            return
+        if asyncio.get_running_loop().time() < self._resize_repaint_at:
+            return
+        self._resize_repaint_at = None
+        self._cli._repaint_output_history(preserve_activity=True)
+        self._invalidate_prompt()
+
     async def _prompt_async(self) -> str:
         with patch_stdout(raw=True):
             return await self._session.prompt_async()
@@ -307,7 +326,7 @@ class TGAgentTUI:
             )
             return True
 
-        self._print_user_input_record(user_input)
+        self._cli._print_user_input_record(user_input)
 
         if self._cli._is_immediate_local_exit_input(user_input):
             self._cli._console.print("[yellow]再见！[/yellow]")
@@ -338,19 +357,6 @@ class TGAgentTUI:
             return False
         subcommand = command.args[0].lower() if command.args else ""
         return subcommand in {"create", "edit", "delete", "reload"}
-
-    def _print_user_input_record(self, user_input: str) -> None:
-        self._cli._console.print()
-        lines = user_input.splitlines() or [""]
-        columns = max(20, shutil.get_terminal_size((80, 20)).columns - 1)
-        for index, line in enumerate(lines):
-            prefix = ">>> " if index == 0 else "... "
-            content = f"{prefix}{line}"
-            self._cli._console.print(
-                Text(content.ljust(columns), style="white on grey23"),
-                overflow="crop",
-                crop=True,
-            )
 
     async def _execute_input(self, text: str) -> None:
         try:

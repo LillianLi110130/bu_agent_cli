@@ -15,6 +15,7 @@ import threading
 import time
 import hashlib
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape as html_escape
@@ -442,6 +443,31 @@ class _ConsoleMirror:
         return getattr(self._primary, name)
 
 
+@dataclass
+class _OutputEntry:
+    kind: str
+    payload: dict[str, Any]
+
+
+class _HistoryConsole:
+    """Record otherwise-unstructured console prints while delegating to Rich."""
+
+    def __init__(
+        self,
+        primary: Console,
+        record_print: Callable[[tuple[Any, ...], dict[str, Any]], None],
+    ):
+        self._primary = primary
+        self._record_print = record_print
+
+    def print(self, *args, **kwargs):
+        self._record_print(args, dict(kwargs))
+        self._primary.print(*args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._primary, name)
+
+
 # =============================================================================
 # CLI Application
 # =============================================================================
@@ -461,7 +487,6 @@ class TGAgentCLI:
     COLOR_FINAL = "bold green"
     IMAGE_DETAIL_MAX_CHARS = 2200
     IMAGE_MEMORY_MAX_CHARS = 600
-    PANEL_MAX_WIDTH = 120
     BRIDGE_POLL_INTERVAL_SECONDS = 0.1
     TEAM_INBOX_POLL_INTERVAL_SECONDS = 1.0
     TEAM_AUTO_TRIGGER_TYPES = LEAD_AUTO_TRIGGER_MESSAGE_TYPES
@@ -488,7 +513,11 @@ class TGAgentCLI:
             agent: Configured Agent instance
             context: SandboxContext for the session
         """
-        self._console = Console()
+        self._console_recording_suppressed = 0
+        self._output_history: list[_OutputEntry] = []
+        self._is_replaying_output_history = False
+        self._output_history_limit = 200
+        self._console = _HistoryConsole(Console(), self._record_console_print)
         self._agent = agent
         self._ctx = context
         setattr(self._agent, "_sandbox_context", self._ctx)
@@ -1381,14 +1410,16 @@ class TGAgentCLI:
 
     def _capture_console_output(self, callback: Callable[[], None]) -> str:
         """Capture synchronous Rich console output as plain text."""
-        with self._console.capture() as capture:
-            callback()
+        with self._suspend_output_recording():
+            with self._console.capture() as capture:
+                callback()
         return capture.get().strip()
 
     async def _capture_console_output_async(self, callback: Callable[[], Any]) -> str:
         """Capture async Rich console output as plain text."""
-        with self._console.capture() as capture:
-            await callback()
+        with self._suspend_output_recording():
+            with self._console.capture() as capture:
+                await callback()
         return capture.get().strip()
 
     async def _capture_console_output_with_result_async(
@@ -1396,8 +1427,9 @@ class TGAgentCLI:
         callback: Callable[[], Any],
     ) -> tuple[Any, str]:
         """Capture async Rich console output and return the callback result."""
-        with self._console.capture() as capture:
-            result = await callback()
+        with self._suspend_output_recording():
+            with self._console.capture() as capture:
+                result = await callback()
         return result, capture.get().strip()
 
     def _print_remote_reset_console_output(self, final_content: str | None) -> None:
@@ -1710,7 +1742,88 @@ class TGAgentCLI:
         )
 
     def _panel_width(self) -> int:
-        return min(self._console.width, self.PANEL_MAX_WIDTH)
+        return self._console.width
+
+    def _clear_terminal_screen(self) -> None:
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[H\033[2J\033[3J")
+            sys.stdout.flush()
+        self._console.clear()
+
+    def _record_console_print(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
+        if self._console_recording_suppressed > 0:
+            return
+        self._remember_output("console_print", args=args, kwargs=kwargs)
+
+    @contextmanager
+    def _suspend_output_recording(self):
+        self._console_recording_suppressed += 1
+        try:
+            yield
+        finally:
+            self._console_recording_suppressed = max(
+                0,
+                self._console_recording_suppressed - 1,
+            )
+
+    def _remember_output(self, kind: str, **payload: Any) -> None:
+        if self._is_replaying_output_history:
+            return
+        self._output_history.append(_OutputEntry(kind=kind, payload=payload))
+        if len(self._output_history) > self._output_history_limit:
+            self._output_history = self._output_history[-self._output_history_limit :]
+
+    def _repaint_output_history(self, *, preserve_activity: bool = False) -> None:
+        if not self._output_history or self._terminal_approval_prompt is not None:
+            return
+        if not preserve_activity:
+            self._stop_loading(self._loading)
+            self._loading = None
+        self._clear_terminal_screen()
+        self._is_replaying_output_history = True
+        try:
+            for entry in self._output_history:
+                self._render_output_entry(entry)
+        finally:
+            self._is_replaying_output_history = False
+        self._invalidate_terminal_ui()
+
+    def _render_output_entry(self, entry: _OutputEntry) -> None:
+        if entry.kind == "welcome":
+            self._render_welcome(clear=False)
+        elif entry.kind == "tool_step_title":
+            self._render_tool_step_title(
+                int(entry.payload["step_number"]),
+                str(entry.payload["tool_name"]),
+            )
+        elif entry.kind == "tool_args":
+            self._render_tool_args(entry.payload["args"])
+        elif entry.kind == "tool_result":
+            self._render_tool_result(
+                entry.payload["result"],
+                is_error=bool(entry.payload["is_error"]),
+            )
+        elif entry.kind == "final_markdown":
+            self._render_final_markdown(str(entry.payload.get("content") or ""))
+        elif entry.kind == "user_input":
+            self._render_user_input_record(str(entry.payload.get("text") or ""))
+        elif entry.kind == "help_panel":
+            self._render_help_panel()
+        elif entry.kind == "slash_help":
+            self._render_slash_help()
+        elif entry.kind == "slash_command_detail":
+            self._render_slash_command_detail(str(entry.payload.get("command_name") or ""))
+        elif entry.kind == "available_skills":
+            self._render_available_skills()
+        elif entry.kind == "approval_request":
+            self._render_approval_request(entry.payload["request"])
+        elif entry.kind == "subagent_task_notification":
+            self._render_subagent_task_notification(entry.payload["result"])
+        elif entry.kind == "console_print":
+            self._console.print(
+                *entry.payload.get("args", ()),
+                **entry.payload.get("kwargs", {}),
+            )
 
     def _truncate_tool_result_lines(self, value: str, *, max_lines: int = 5) -> tuple[str, int]:
         lines = value.splitlines()
@@ -1823,6 +1936,11 @@ class TGAgentCLI:
         return value
 
     def _print_tool_args(self, args: Any) -> None:
+        self._remember_output("tool_args", args=args)
+        with self._suspend_output_recording():
+            self._render_tool_args(args)
+
+    def _render_tool_args(self, args: Any) -> None:
         preview_args = self._compact_tool_arg_value(args)
         args_json = json.dumps(preview_args, ensure_ascii=False, indent=2, default=str)
         self._console.print(
@@ -1840,6 +1958,11 @@ class TGAgentCLI:
         )
 
     def _print_tool_result(self, result: Any, *, is_error: bool) -> None:
+        self._remember_output("tool_result", result=result, is_error=is_error)
+        with self._suspend_output_recording():
+            self._render_tool_result(result, is_error=is_error)
+
+    def _render_tool_result(self, result: Any, *, is_error: bool) -> None:
         title = "Failed" if is_error else "Done"
         border_style = self.COLOR_ERROR if is_error else "#9cd7ff"
         title_style = f"bold {border_style}"
@@ -1876,6 +1999,15 @@ class TGAgentCLI:
         )
 
     def _print_tool_step_title(self, step_number: int, tool_name: str) -> None:
+        self._remember_output(
+            "tool_step_title",
+            step_number=step_number,
+            tool_name=tool_name,
+        )
+        with self._suspend_output_recording():
+            self._render_tool_step_title(step_number, tool_name)
+
+    def _render_tool_step_title(self, step_number: int, tool_name: str) -> None:
         title = Text()
         title.append("● ", style="bold #ff7a59")
         title.append(f"步骤 {step_number}", style="bold #ff7a59")
@@ -1886,6 +2018,36 @@ class TGAgentCLI:
 
     def _print_response_title(self) -> None:
         self._console.print(Text("✦ ", style="bold #c084fc"), end="")
+
+    def _print_user_input_record(self, user_input: str) -> None:
+        self._remember_output("user_input", text=user_input)
+        with self._suspend_output_recording():
+            self._render_user_input_record(user_input)
+
+    def _render_user_input_record(self, user_input: str) -> None:
+        self._console.print()
+        lines = user_input.splitlines() or [""]
+        columns = max(20, self._console.size.width - 1)
+        for index, line in enumerate(lines):
+            prefix = ">>> " if index == 0 else "... "
+            content = f"{prefix}{line}"
+            self._console.print(
+                Text(content.ljust(columns), style="white on grey23"),
+                overflow="crop",
+                crop=True,
+            )
+
+    def _print_final_markdown(self, content: str | None) -> None:
+        if not content:
+            return
+        self._remember_output("final_markdown", content=content)
+        with self._suspend_output_recording():
+            self._render_final_markdown(content)
+
+    def _render_final_markdown(self, content: str) -> None:
+        self._console.print()
+        self._print_response_title()
+        self._console.print(Markdown(content, style="#e5e7eb"))
 
     @staticmethod
     def _is_delegate_tool(tool_name: str) -> bool:
@@ -2345,6 +2507,11 @@ class TGAgentCLI:
 
     def _print_available_skills(self):
         """Print all available @ skills grouped by category."""
+        self._remember_output("available_skills")
+        with self._suspend_output_recording():
+            self._render_available_skills()
+
+    def _render_available_skills(self) -> None:
         self._console.print()
         self._console.print("[bold cyan]可用技能（@）：[/bold cyan]")
         self._console.print("[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]")
@@ -2467,11 +2634,6 @@ class TGAgentCLI:
             pending_intermediate_text.clear()
             if content:
                 intermediate_text_callback(content)
-
-        def print_markdown_response(content: str | None) -> None:
-            if not content:
-                return
-            self._console.print(Markdown(content, style="#e5e7eb"))
 
         def stop_loading_for_visible_output() -> None:
             if self._loading is not None:
@@ -2603,9 +2765,7 @@ class TGAgentCLI:
                     self._loading = None
                     markdown_content = event.content or "".join(assistant_text_parts)
                     final_response = markdown_content
-                    self._console.print()
-                    self._print_response_title()
-                    print_markdown_response(markdown_content)
+                    self._print_final_markdown(markdown_content)
 
         except Exception as e:
             self._stop_loading(self._loading)
@@ -3442,11 +3602,14 @@ class TGAgentCLI:
 
     def _print_welcome(self):
         """Print welcome message."""
-        if sys.stdout.isatty():
-            sys.stdout.write("\033[H\033[2J\033[3J")
-            sys.stdout.flush()
-        self._console.clear()
+        self._output_history.clear()
+        self._remember_output("welcome")
+        with self._suspend_output_recording():
+            self._render_welcome(clear=True)
 
+    def _render_welcome(self, *, clear: bool) -> None:
+        if clear:
+            self._clear_terminal_screen()
         accent = "#ff7a59"
         gold = "#ffd166"
         coral = "#ff6b57"
@@ -3569,6 +3732,11 @@ class TGAgentCLI:
 
     def _print_help(self):
         """Print help information."""
+        self._remember_output("help_panel")
+        with self._suspend_output_recording():
+            self._render_help_panel()
+
+    def _render_help_panel(self) -> None:
         bridge_help = ""
         if self._bridge_store is not None:
             bridge_help = (
@@ -3624,27 +3792,9 @@ class TGAgentCLI:
         self._stop_loading(self._loading)
         self._loading = None
 
-        args_preview = json.dumps(request.arguments, ensure_ascii=False, default=str)
-        if len(args_preview) > 240:
-            args_preview = args_preview[:237].rstrip() + "..."
-
-        command_preview_line = (
-            f"[bold]命令预览：[/bold] {request.command_preview}\n"
-            if request.command_preview
-            else ""
-        )
-        panel = Panel(
-            f"[bold]工具：[/bold] {request.tool_name}\n"
-            f"[bold]风险级别：[/bold] {request.risk_level}\n"
-            f"[bold]审批原因：[/bold] {request.reason}\n"
-            f"{command_preview_line}"
-            f"[bold]参数：[/bold] {args_preview}\n"
-            f"{self._approval_hint(request)}",
-            title="[bold yellow]需要审批[/bold yellow]",
-            border_style="yellow",
-        )
-        self._console.print()
-        self._console.print(panel)
+        self._remember_output("approval_request", request=request)
+        with self._suspend_output_recording():
+            self._render_approval_request(request)
 
         if self._fixed_input_tui_enabled:
             return await self._request_human_approval_via_terminal_ui(request)
@@ -3790,8 +3940,36 @@ class TGAgentCLI:
             )
         return "[dim]提示：如果后续想关闭审批，可在本轮结束后输入 /approval off。[/dim]"
 
+    def _render_approval_request(self, request: HumanApprovalRequest) -> None:
+        args_preview = json.dumps(request.arguments, ensure_ascii=False, default=str)
+        if len(args_preview) > 240:
+            args_preview = args_preview[:237].rstrip() + "..."
+
+        command_preview_line = (
+            f"[bold]命令预览：[/bold] {request.command_preview}\n"
+            if request.command_preview
+            else ""
+        )
+        panel = Panel(
+            f"[bold]工具：[/bold] {request.tool_name}\n"
+            f"[bold]风险级别：[/bold] {request.risk_level}\n"
+            f"[bold]审批原因：[/bold] {request.reason}\n"
+            f"{command_preview_line}"
+            f"[bold]参数：[/bold] {args_preview}\n"
+            f"{self._approval_hint(request)}",
+            title="[bold yellow]需要审批[/bold yellow]",
+            border_style="yellow",
+        )
+        self._console.print()
+        self._console.print(panel)
+
     def _print_slash_help(self):
         """Print slash command help information."""
+        self._remember_output("slash_help")
+        with self._suspend_output_recording():
+            self._render_slash_help()
+
+    def _render_slash_help(self) -> None:
         self._console.print()
         self._console.print("[bold cyan]Slash 命令：[/bold cyan]")
         self._console.print("[dim]输入 / 可查看可用命令，按 Tab 可自动补全[/dim]")
@@ -3826,6 +4004,11 @@ class TGAgentCLI:
 
     def _print_slash_command_detail(self, command_name: str):
         """Print detailed help for a specific slash command."""
+        self._remember_output("slash_command_detail", command_name=command_name)
+        with self._suspend_output_recording():
+            self._render_slash_command_detail(command_name)
+
+    def _render_slash_command_detail(self, command_name: str) -> None:
         cmd = self._slash_registry.get(command_name)
         if not cmd:
             self._console.print(f"[red]未知命令：/{command_name}[/red]")
@@ -3850,6 +4033,11 @@ class TGAgentCLI:
 
     def _print_available_skills(self):
         """Print all available @ skills grouped by category."""
+        self._remember_output("available_skills")
+        with self._suspend_output_recording():
+            self._render_available_skills()
+
+    def _render_available_skills(self) -> None:
         self._console.print()
         self._console.print("[bold cyan]可用技能（@）：[/bold cyan]")
         self._console.print("[dim]可在消息前使用 @<skill-name> 先加载技能[/dim]")
@@ -3871,11 +4059,15 @@ class TGAgentCLI:
     async def _on_task_completed(self, result: Any):
         """Handle background task completion notification."""
         from agent_core.task import SubagentTaskResult as TaskResult
-        from rich.panel import Panel
 
         if not isinstance(result, TaskResult):
             return
 
+        self._remember_output("subagent_task_notification", result=result)
+        with self._suspend_output_recording():
+            self._render_subagent_task_notification(result)
+
+    def _render_subagent_task_notification(self, result: Any) -> None:
         if result.status == "completed":
             self._console.print(
                 f"[dim]\\[bg done] {result.subagent_name} {result.task_id} "
