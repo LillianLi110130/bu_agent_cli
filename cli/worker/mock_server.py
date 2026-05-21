@@ -662,35 +662,48 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     @app.get("/web-console/workers/{worker_id}/events", tags=["WebConsole"])
     async def get_worker_events(worker_id: str):
         async def event_stream():
-            try:
-                request_id, history, is_terminal = await state.get_active_request_for_worker(worker_id)
-            except KeyError as exc:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No active web request for worker {worker_id}",
-                ) from exc
+            last_streamed_request_id: str | None = None
 
-            for payload in history:
-                yield _encode_web_sse(payload)
-            if is_terminal:
-                yield b": done\n\n"
-                return
-
-            queue = await state.add_subscriber(request_id)
-            try:
-                while True:
-                    try:
-                        payload = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    except TimeoutError:
+            while True:
+                try:
+                    request_id, history, is_terminal = await state.get_active_request_for_worker(worker_id)
+                except KeyError:
+                    has_activity = await state.wait_for_stream_activity(
+                        worker_id=worker_id,
+                        timeout=15.0,
+                    )
+                    if not has_activity:
                         yield b": heartbeat\n\n"
-                        continue
+                    continue
 
-                    if payload is None:
-                        yield b": done\n\n"
-                        return
-                    yield _encode_web_sse(payload)
-            finally:
-                await state.remove_subscriber(request_id, queue)
+                if request_id != last_streamed_request_id:
+                    for payload in history:
+                        yield _encode_web_sse(payload)
+                    last_streamed_request_id = request_id
+
+                if is_terminal:
+                    has_activity = await state.wait_for_stream_activity(
+                        worker_id=worker_id,
+                        timeout=15.0,
+                    )
+                    if not has_activity:
+                        yield b": heartbeat\n\n"
+                    continue
+
+                queue = await state.add_subscriber(request_id)
+                try:
+                    while True:
+                        try:
+                            payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        except TimeoutError:
+                            yield b": heartbeat\n\n"
+                            continue
+
+                        if payload is None:
+                            break
+                        yield _encode_web_sse(payload)
+                finally:
+                    await state.remove_subscriber(request_id, queue)
 
         return StreamingResponse(
             event_stream(),

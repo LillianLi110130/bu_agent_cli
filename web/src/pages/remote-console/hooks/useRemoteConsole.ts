@@ -97,13 +97,17 @@ function buildRequestEventSignature(requestEvent: RequestEvent) {
   return JSON.stringify({
     type: requestEvent.type,
     workerId: requestEvent.workerId,
-    requestId: requestEvent.requestId ?? "",
-    ts: requestEvent.ts ?? "",
-    content: requestEvent.content ?? "",
-    finalContent: requestEvent.finalContent ?? "",
-    errorMessage: requestEvent.errorMessage ?? "",
-    finishedAt: requestEvent.finishedAt ?? ""
+    requestId: requestEvent.requestId ?? '',
+    ts: requestEvent.ts ?? '',
+    content: requestEvent.content ?? '',
+    finalContent: requestEvent.finalContent ?? '',
+    errorMessage: requestEvent.errorMessage ?? '',
+    finishedAt: requestEvent.finishedAt ?? ''
   });
+}
+
+function buildEventMessageKey(requestEvent: RequestEvent, eventTime: string) {
+  return requestEvent.requestId ?? `${requestEvent.workerId}-${requestEvent.type}-${eventTime}`;
 }
 
 export function useRemoteConsole() {
@@ -127,10 +131,8 @@ export function useRemoteConsole() {
   const streamAbortRef = useRef<AbortController | null>(null);
   const streamRotateTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
-  const activeRunKeyRef = useRef<string | null>(null);
   const activeStreamTokenRef = useRef<string | null>(null);
   const reconnectAttemptRef = useRef(0);
-  const streamTerminalRef = useRef(false);
   const intentionalAbortRef = useRef(false);
   const stopRequestedRef = useRef(false);
   const seenEventSignaturesRef = useRef<Set<string>>(new Set());
@@ -221,24 +223,12 @@ export function useRemoteConsole() {
     };
   }, [isAwaitingLocalLaunch, refreshWorkerSummary, workerSummary.isOnline]);
 
-  useEffect(() => {
-    return () => {
-      stopRequestedRef.current = true;
-      cleanupActiveStream(true);
-    };
-  }, [cleanupActiveStream]);
-
   const createSession = useCallback(() => {
     const nextSessionId = createClientId('web-session');
-    stopRequestedRef.current = true;
-    streamTerminalRef.current = false;
-    reconnectAttemptRef.current = 0;
     setSessionIndex((current) => current + 1);
     setSessionId(nextSessionId);
     setMessages([]);
     setDraft('');
-    activeRunKeyRef.current = null;
-    cleanupActiveStream(true);
     setViewState((current) => ({
       ...current,
       activeSessionId: nextSessionId,
@@ -246,31 +236,7 @@ export function useRemoteConsole() {
       lastError: undefined
     }));
     seenEventSignaturesRef.current = new Set();
-  }, [cleanupActiveStream]);
-
-  const stopCurrentStream = useCallback(() => {
-    stopRequestedRef.current = true;
-    streamTerminalRef.current = true;
-    reconnectAttemptRef.current = 0;
-    activeRunKeyRef.current = null;
-    cleanupActiveStream(true);
-
-    setViewState((current) => ({
-      ...current,
-      submitStatus: 'idle',
-      lastError: undefined
-    }));
-    setMessages((current) => [
-      ...current,
-      buildSystemMessage(
-        createClientId('stream-stop'),
-        'idle',
-        '已停止当前页面接收。本地任务可能仍在继续执行。',
-        new Date().toISOString()
-      )
-    ]);
-    seenEventSignaturesRef.current = new Set();
-  }, [cleanupActiveStream]);
+  }, []);
 
   const launchLocalCrab = useCallback(() => {
     setIsAwaitingLocalLaunch(true);
@@ -279,117 +245,102 @@ export function useRemoteConsole() {
     window.location.href = 'crab://open';
   }, [refreshWorkerSummary]);
 
-  const handleStreamEvent = useCallback(
-    (requestEvent: RequestEvent) => {
-      const eventSignature = buildRequestEventSignature(requestEvent);
-      if (seenEventSignaturesRef.current.has(eventSignature)) {
-        return;
-      }
-      seenEventSignaturesRef.current.add(eventSignature);
+  const handleStreamEvent = useCallback((requestEvent: RequestEvent) => {
+    const eventSignature = buildRequestEventSignature(requestEvent);
+    if (seenEventSignaturesRef.current.has(eventSignature)) {
+      return;
+    }
+    seenEventSignaturesRef.current.add(eventSignature);
 
-      const eventTime = requestEvent.finishedAt ?? requestEvent.ts ?? new Date().toISOString();
-      const messageKey = activeRunKeyRef.current ?? `${requestEvent.workerId}-current`;
+    const eventTime = requestEvent.finishedAt ?? requestEvent.ts ?? new Date().toISOString();
+    const messageKey = buildEventMessageKey(requestEvent, eventTime);
 
-      if (requestEvent.type === 'submitted') {
-        setViewState((current) => ({
-          ...current,
-          submitStatus: 'submitted',
-          lastError: undefined
-        }));
-        setMessages((current) =>
-          appendMessageIfMissing(
-            current,
-            buildSystemMessage(messageKey, 'submitted', '消息已提交，等待本地终端接收。', eventTime)
-          )
-        );
-        return;
-      }
-
-      if (requestEvent.type === 'processing') {
-        setViewState((current) => ({
-          ...current,
-          submitStatus: 'processing',
-          lastError: undefined
-        }));
-        setMessages((current) =>
-          appendMessageIfMissing(
-            current,
-            buildSystemMessage(messageKey, 'processing', '本地终端已开始处理。', eventTime)
-          )
-        );
-        return;
-      }
-
-      if (requestEvent.type === 'progress') {
-        const nextChunk = requestEvent.content?.trim() ?? '';
-        if (!nextChunk) {
-          return;
-        }
-
-        setViewState((current) => ({
-          ...current,
-          submitStatus: 'processing',
-          lastError: undefined
-        }));
-        setMessages((current) => [
-          ...current,
-          buildAssistantMessage(
-            `${messageKey}-progress-${createClientId('event')}`,
-            nextChunk,
-            eventTime,
-            'processing'
-          )
-        ]);
-        return;
-      }
-
-      if (requestEvent.type === 'completed') {
-        const finalContent = requestEvent.finalContent ?? '';
-        streamTerminalRef.current = true;
-        reconnectAttemptRef.current = 0;
-        activeRunKeyRef.current = null;
-        activeStreamTokenRef.current = null;
-        clearScheduledStreamWork();
-        abortActiveStream(true);
-        setViewState((current) => ({
-          ...current,
-          submitStatus: 'completed',
-          lastError: undefined
-        }));
-        setWorkerSummary((current) => ({
-          ...current,
-          lastCompletedAt: requestEvent.finishedAt ?? eventTime
-        }));
-        setMessages((current) => [
-          ...current,
-          buildAssistantMessage(
-            `${messageKey}-completed-${createClientId('event')}`,
-            finalContent,
-            eventTime
-          )
-        ]);
-        return;
-      }
-
-      const errorMessage = requestEvent.errorMessage ?? '处理失败，请稍后重试。';
-      streamTerminalRef.current = true;
-      reconnectAttemptRef.current = 0;
-      activeRunKeyRef.current = null;
-      activeStreamTokenRef.current = null;
-      clearScheduledStreamWork();
-      abortActiveStream(true);
+    if (requestEvent.type === 'submitted') {
       setViewState((current) => ({
         ...current,
-        submitStatus: 'failed',
-        lastError: errorMessage
+        submitStatus: 'submitted',
+        lastError: undefined
       }));
       setMessages((current) =>
-        appendMessageIfMissing(current, buildErrorMessage(messageKey, errorMessage, eventTime))
+        appendMessageIfMissing(
+          current,
+          buildSystemMessage(messageKey, 'submitted', '消息已提交，等待本地终端接收。', eventTime)
+        )
       );
-      void antdMessage.error(errorMessage);
-    },
-    [abortActiveStream, clearScheduledStreamWork]
-  );
+      return;
+    }
+
+    if (requestEvent.type === 'processing') {
+      setViewState((current) => ({
+        ...current,
+        submitStatus: 'processing',
+        lastError: undefined
+      }));
+      setMessages((current) =>
+        appendMessageIfMissing(
+          current,
+          buildSystemMessage(messageKey, 'processing', '本地终端已开始处理。', eventTime)
+        )
+      );
+      return;
+    }
+
+    if (requestEvent.type === 'progress') {
+      const nextChunk = requestEvent.content?.trim() ?? '';
+      if (!nextChunk) {
+        return;
+      }
+
+      setViewState((current) => ({
+        ...current,
+        submitStatus: 'processing',
+        lastError: undefined
+      }));
+      setMessages((current) => [
+        ...current,
+        buildAssistantMessage(
+          `${messageKey}-progress-${createClientId('event')}`,
+          nextChunk,
+          eventTime,
+          'processing'
+        )
+      ]);
+      return;
+    }
+
+    if (requestEvent.type === 'completed') {
+      const finalContent = requestEvent.finalContent ?? '';
+      setViewState((current) => ({
+        ...current,
+        submitStatus: 'completed',
+        lastError: undefined
+      }));
+      setWorkerSummary((current) => ({
+        ...current,
+        lastCompletedAt: requestEvent.finishedAt ?? eventTime
+      }));
+      setMessages((current) => [
+        ...current,
+        buildAssistantMessage(
+          `${messageKey}-completed-${createClientId('event')}`,
+          finalContent,
+          eventTime
+        )
+      ]);
+      return;
+    }
+
+    const errorMessage = requestEvent.errorMessage ?? '处理失败，请稍后重试。';
+    setViewState((current) => ({
+      ...current,
+      submitStatus: 'failed',
+      lastError: errorMessage
+    }));
+    setMessages((current) =>
+      appendMessageIfMissing(current, buildErrorMessage(messageKey, errorMessage, eventTime))
+    );
+    void antdMessage.error(errorMessage);
+  }, []);
 
   const startEventStreamSession = useRef<
     ((mode?: 'initial' | 'reconnect') => Promise<void>) | null
@@ -397,18 +348,13 @@ export function useRemoteConsole() {
 
   const scheduleReconnect = useCallback(
     (streamToken: string, delayMs: number) => {
-      if (stopRequestedRef.current || streamTerminalRef.current || !activeRunKeyRef.current) {
+      if (stopRequestedRef.current) {
         return;
       }
 
       clearScheduledStreamWork();
       reconnectTimerRef.current = window.setTimeout(() => {
-        if (
-          activeStreamTokenRef.current !== streamToken ||
-          stopRequestedRef.current ||
-          streamTerminalRef.current ||
-          !activeRunKeyRef.current
-        ) {
+        if (activeStreamTokenRef.current !== streamToken || stopRequestedRef.current) {
           return;
         }
 
@@ -420,12 +366,7 @@ export function useRemoteConsole() {
 
   const handleStreamDisconnect = useCallback(
     (streamToken: string, error?: unknown) => {
-      if (
-        activeStreamTokenRef.current !== streamToken ||
-        stopRequestedRef.current ||
-        streamTerminalRef.current ||
-        !activeRunKeyRef.current
-      ) {
+      if (activeStreamTokenRef.current !== streamToken || stopRequestedRef.current) {
         return;
       }
 
@@ -435,8 +376,6 @@ export function useRemoteConsole() {
       if (nextAttempt > MAX_STREAM_RECONNECT_ATTEMPTS) {
         const errorMessage =
           error instanceof Error ? error.message : '事件流重连失败，请稍后重试。';
-        activeRunKeyRef.current = null;
-        streamTerminalRef.current = true;
         clearScheduledStreamWork();
         setViewState((current) => ({
           ...current,
@@ -478,7 +417,7 @@ export function useRemoteConsole() {
 
   const scheduleStreamRotation = useCallback(
     (streamToken: string) => {
-      if (stopRequestedRef.current || streamTerminalRef.current || !activeRunKeyRef.current) {
+      if (stopRequestedRef.current) {
         return;
       }
 
@@ -487,12 +426,7 @@ export function useRemoteConsole() {
       }
 
       streamRotateTimerRef.current = window.setTimeout(() => {
-        if (
-          activeStreamTokenRef.current !== streamToken ||
-          stopRequestedRef.current ||
-          streamTerminalRef.current ||
-          !activeRunKeyRef.current
-        ) {
+        if (activeStreamTokenRef.current !== streamToken || stopRequestedRef.current) {
           return;
         }
 
@@ -509,7 +443,7 @@ export function useRemoteConsole() {
 
   const startEventStreamSessionImpl = useCallback(
     async (mode: 'initial' | 'reconnect' = 'initial') => {
-      if (stopRequestedRef.current || streamTerminalRef.current || !activeRunKeyRef.current) {
+      if (stopRequestedRef.current) {
         return;
       }
 
@@ -534,7 +468,7 @@ export function useRemoteConsole() {
         await streamWorkerEvents(viewState.workerId, {
           signal: abortController.signal,
           onOpen: () => {
-            if (activeStreamTokenRef.current !== streamToken || streamTerminalRef.current) {
+            if (activeStreamTokenRef.current !== streamToken) {
               return;
             }
 
@@ -548,7 +482,7 @@ export function useRemoteConsole() {
             scheduleStreamRotation(streamToken);
           },
           onEvent: (event) => {
-            if (activeStreamTokenRef.current !== streamToken || streamTerminalRef.current) {
+            if (activeStreamTokenRef.current !== streamToken) {
               return;
             }
             handleStreamEvent(event);
@@ -559,7 +493,7 @@ export function useRemoteConsole() {
           streamAbortRef.current = null;
         }
 
-        if (streamTerminalRef.current || stopRequestedRef.current) {
+        if (stopRequestedRef.current) {
           return;
         }
 
@@ -569,7 +503,7 @@ export function useRemoteConsole() {
           streamAbortRef.current = null;
         }
 
-        if (streamTerminalRef.current || stopRequestedRef.current) {
+        if (stopRequestedRef.current) {
           return;
         }
 
@@ -593,17 +527,22 @@ export function useRemoteConsole() {
 
   startEventStreamSession.current = startEventStreamSessionImpl;
 
+  useEffect(() => {
+    stopRequestedRef.current = false;
+    reconnectAttemptRef.current = 0;
+    void startEventStreamSession.current?.('initial');
+
+    return () => {
+      stopRequestedRef.current = true;
+      cleanupActiveStream(true);
+    };
+  }, [cleanupActiveStream, viewState.workerId]);
+
   const submitCurrentDraft = useCallback(
     async (overrideContent?: string) => {
       const rawContent = overrideContent ?? draft;
       const trimmedContent = rawContent.trim();
-      if (
-        !trimmedContent ||
-        isSubmitting ||
-        viewState.submitStatus === 'processing' ||
-        viewState.submitStatus === 'submitted' ||
-        viewState.submitStatus === 'reconnecting'
-      ) {
+      if (!trimmedContent || isSubmitting) {
         return;
       }
 
@@ -614,15 +553,7 @@ export function useRemoteConsole() {
         content: trimmedContent,
         createdAt
       };
-      const runKey = createClientId('run');
 
-      stopRequestedRef.current = false;
-      streamTerminalRef.current = false;
-      reconnectAttemptRef.current = 0;
-      clearScheduledStreamWork();
-      abortActiveStream(false);
-      activeStreamTokenRef.current = null;
-      seenEventSignaturesRef.current = new Set();
       setIsSubmitting(true);
       setDraft('');
       setMessages((current) => [...current, optimisticUserMessage]);
@@ -631,8 +562,6 @@ export function useRemoteConsole() {
         submitStatus: 'submitting',
         lastError: undefined
       }));
-
-      activeRunKeyRef.current = runKey;
 
       try {
         await submitMessage({
@@ -645,15 +574,12 @@ export function useRemoteConsole() {
           ...current,
           submitStatus: 'submitted'
         }));
-
-        void startEventStreamSession.current?.('initial');
       } catch (error) {
         if (isAbortError(error)) {
           return;
         }
 
         const errorMessage = error instanceof Error ? error.message : '提交失败，请稍后重试。';
-        activeRunKeyRef.current = null;
         setViewState((current) => ({
           ...current,
           submitStatus: 'failed',
@@ -661,22 +587,14 @@ export function useRemoteConsole() {
         }));
         setMessages((current) => [
           ...current,
-          buildErrorMessage(runKey, errorMessage, new Date().toISOString())
+          buildErrorMessage(createClientId('submit-error'), errorMessage, new Date().toISOString())
         ]);
         void antdMessage.error(errorMessage);
       } finally {
         setIsSubmitting(false);
       }
     },
-    [
-      abortActiveStream,
-      clearScheduledStreamWork,
-      draft,
-      isSubmitting,
-      sessionId,
-      viewState.submitStatus,
-      viewState.workerId
-    ]
+    [draft, isSubmitting, sessionId, viewState.workerId]
   );
 
   return {
@@ -684,16 +602,8 @@ export function useRemoteConsole() {
     createSession,
     draft,
     emptyStateSuggestions: EMPTY_STATE_SUGGESTIONS,
-    isActionLoading:
-      isSubmitting ||
-      viewState.submitStatus === 'submitted' ||
-      viewState.submitStatus === 'processing' ||
-      viewState.submitStatus === 'reconnecting',
-    isComposerDisabled:
-      isSubmitting ||
-      viewState.submitStatus === 'reconnecting' ||
-      viewState.submitStatus === 'submitted' ||
-      viewState.submitStatus === 'processing',
+    isActionLoading: isSubmitting,
+    isComposerDisabled: false,
     isSubmitting,
     launchLocalCrab,
     messages,
