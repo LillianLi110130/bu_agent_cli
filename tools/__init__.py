@@ -1,7 +1,7 @@
 """Tools for Claude Code CLI."""
 
-from tools.bash import bash
 from tools.agent_tool import delegate, delegate_parallel
+from tools.bash import bash
 from tools.files import edit, read, write
 from tools.message import message
 from tools.resolve_path import resolve_path
@@ -21,7 +21,7 @@ from tools.team_tool import (
     team_status,
     team_update_task,
 )
-from tools.todos import done, todo_read, todo_write
+from tools.todos import done, todo
 from tools.web import web_fetch
 from tools.xlsx import read_excel
 
@@ -37,8 +37,7 @@ ALL_TOOLS = [
     glob_search,
     grep,
     message,
-    todo_read,
-    todo_write,
+    todo,
     done,
     web_fetch,
     delegate,
@@ -71,8 +70,7 @@ __all__ = [
     "glob_search",
     "grep",
     "message",
-    "todo_read",
-    "todo_write",
+    "todo",
     "done",
     "web_fetch",
     "delegate",

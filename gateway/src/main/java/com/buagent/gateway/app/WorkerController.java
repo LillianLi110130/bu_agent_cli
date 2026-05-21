@@ -1,6 +1,7 @@
 package com.buagent.gateway.app;
 
 import com.buagent.gateway.app.dto.CompleteRequest;
+import com.buagent.gateway.app.dto.ProgressRequest;
 import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
 import com.buagent.gateway.app.dto.WorkerRequest;
@@ -59,6 +60,16 @@ public class WorkerController {
         SimpleOkResponse response = workerGatewayService.complete(request);
         logger.info("Completed complete request. workerId={}, ok={}", request.getWorkerId(), response.getOk());
         return response;
+    }
+
+    @PostMapping("/progress")
+    public SimpleOkResponse progress(@RequestBody ProgressRequest request) {
+        logger.info(
+            "Received progress request. workerId={}, contentLength={}",
+            request.getWorkerId(),
+            request.getContent() == null ? 0 : request.getContent().length()
+        );
+        return workerGatewayService.progress(request);
     }
 
     @PostMapping("/send_text")

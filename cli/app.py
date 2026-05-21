@@ -126,6 +126,7 @@ from config.model_config import (
     load_model_presets,
 )
 from tools import SandboxContext, SecurityError
+from tools.todos import clear_todo_store, hydrate_todo_store_from_messages
 
 UserInputPayload = str | list[ContentPartTextParam | ContentPartImageParam]
 
@@ -478,6 +479,8 @@ class TGAgentCLI:
         skill_runtime_service: SkillRuntimeService | None = None,
         bridge_store: FileBridgeStore | None = None,
         session_runtime: CLISessionRuntime | None = None,
+        im_worker_id: str | None = None,
+        im_gateway_base_url: str | None = None,
     ):
         """Initialize CLI with pre-configured agent and context.
 
@@ -488,6 +491,7 @@ class TGAgentCLI:
         self._console = Console()
         self._agent = agent
         self._ctx = context
+        setattr(self._agent, "_sandbox_context", self._ctx)
         self._step_number = 0
         self._loading: _SafeLoadingIndicator | None = None
         self._interactive_terminal_ui_enabled = True
@@ -525,6 +529,8 @@ class TGAgentCLI:
             if self._skill_runtime_service.system_prompt_builder is None:
                 self._skill_runtime_service.system_prompt_builder = self._system_prompt_builder
         self._bridge_store = bridge_store
+        self._im_worker_id = im_worker_id
+        self._im_gateway_base_url = im_gateway_base_url
         self._session_runtime = session_runtime
         if self._session_runtime is not None:
             self._agent.bind_session_runtime(self._session_runtime)
@@ -558,8 +564,11 @@ class TGAgentCLI:
         )
         self._seen_team_inbox_message_ids: set[str] = set()
         self._team_auto_trigger_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._team_auto_trigger_suppressed_team_ids: set[str] = set()
         self._active_bridge_cancel_event: asyncio.Event | None = None
         self._active_bridge_request: BridgeRequest | None = None
+        self._foreground_subagent_cancel_task: asyncio.Task[None] | None = None
+        self._active_team_cancel_shutdown_task: asyncio.Task[None] | None = None
         self._agents_md_hash: str | None = None
         self._agents_md_content: str | None = None
         self._ralph_handler: RalphSlashHandler | None = None
@@ -902,6 +911,7 @@ class TGAgentCLI:
     async def _handle_reset_command(self, *, source: str = "local") -> str:
         """Reset conversation state."""
         self._agent.clear_history()
+        clear_todo_store(self._ctx.session_id)
         self._reset_current_session_persistence_cursor()
         await self._refresh_empty_context_budget_display()
         self._console.print("[yellow]会话上下文已重置。[/yellow]")
@@ -918,6 +928,7 @@ class TGAgentCLI:
         self._conversation_session_created = False
         self._last_transcript_flushed_idx = 0
         self._agent.clear_history()
+        clear_todo_store(self._ctx.session_id)
 
         self._resume_handler.clear_pick()
         self._model_pick_active = False
@@ -1281,6 +1292,8 @@ class TGAgentCLI:
         self._conversation_session_created = True
         self._agent.system_prompt = meta.system_prompt
         self._agent.load_history(snapshot.messages)
+        clear_todo_store(self._ctx.session_id)
+        hydrate_todo_store_from_messages(self._ctx.session_id, snapshot.messages)
         self._last_transcript_flushed_idx = len(snapshot.messages)
         self._session_store.reopen_session(target_session_id)
 
@@ -1557,6 +1570,7 @@ class TGAgentCLI:
         user_input: str,
         *,
         source: str = "local",
+        cancel_event: asyncio.Event | None = None,
     ) -> tuple[bool, str]:
         """Execute one slash command with live colored output and plain-text recording."""
         original_console = self._console
@@ -1566,7 +1580,11 @@ class TGAgentCLI:
         self._model_switch_service._console = mirror
         self._store_command_final_content("")
         try:
-            handled = await self._handle_slash_command(user_input, source=source)
+            handled = await self._handle_slash_command(
+                user_input,
+                source=source,
+                cancel_event=cancel_event,
+            )
         finally:
             self._console = original_console
             self._model_switch_service._console = original_model_console
@@ -1883,6 +1901,23 @@ class TGAgentCLI:
         self._console.print("[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
 
+        if self._bridge_store is not None:
+            self._console.print("[bold cyan]桥接信息：[/bold cyan]")
+            self._console.print(
+                f"  [dim]桥接会话：[/dim] [cyan]{self._bridge_store.session_binding_id}[/cyan] "
+                f"[dim]->[/dim] {self._bridge_store.bridge_dir}"
+            )
+            self._console.print(
+                f"  [dim]工作日志：[/dim] {self._bridge_store.logs_dir / 'worker.log'}"
+            )
+            if self._im_worker_id or self._im_gateway_base_url:
+                self._console.print(
+                    "  [dim]IM 工作进程：[/dim] "
+                    f"worker=[cyan]{self._im_worker_id or '-'}[/cyan] "
+                    f"gateway=[cyan]{self._im_gateway_base_url or '-'}[/cyan]"
+                )
+            self._console.print()
+
         categories = self._slash_registry.get_by_category()
         for category, commands in sorted(categories.items()):
             self._console.print(f"[bold blue]{category}:[/bold blue]")
@@ -1919,7 +1954,13 @@ class TGAgentCLI:
 
         self._console.print()
 
-    async def _handle_slash_command(self, text: str, *, source: str = "local") -> bool:
+    async def _handle_slash_command(
+        self,
+        text: str,
+        *,
+        source: str = "local",
+        cancel_event: asyncio.Event | None = None,
+    ) -> bool:
         """Handle a slash command.
 
         Args:
@@ -2149,9 +2190,13 @@ class TGAgentCLI:
                 workspace_root=self._ctx.working_dir,
                 plugin_manager=self._plugin_manager,
                 model_presets=self._model_presets,
+                markdown_output_callback=self._store_command_final_content,
+                llm=self._agent.llm,
             )
             handled = await handler.handle(args)
             self._agent_registry = handler.registry
+            if handled and handler.system_prompt_refresh_requested:
+                self._refresh_system_prompt("agent 配置变更后会话上下文已重置。")
             return handled
 
         if command_name == "team":
@@ -2187,7 +2232,11 @@ class TGAgentCLI:
                 ).start_dashboard([])
                 self._console.print("[cyan]进入 team lead 自动编排模式...[/cyan]")
                 prompt = build_team_auto_prompt(request)
-                final_content = await self._run_agent(prompt, has_image=False)
+                final_content = await self._run_agent(
+                    prompt,
+                    has_image=False,
+                    cancel_event=cancel_event,
+                )
                 self._store_command_final_content(final_content or "")
                 return True
             if team_args and team_args[0].lower() == "inbox" and "--peek" not in team_args[1:]:
@@ -2220,7 +2269,11 @@ class TGAgentCLI:
                     team_id=team_id,
                     messages=messages,
                 )
-                final_content = await self._run_agent(prompt, has_image=False)
+                final_content = await self._run_agent(
+                    prompt,
+                    has_image=False,
+                    cancel_event=cancel_event,
+                )
                 self._store_command_final_content(final_content or "")
                 return True
 
@@ -2238,6 +2291,7 @@ class TGAgentCLI:
             handler = PluginSlashHandler(
                 manager=self._plugin_manager,
                 console=self._console,
+                markdown_output_callback=self._store_command_final_content,
             )
             result = await handler.handle(args)
             if result.reloaded:
@@ -2280,14 +2334,14 @@ class TGAgentCLI:
         self._console.print(f"[dim]输入 /help 查看可用命令。[/dim]")
         return True
 
-    def _refresh_system_prompt(self) -> None:
+    def _refresh_system_prompt(self, reset_message: str = "插件重载后会话上下文已重置。") -> None:
         """Rebuild the agent system prompt after plugin registry changes."""
         if self._system_prompt_builder is None:
             return
         self._agent.system_prompt = self._system_prompt_builder()
         self._agent.clear_history()
         self._reset_current_session_persistence_cursor()
-        self._console.print("[yellow]插件重载后会话上下文已重置。[/yellow]")
+        self._console.print(f"[yellow]{reset_message}[/yellow]")
 
     def _print_available_skills(self):
         """Print all available @ skills grouped by category."""
@@ -2401,6 +2455,9 @@ class TGAgentCLI:
         pending_intermediate_text: list[str] = []
         assistant_text_parts: list[str] = []
         streamed_text_started = False
+        thinking_line_buffer = ""
+        thinking_line_started = False
+        pending_leading_thinking_blank_lines = 0
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2415,6 +2472,38 @@ class TGAgentCLI:
             if not content:
                 return
             self._console.print(Markdown(content, style="#e5e7eb"))
+
+        def stop_loading_for_visible_output() -> None:
+            if self._loading is not None:
+                self._stop_loading(self._loading)
+                self._loading = None
+
+        def print_thinking_line(content: str = "") -> None:
+            nonlocal thinking_line_started
+            stop_loading_for_visible_output()
+            self._console.print(f"[{self.COLOR_THINKING}]{content}[/]")
+            thinking_line_started = True
+
+        def flush_thinking_lines(*, final: bool = False) -> None:
+            nonlocal thinking_line_buffer, pending_leading_thinking_blank_lines
+            while "\n" in thinking_line_buffer:
+                line, thinking_line_buffer = thinking_line_buffer.split("\n", 1)
+                if not thinking_line_started and not line.strip():
+                    pending_leading_thinking_blank_lines += 1
+                    continue
+                if not thinking_line_started and pending_leading_thinking_blank_lines:
+                    line = ("\n" * pending_leading_thinking_blank_lines) + line
+                    pending_leading_thinking_blank_lines = 0
+                print_thinking_line(line)
+            if final and thinking_line_buffer:
+                if thinking_line_started or thinking_line_buffer.strip():
+                    if not thinking_line_started and pending_leading_thinking_blank_lines:
+                        thinking_line_buffer = (
+                            "\n" * pending_leading_thinking_blank_lines
+                        ) + thinking_line_buffer
+                        pending_leading_thinking_blank_lines = 0
+                    print_thinking_line(thinking_line_buffer)
+                thinking_line_buffer = ""
 
         try:
             # Pass cancel_event to agent for immediate cancellation
@@ -2468,34 +2557,34 @@ class TGAgentCLI:
                         self._loading = self._start_loading("思考中")
 
                 elif isinstance(event, ThinkingEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
+                        stop_loading_for_visible_output()
                         self._console.print(f"[{self.COLOR_THINKING}]思考：{event.content}[/]")
 
                 elif isinstance(event, ThinkingStartEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         self._active_thinking_id = event.think_id
-                        self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
+                        thinking_line_buffer = ""
+                        thinking_line_started = False
+                        pending_leading_thinking_blank_lines = 0
 
                 elif isinstance(event, ThinkingDeltaEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
                         if self._active_thinking_id != event.think_id:
                             self._active_thinking_id = event.think_id
-                            self._console.print(f"[{self.COLOR_THINKING}]思考：[/]", end="")
-                        self._console.print(f"[{self.COLOR_THINKING}]{event.delta}[/]", end="")
+                            thinking_line_buffer = ""
+                            thinking_line_started = False
+                            pending_leading_thinking_blank_lines = 0
+                        thinking_line_buffer += event.delta
+                        flush_thinking_lines()
 
                 elif isinstance(event, ThinkingEndEvent):
-                    self._stop_loading(self._loading)
-                    self._loading = None
                     if show_thinking_output:
+                        flush_thinking_lines(final=True)
                         if self._active_thinking_id == event.think_id:
                             self._active_thinking_id = None
-                        self._console.print()
+                        thinking_line_started = False
+                        pending_leading_thinking_blank_lines = 0
 
                 elif isinstance(event, TextDeltaEvent):
                     if intermediate_text_callback is not None:
@@ -2619,6 +2708,95 @@ class TGAgentCLI:
             return False
         self._active_bridge_cancel_event.set()
         return True
+
+    def _clear_team_auto_trigger_queue(self) -> None:
+        while True:
+            try:
+                self._team_auto_trigger_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            self._team_auto_trigger_queue.task_done()
+
+    def _suppress_team_auto_triggers(self, team_id: str) -> None:
+        self._team_auto_trigger_suppressed_team_ids.add(team_id)
+        self._clear_team_auto_trigger_queue()
+
+    def _release_team_auto_trigger_suppression_if_inactive(self, team_id: str) -> None:
+        runtime = self._ctx.team_runtime
+        try:
+            active_team_id = runtime.get_active_team() if runtime is not None else None
+        except Exception:
+            active_team_id = None
+        if active_team_id != team_id:
+            self._team_auto_trigger_suppressed_team_ids.discard(team_id)
+
+    def _is_suppressed_team_auto_trigger_request(self, request: BridgeRequest) -> bool:
+        if request.source_meta.get("kind") != "team_inbox_auto_trigger":
+            return False
+        team_id = str(request.source_meta.get("team_id") or "")
+        return bool(team_id and team_id in self._team_auto_trigger_suppressed_team_ids)
+
+    def _request_active_team_shutdown_from_cancel(self) -> bool:
+        runtime = self._ctx.team_runtime
+        if runtime is None:
+            return False
+        team_id = runtime.get_active_team()
+        if team_id is None:
+            return False
+        self._suppress_team_auto_triggers(team_id)
+        if (
+            self._active_team_cancel_shutdown_task is not None
+            and not self._active_team_cancel_shutdown_task.done()
+        ):
+            return True
+        self._active_team_cancel_shutdown_task = asyncio.create_task(
+            self._shutdown_active_team_from_cancel(team_id)
+        )
+        return True
+
+    async def _shutdown_active_team_from_cancel(self, team_id: str) -> None:
+        runtime = self._ctx.team_runtime
+        if runtime is None:
+            return
+        self._console.print(
+            f"\n[yellow]已取消当前运行，正在请求关闭 active team：[/yellow]{team_id}"
+        )
+        try:
+            await asyncio.to_thread(runtime.shutdown_team, team_id)
+        except ValueError as exc:
+            self._console.print(f"[yellow]{exc}[/yellow]")
+        except Exception as exc:  # noqa: BLE001 - cancellation cleanup should report and continue.
+            self._console.print(f"[red]关闭 active team 失败：{exc}[/red]")
+        else:
+            self._console.print(f"[yellow]已关闭 active team：[/yellow]{team_id}")
+        finally:
+            self._release_team_auto_trigger_suppression_if_inactive(team_id)
+
+    def _request_foreground_subagent_cancel_from_terminal(self) -> bool:
+        executor = self._ctx.subagent_executor
+        if executor is None:
+            return False
+        if (
+            self._foreground_subagent_cancel_task is not None
+            and not self._foreground_subagent_cancel_task.done()
+        ):
+            return True
+        self._foreground_subagent_cancel_task = asyncio.create_task(
+            self._cancel_foreground_subagents_from_terminal()
+        )
+        return True
+
+    async def _cancel_foreground_subagents_from_terminal(self) -> None:
+        executor = self._ctx.subagent_executor
+        if executor is None:
+            return
+        try:
+            results = await executor.cancel_running_foreground_runs()
+        except Exception as exc:  # noqa: BLE001 - cancellation should report and continue.
+            self._console.print(f"[red]取消前台 subagent 失败：{exc}[/red]")
+            return
+        if results:
+            self._console.print("[yellow]已请求取消前台 subagent[/yellow]")
 
     def _build_bridge_progress_callback(
         self,
@@ -2771,6 +2949,7 @@ class TGAgentCLI:
                 handled, final_content = await self._run_slash_command_with_live_capture(
                     user_input,
                     source=source,
+                    cancel_event=cancel_event,
                 )
                 if handled:
                     return _ExecutionOutcome(final_content=final_content)
@@ -2819,6 +2998,15 @@ class TGAgentCLI:
             request = self._bridge_store.claim_next_pending()
             if request is None:
                 return True
+
+            if self._is_suppressed_team_auto_trigger_request(request):
+                self._bridge_store.fail_request(
+                    request,
+                    final_content="已跳过 team inbox 自动触发：active team 正在关闭。",
+                    error_code="TEAM_AUTO_TRIGGER_SUPPRESSED",
+                    error_message="Skipped because active team shutdown was requested from terminal.",
+                )
+                continue
 
             request_cancel_event = cancel_event or asyncio.Event()
             self._active_bridge_cancel_event = request_cancel_event
@@ -2914,6 +3102,11 @@ class TGAgentCLI:
             except Exception:
                 continue
             if not team_id:
+                self._team_auto_trigger_suppressed_team_ids.clear()
+                self._clear_team_auto_trigger_queue()
+                continue
+
+            if team_id in self._team_auto_trigger_suppressed_team_ids:
                 continue
 
             try:
@@ -3009,6 +3202,10 @@ class TGAgentCLI:
 
     async def _drain_team_auto_trigger_queue(self) -> bool:
         """Run queued team inbox auto triggers when no bridge queue is configured."""
+        if self._team_auto_trigger_suppressed_team_ids:
+            self._clear_team_auto_trigger_queue()
+            return True
+
         while True:
             try:
                 prompt = self._team_auto_trigger_queue.get_nowait()
@@ -3245,6 +3442,11 @@ class TGAgentCLI:
 
     def _print_welcome(self):
         """Print welcome message."""
+        if sys.stdout.isatty():
+            sys.stdout.write("\033[H\033[2J\033[3J")
+            sys.stdout.flush()
+        self._console.clear()
+
         accent = "#ff7a59"
         gold = "#ffd166"
         coral = "#ff6b57"
@@ -3253,18 +3455,42 @@ class TGAgentCLI:
         text = "#e5e7eb"
         dim = "#9ca3af"
 
-        logo = Text.from_markup(
-            "\n".join(
-                [
-                    f"[bold {coral}] ██████╗██████╗  █████╗ ██████╗      ██████╗██╗     ██╗[/]",
-                    f"[bold {accent}]██╔════╝██╔══██╗██╔══██╗██╔══██╗    ██╔════╝██║     ██║[/]",
-                    f"[bold {gold}]██║     ██████╔╝███████║██████╔╝    ██║     ██║     ██║[/]",
-                    f"[bold {amber}]██║     ██╔══██╗██╔══██║██╔══██╗    ██║     ██║     ██║[/]",
-                    f"[bold {coral}]╚██████╗██║  ██║██║  ██║██████╔╝    ╚██████╗███████╗██║[/]",
-                    f"[dim {gold}] ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝      ╚═════╝╚══════╝╚═╝[/]",
-                ]
-            )
-        )
+        logo_lines = [
+            " ██████╗██████╗  █████╗ ██████╗      ██████╗██╗     ██╗",
+            "██╔════╝██╔══██╗██╔══██╗██╔══██╗    ██╔════╝██║     ██║",
+            "██║     ██████╔╝███████║██████╔╝    ██║     ██║     ██║",
+            "██║     ██╔══██╗██╔══██║██╔══██╗    ██║     ██║     ██║",
+            "╚██████╗██║  ██║██║  ██║██████╔╝    ╚██████╗███████╗██║",
+            " ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝      ╚═════╝╚══════╝╚═╝",
+        ]
+        logo_palette = [
+            "#fff3b0",
+            "#ffd08a",
+            "#ff9a7a",
+            "#ff6b57",
+            "#f25b48",
+            "#e55343",
+            "#bf3f34",
+        ]
+        logo = Text()
+        logo_width = max(len(line) for line in logo_lines)
+        logo_height = max(len(logo_lines) - 1, 1)
+        for row_index, line in enumerate(logo_lines):
+            for col_index, char in enumerate(line):
+                if char == " ":
+                    logo.append(char)
+                    continue
+                if row_index == len(logo_lines) - 1:
+                    logo.append(char, style="#a46a3a")
+                    continue
+                depth = (row_index / logo_height * 0.7) + (col_index / logo_width * 0.3)
+                color_index = min(
+                    len(logo_palette) - 1,
+                    max(0, round(depth * (len(logo_palette) - 1))),
+                )
+                logo.append(char, style=f"bold {logo_palette[color_index]}")
+            if row_index != len(logo_lines) - 1:
+                logo.append("\n")
 
         compact_brand = Text(justify="center")
         compact_brand.append("Crab", style=f"bold {coral}")
@@ -3278,23 +3504,22 @@ class TGAgentCLI:
             [("工作目录：", dim), (str(self._ctx.working_dir), f"bold {text}")],
             [
                 ("当前模型：", dim),
-                (str(self._agent.llm.model), f"bold {gold}"),
-                ("，", text),
-                ("/model", "bold cyan"),
-                (" 切换模型", text),
+                (str(self._agent.llm.model), f"bold {text}"),
             ],
             [
-                ("@ + Tab", "bold cyan"),
+                ("@ + Tab", f"bold {cyan}"),
                 ("  查看技能，", text),
                 ('@"<path>"<message>', f"bold {cyan}"),
                 (" 发送图片", text),
             ],
             [
-                ("/help", "bold cyan"),
+                ("/help", "bold #ffeb82"),
                 (" 查看帮助，", text),
-                ("Ctrl+D", f"bold {gold}"),
+                ("/model", "bold #ffeb82"),
+                (" 切换模型，", text),
+                ("Ctrl+D", "bold #ffeb82"),
                 (" 或 ", text),
-                ("/exit", "bold cyan"),
+                ("/exit", "bold #ffeb82"),
                 (" 退出", text),
             ],
         ]
@@ -3326,17 +3551,19 @@ class TGAgentCLI:
             )
         )
 
-        version_notes = """**当前版本：** `v0.7.0`  `2026-05-11`
+        version_header = Text()
+        version_header.append("当前版本：", style=text)
+        version_header.append(" v0.7.0  2026-05-11 ", style="bold #ffeb82 on #332313")
 
-- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
+        version_notes = """- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
 - ✨ 优化edit工具
 - 🐞 修复模型响应内容被截断的阻断问题
 - 🐞 上下文压缩改为流式
 """
         self._console.print(
             Panel(
-                Markdown(version_notes, style="#e5e7eb"),
-                border_style="#5aa9e6",
+                Group(version_header, Text(""), Markdown(version_notes, style="#e5e7eb")),
+                border_style="#ffeb82",
                 padding=(1, 2),
                 width=self._panel_width(),
             )
@@ -3345,6 +3572,21 @@ class TGAgentCLI:
 
     def _print_help(self):
         """Print help information."""
+        bridge_help = ""
+        if self._bridge_store is not None:
+            bridge_help = (
+                "\n[bold cyan]桥接信息：[/bold cyan]\n\n"
+                f"  [dim]桥接会话：[/dim] [cyan]{self._bridge_store.session_binding_id}[/cyan] "
+                f"[dim]->[/dim] {self._bridge_store.bridge_dir}\n"
+                f"  [dim]工作日志：[/dim] {self._bridge_store.logs_dir / 'worker.log'}\n"
+            )
+            if self._im_worker_id or self._im_gateway_base_url:
+                bridge_help += (
+                    "  [dim]IM 工作进程：[/dim] "
+                    f"worker=[cyan]{self._im_worker_id or '-'}[/cyan] "
+                    f"gateway=[cyan]{self._im_gateway_base_url or '-'}[/cyan]\n"
+                )
+
         help_text = """
 [bold cyan]可用命令：[/bold cyan]
 
@@ -3363,14 +3605,14 @@ class TGAgentCLI:
   [blue]edit <file>[/blue]   - 编辑文件（替换文本）
   [blue]glob <pattern>[/blue]- 按模式查找文件或目录
   [blue]grep <pattern>[/blue] - 搜索文件内容
-  [blue]todos[/blue]         - 管理待办事项
+  [blue]todo[/blue]          - 管理当前会话任务清单
 
 [bold cyan]提示：[/boldcyan]
 
   - 直接自然地输入你的需求，例如“列出所有 Python 文件”
   - 可使用 [blue]@"<path>"<message>[/blue] 或 [blue]@'<path>'<message>[/blue] 发送图片输入
   - AI 会自动使用工具帮助你
-"""
+""" + bridge_help
         self._console.print(Panel(help_text, border_style="dim"))
 
     def _print_approval_status(self) -> None:
@@ -3560,6 +3802,23 @@ class TGAgentCLI:
         self._console.print("[dim]使用 @<skill-name> 调用技能，按 Tab 可自动补全[/dim]")
         self._console.print("[dim]图片输入可使用 @\"<path>\"<message> 或 @'<path>'<message>[/dim]")
         self._console.print()
+
+        if self._bridge_store is not None:
+            self._console.print("[bold cyan]桥接信息：[/bold cyan]")
+            self._console.print(
+                f"  [dim]桥接会话：[/dim] [cyan]{self._bridge_store.session_binding_id}[/cyan] "
+                f"[dim]->[/dim] {self._bridge_store.bridge_dir}"
+            )
+            self._console.print(
+                f"  [dim]工作日志：[/dim] {self._bridge_store.logs_dir / 'worker.log'}"
+            )
+            if self._im_worker_id or self._im_gateway_base_url:
+                self._console.print(
+                    "  [dim]IM 工作进程：[/dim] "
+                    f"worker=[cyan]{self._im_worker_id or '-'}[/cyan] "
+                    f"gateway=[cyan]{self._im_gateway_base_url or '-'}[/cyan]"
+                )
+            self._console.print()
 
         categories = self._slash_registry.get_by_category()
         for category, commands in sorted(categories.items()):

@@ -3,10 +3,10 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
+from rich.markdown import Markdown
 
 from agent_core.plugin import PluginManager
 
@@ -24,9 +24,16 @@ class PluginSlashHandler:
         self,
         manager: PluginManager,
         console: Console | None = None,
+        markdown_output_callback: Callable[[str], None] | None = None,
     ):
         self._manager = manager
         self._console = console or Console()
+        self._markdown_output_callback = markdown_output_callback
+
+    def _emit_markdown(self, content: str) -> None:
+        self._console.print(Markdown(content, style="#e5e7eb"))
+        if self._markdown_output_callback is not None:
+            self._markdown_output_callback(content)
 
     async def handle(self, args: list[str]) -> PluginSlashResult:
         if not args:
@@ -58,36 +65,50 @@ class PluginSlashHandler:
             self._console.print("[yellow]未找到插件。[/yellow]")
             return PluginSlashResult()
 
-        table = Table(title="插件")
-        table.add_column("名称", style="cyan")
-        table.add_column("来源", style="magenta")
-        table.add_column("状态", style="white")
-        table.add_column("版本", style="dim")
-        table.add_column("资源", style="white")
-        table.add_column("描述", style="white")
+        lines = [
+            "## 插件",
+            "",
+            "| 名称 | 来源 | 状态 | 版本 | 资源 | 描述 |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
 
         for plugin in plugins:
             resources = (
                 f"技能={len(plugin.skills)} 智能体={len(plugin.agents)} 命令={len(plugin.commands)}"
             )
-            status_style = "green" if plugin.status == "loaded" else "red"
             status_text = {
                 "loaded": "已加载",
                 "failed": "加载失败",
             }.get(plugin.status, plugin.status)
             version = plugin.version or "-"
             description = plugin.description or (plugin.error or "")
-            table.add_row(
-                plugin.name,
-                plugin.source,
-                f"[{status_style}]{status_text}[/{status_style}]",
-                version,
-                resources,
-                description,
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        self._escape_markdown_table_cell(plugin.name),
+                        self._escape_markdown_table_cell(plugin.source),
+                        self._escape_markdown_table_cell(status_text),
+                        self._escape_markdown_table_cell(version),
+                        self._escape_markdown_table_cell(resources),
+                        self._escape_markdown_table_cell(description),
+                    ]
+                )
+                + " |"
             )
+        lines.extend(
+            [
+                "",
+                "- 使用 `/plugins show <name>` 查看详情。",
+                "- 使用 `/plugins copy <name>` 复制内置插件到工作区。",
+                "- 使用 `/plugins reload` 重新加载插件。",
+                "- 使用 `/plugins install <plugin_path>` 从本地路径安装插件。",
+                "- 使用 `/plugins uninstall <plugin_name> --force` 卸载插件。",
+            ]
+        )
 
         self._console.print()
-        self._console.print(table)
+        self._emit_markdown("\n".join(lines))
         self._console.print()
         return PluginSlashResult()
 
@@ -102,42 +123,45 @@ class PluginSlashHandler:
             return PluginSlashResult()
 
         lines = [
-            f"[bold cyan]名称：[/] {plugin.name}",
-            f"[bold cyan]来源：[/] {plugin.source}",
-            f"[bold cyan]状态：[/] {plugin.status}",
-            f"[bold cyan]版本：[/] {plugin.version or '-'}",
-            f"[bold cyan]路径：[/] [dim]{plugin.path}[/dim]",
+            f"## 插件：{plugin.name}",
+            "",
+            f"- **名称**：`{plugin.name}`",
+            f"- **来源**：{plugin.source}",
+            f"- **状态**：{plugin.status}",
+            f"- **版本**：`{plugin.version or '-'}`",
+            f"- **路径**：`{plugin.path}`",
         ]
 
         if plugin.description:
-            lines.append(f"[bold cyan]描述：[/] {plugin.description}")
+            lines.append(f"- **描述**：{plugin.description}")
         if plugin.error:
-            lines.append(f"[bold red]错误：[/] {plugin.error}")
+            lines.append(f"- **错误**：{plugin.error}")
         if plugin.skills:
-            lines.append(f"[bold cyan]技能：[/] {', '.join(plugin.skills)}")
+            lines.extend(["", "### 技能"])
+            lines.extend(f"- `{skill}`" for skill in plugin.skills)
         if plugin.agents:
-            lines.append(f"[bold cyan]智能体：[/] {', '.join(plugin.agents)}")
+            lines.extend(["", "### 智能体"])
+            lines.extend(f"- `{agent}`" for agent in plugin.agents)
         if plugin.commands:
+            lines.extend(["", "### 命令"])
             command_labels = []
             for item in plugin.commands:
                 command = self._manager.get_command(item)
                 mode_suffix = f" ({command.mode})" if command is not None else ""
-                command_labels.append("/" + item + mode_suffix)
-            lines.append(f"[bold cyan]命令：[/] {', '.join(command_labels)}")
+                command_labels.append(f"`/{item}`{mode_suffix}")
+            lines.extend(f"- {label}" for label in command_labels)
         if plugin.warnings:
-            lines.append(f"[bold yellow]警告：[/] {'; '.join(plugin.warnings)}")
+            lines.extend(["", "### 警告"])
+            lines.extend(f"- {warning}" for warning in plugin.warnings)
 
         self._console.print()
-        self._console.print(
-            Panel(
-                "\n".join(lines),
-                title=f"[bold blue]插件：{plugin.name}[/bold blue]",
-                border_style="bright_blue",
-                padding=(1, 2),
-            )
-        )
+        self._emit_markdown("\n".join(lines))
         self._console.print()
         return PluginSlashResult()
+
+    @staticmethod
+    def _escape_markdown_table_cell(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
 
     async def _copy(self, args: list[str]) -> PluginSlashResult:
         if not args:

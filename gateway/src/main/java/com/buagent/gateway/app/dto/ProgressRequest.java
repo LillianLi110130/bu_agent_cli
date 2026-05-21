@@ -8,27 +8,14 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class CompleteRequest {
+public class ProgressRequest {
     @JsonProperty("session_key")
     private String sessionKey;
 
     @JsonProperty("worker_id")
     private String workerId;
 
-    @JsonProperty("delivery_id")
-    private String deliveryId;
-
-    @JsonProperty("final_content")
-    private String finalContent;
-
-    @JsonProperty("final_status")
-    private String finalStatus;
-
-    @JsonProperty("error_code")
-    private String error_code;
-
-    @JsonProperty("error_message")
-    private String errorMessage;
+    private String content;
 
     private String source;
 }

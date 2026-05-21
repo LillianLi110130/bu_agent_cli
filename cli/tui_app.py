@@ -98,10 +98,14 @@ class TGAgentTUI:
         def _cancel_running_task(event) -> None:  # noqa: ANN001
             if self._cancel_event is not None and not self._cancel_event.is_set():
                 self._cancel_event.set()
+                self._cli._request_foreground_subagent_cancel_from_terminal()
+                self._cli._request_active_team_shutdown_from_cancel()
                 event.app.invalidate()
                 return
 
             if self._cli._cancel_active_bridge_run_from_terminal():
+                self._cli._request_foreground_subagent_cancel_from_terminal()
+                self._cli._request_active_team_shutdown_from_cancel()
                 event.app.invalidate()
                 return
 
@@ -128,6 +132,8 @@ class TGAgentTUI:
         )
         style = Style.from_dict(
             {
+                "": "#e5e7eb",
+                "prompt": "#e5e7eb",
                 "completion-menu.completion": "bg:#008888 #ffffff",
                 "completion-menu.completion.current": "bg:#ffffff #000000",
                 "completion-menu.meta.completion": "bg:#00aaaa #000000",
@@ -168,7 +174,7 @@ class TGAgentTUI:
             lines.append("")
         if status:
             frame = self._prompt_spinner_frame()
-            lines.append(f"<ansibrightwhite>{frame} {status}...</ansibrightwhite>")
+            lines.append(f'<style fg="#c084fc">{frame} {status}...</style>')
             lines.append("")
         lines.append(self._separator_markup())
         lines.append("<ansiblue>>> </ansiblue>")
@@ -331,7 +337,7 @@ class TGAgentTUI:
         if command.name != "agents":
             return False
         subcommand = command.args[0].lower() if command.args else ""
-        return subcommand in {"create", "edit", "delete"}
+        return subcommand in {"create", "edit", "delete", "reload"}
 
     def _print_user_input_record(self, user_input: str) -> None:
         self._cli._console.print()

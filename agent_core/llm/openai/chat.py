@@ -184,6 +184,16 @@ class ChatOpenAI(BaseChatModel):
     def name(self) -> str:
         return str(self.model)
 
+    @staticmethod
+    def _extract_thinking_content(value: Any) -> str | None:
+        """Extract provider-specific thinking/reasoning content from a response object."""
+        return (
+            getattr(value, "reasoning", None)
+            or getattr(value, "reasoning_content", None)
+            or getattr(value, "thinking", None)
+            or None
+        )
+
     def _build_usage(self, raw_usage: Any) -> ChatInvokeUsage | None:
         if raw_usage is None:
             return None
@@ -781,7 +791,9 @@ class ChatOpenAI(BaseChatModel):
                 )
 
             # Extract content
-            content = response.choices[0].message.content
+            message = response.choices[0].message
+            content = message.content
+            thinking = self._extract_thinking_content(message)
 
             # Extract tool calls
             tool_calls = self._extract_tool_calls(response)
@@ -796,6 +808,7 @@ class ChatOpenAI(BaseChatModel):
             return ChatInvokeCompletion(
                 content=content,
                 tool_calls=tool_calls,
+                thinking=thinking,
                 usage=usage,
                 stop_reason=response.choices[0].finish_reason if response.choices else None,
             )
@@ -933,7 +946,7 @@ class ChatOpenAI(BaseChatModel):
 
                 # 处理增量文本
                 content_delta = delta.content or ""
-                thinking_delta = getattr(delta, "reasoning", None) or None
+                thinking_delta = self._extract_thinking_content(delta)
 
                 # 累积工具调用参数
                 if delta.tool_calls:
