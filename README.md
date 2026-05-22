@@ -168,6 +168,8 @@ config/model_presets.json
 /agents [list|show|create|edit|delete|reload]
 ```
 
+Subagent 的用户说明见 `docs/subagent-user-guide.md`。
+
 文件系统和后台任务：
 
 ```text
