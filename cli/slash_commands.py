@@ -85,7 +85,7 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="approval",
-                description="控制高风险工具调用的人类审批开关",
+                description="控制 ask 级危险 bash 命令审批开关",
                 usage="/approval [on|off|status]",
                 examples=[
                     "/approval on",

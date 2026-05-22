@@ -39,7 +39,6 @@ from agent_core.agent import (
     HumanApprovalHook,
     SubagentCompletionHook,
     build_command_safety_approval_policy,
-    build_default_approval_policy,
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources
@@ -694,7 +693,6 @@ def build_agent_hooks() -> list[AgentHook]:
         DangerousBashCommandGuardHook(),
         HumanApprovalHook(
             mandatory_policy=build_command_safety_approval_policy(),
-            policy=build_default_approval_policy(),
         ),
         BashFileTaskGuardHook(),
         ExcelReadGuardHook(),

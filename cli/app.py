@@ -516,7 +516,8 @@ class TGAgentCLI:
         self._console_recording_suppressed = 0
         self._output_history: list[_OutputEntry] = []
         self._is_replaying_output_history = False
-        self._output_history_limit = 200
+        self._output_history_limit = 1000
+        self._output_history_hidden_count = 0
         self._console = _HistoryConsole(Console(), self._record_console_print)
         self._agent = agent
         self._ctx = context
@@ -593,7 +594,6 @@ class TGAgentCLI:
         )
         self._seen_team_inbox_message_ids: set[str] = set()
         self._team_auto_trigger_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._team_auto_trigger_suppressed_team_ids: set[str] = set()
         self._active_bridge_cancel_event: asyncio.Event | None = None
         self._active_bridge_request: BridgeRequest | None = None
         self._foreground_subagent_cancel_task: asyncio.Task[None] | None = None
@@ -1771,7 +1771,24 @@ class TGAgentCLI:
             return
         self._output_history.append(_OutputEntry(kind=kind, payload=payload))
         if len(self._output_history) > self._output_history_limit:
-            self._output_history = self._output_history[-self._output_history_limit :]
+            self._trim_output_history()
+
+    def _trim_output_history(self) -> None:
+        overflow = len(self._output_history) - self._output_history_limit
+        if overflow <= 0:
+            return
+        pinned_entries = []
+        start_index = 0
+        if self._output_history and self._output_history[0].kind == "welcome":
+            pinned_entries = [self._output_history[0]]
+            start_index = 1
+
+        trim_end = min(start_index + overflow, len(self._output_history))
+        hidden_now = max(0, trim_end - start_index)
+        if hidden_now <= 0:
+            return
+        self._output_history_hidden_count += hidden_now
+        self._output_history = pinned_entries + self._output_history[trim_end:]
 
     def _repaint_output_history(self, *, preserve_activity: bool = False) -> None:
         if not self._output_history or self._terminal_approval_prompt is not None:
@@ -1784,9 +1801,20 @@ class TGAgentCLI:
         try:
             for entry in self._output_history:
                 self._render_output_entry(entry)
+                if entry.kind == "welcome" and self._output_history_hidden_count:
+                    self._render_output_history_hidden_notice()
         finally:
             self._is_replaying_output_history = False
         self._invalidate_terminal_ui()
+
+    def _render_output_history_hidden_notice(self) -> None:
+        self._console.print(
+            Text(
+                f"... earlier {self._output_history_hidden_count} output entries hidden ...",
+                style="#9ca3af",
+            )
+        )
+        self._console.print()
 
     def _render_output_entry(self, entry: _OutputEntry) -> None:
         if entry.kind == "welcome":
@@ -2586,6 +2614,34 @@ class TGAgentCLI:
             self._console.print(f"[yellow]{success_message}[/yellow]")
         return final_response
 
+    @staticmethod
+    def _disable_agent_tool_for_turn(
+        agent: Agent,
+        tool_name: str,
+    ) -> tuple[list[Any], dict[str, Any]] | None:
+        """Temporarily hide one tool from an agent for the current turn."""
+        if not any(tool.name == tool_name for tool in agent.tools):
+            return None
+
+        original_tools = list(agent.tools)
+        original_tool_map = dict(getattr(agent, "_tool_map", {}))
+        agent.tools = [tool for tool in agent.tools if tool.name != tool_name]
+        agent._tool_map = {
+            name: tool
+            for name, tool in getattr(agent, "_tool_map", {}).items()
+            if name != tool_name
+        }
+        return original_tools, original_tool_map
+
+    @staticmethod
+    def _restore_agent_tools(
+        agent: Agent,
+        snapshot: tuple[list[Any], dict[str, Any]] | None,
+    ) -> None:
+        if snapshot is None:
+            return
+        agent.tools, agent._tool_map = snapshot
+
     async def _run_agent(
         self,
         user_input: UserInputPayload,
@@ -2625,6 +2681,7 @@ class TGAgentCLI:
         thinking_line_buffer = ""
         thinking_line_started = False
         pending_leading_thinking_blank_lines = 0
+        disabled_tool_snapshot: tuple[list[Any], dict[str, Any]] | None = None
 
         def flush_intermediate_text() -> None:
             if intermediate_text_callback is None or not pending_intermediate_text:
@@ -2668,6 +2725,12 @@ class TGAgentCLI:
                 thinking_line_buffer = ""
 
         try:
+            if has_image:
+                disabled_tool_snapshot = self._disable_agent_tool_for_turn(
+                    active_agent,
+                    "analyze_image",
+                )
+
             # Pass cancel_event to agent for immediate cancellation
             async for event in active_agent.query_stream(
                 user_input,
@@ -2777,6 +2840,7 @@ class TGAgentCLI:
             if owns_cancel_event:
                 run_cancel_event.set()
             self._interactive_terminal_ui_enabled = previous_interactive_terminal_ui_enabled
+            self._restore_agent_tools(active_agent, disabled_tool_snapshot)
 
         # Ensure loading is stopped
         self._stop_loading(self._loading)
@@ -2877,24 +2941,16 @@ class TGAgentCLI:
                 return
             self._team_auto_trigger_queue.task_done()
 
-    def _suppress_team_auto_triggers(self, team_id: str) -> None:
-        self._team_auto_trigger_suppressed_team_ids.add(team_id)
-        self._clear_team_auto_trigger_queue()
-
-    def _release_team_auto_trigger_suppression_if_inactive(self, team_id: str) -> None:
-        runtime = self._ctx.team_runtime
-        try:
-            active_team_id = runtime.get_active_team() if runtime is not None else None
-        except Exception:
-            active_team_id = None
-        if active_team_id != team_id:
-            self._team_auto_trigger_suppressed_team_ids.discard(team_id)
-
     def _is_suppressed_team_auto_trigger_request(self, request: BridgeRequest) -> bool:
         if request.source_meta.get("kind") != "team_inbox_auto_trigger":
             return False
         team_id = str(request.source_meta.get("team_id") or "")
-        return bool(team_id and team_id in self._team_auto_trigger_suppressed_team_ids)
+        runtime = self._ctx.team_runtime
+        return bool(
+            runtime is not None
+            and bool(team_id)
+            and getattr(runtime, "is_shutdown_in_progress", lambda _team_id: False)(team_id)
+        )
 
     def _request_active_team_shutdown_from_cancel(self) -> bool:
         runtime = self._ctx.team_runtime
@@ -2903,7 +2959,7 @@ class TGAgentCLI:
         team_id = runtime.get_active_team()
         if team_id is None:
             return False
-        self._suppress_team_auto_triggers(team_id)
+        getattr(runtime, "mark_shutdown_in_progress", lambda _team_id: None)(team_id)
         if (
             self._active_team_cancel_shutdown_task is not None
             and not self._active_team_cancel_shutdown_task.done()
@@ -2929,8 +2985,6 @@ class TGAgentCLI:
             self._console.print(f"[red]关闭 active team 失败：{exc}[/red]")
         else:
             self._console.print(f"[yellow]已关闭 active team：[/yellow]{team_id}")
-        finally:
-            self._release_team_auto_trigger_suppression_if_inactive(team_id)
 
     def _request_foreground_subagent_cancel_from_terminal(self) -> bool:
         executor = self._ctx.subagent_executor
@@ -3262,11 +3316,16 @@ class TGAgentCLI:
             except Exception:
                 continue
             if not team_id:
-                self._team_auto_trigger_suppressed_team_ids.clear()
                 self._clear_team_auto_trigger_queue()
                 continue
 
-            if team_id in self._team_auto_trigger_suppressed_team_ids:
+            shutdown_in_progress = getattr(
+                runtime,
+                "is_shutdown_in_progress",
+                lambda _team_id: False,
+            )(team_id)
+            if shutdown_in_progress:
+                self._clear_team_auto_trigger_queue()
                 continue
 
             try:
@@ -3350,19 +3409,34 @@ class TGAgentCLI:
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n\n"
             "Instructions:\n"
             "- Treat `clarification_request` messages as coordination blockers.\n"
-            "- Treat `task_done_notification` as a signal to inspect team_snapshot and decide whether to assign follow-up work, verify, or finish.\n"
-            "- Treat `task_blocked_notification` as a signal to inspect the blocked task, reply with `message` or `clarification_response`, or reassign/fix the task.\n"
-            "- Treat `worker_failed` as a signal to inspect member state and decide whether to reassign work or spawn a replacement.\n"
-            "- Treat `idle_notification` as a signal to inspect pending tasks and either assign more work or start completion/shutdown when the team is done.\n"
+            "- Treat `task_done_notification` as a signal to update or verify the referenced task from the message metadata/body. Do not call `team_snapshot` unless the message lacks the task state you need.\n"
+            "- Treat `task_blocked_notification` as a signal to answer, reassign, or fix the blocked task from the message metadata/body. Use `team_snapshot` only if the blocker cannot be identified from the message.\n"
+            "- Treat `worker_failed` as a signal to decide whether to reassign work or spawn a replacement. Prefer the message error and known task IDs before reading a full snapshot.\n"
+            "- Treat `idle_notification` as a signal that this teammate is standing by. Assign known pending work if you already know it; otherwise stop the turn and wait for the next event unless a single state read is necessary.\n"
+            "- `team_snapshot` is context-expensive. In this auto-trigger turn, call it at most once, and only when the inbox messages do not contain enough information to choose a safe next action.\n"
+            "- Prefer targeted tools over full snapshots: use `team_list_tasks` if you only need task statuses, `team_update_task` to change tasks, and `team_send_message` to reply.\n"
             "- Answer from available context when safe.\n"
             "- If the user must decide, ask the user one concise question before unblocking the teammate.\n"
             "- Reply to the teammate with `team_send_message`, using type `message` for coordination or `clarification_response` for answers to blocker questions.\n"
             "- Do not create a new team while handling this inbox trigger.\n"
+            "- Do not sleep/wait and then poll `team_snapshot`. If there is no actionable next step, end this turn.\n"
         )
 
     async def _drain_team_auto_trigger_queue(self) -> bool:
         """Run queued team inbox auto triggers when no bridge queue is configured."""
-        if self._team_auto_trigger_suppressed_team_ids:
+        runtime = getattr(self._ctx, "team_runtime", None)
+        try:
+            active_team_id = runtime.get_active_team() if runtime is not None else None
+        except Exception:
+            active_team_id = None
+        shutdown_in_progress = (
+            runtime is not None
+            and active_team_id is not None
+            and getattr(runtime, "is_shutdown_in_progress", lambda _team_id: False)(
+                active_team_id
+            )
+        )
+        if shutdown_in_progress:
             self._clear_team_auto_trigger_queue()
             return True
 
@@ -3603,6 +3677,7 @@ class TGAgentCLI:
     def _print_welcome(self):
         """Print welcome message."""
         self._output_history.clear()
+        self._output_history_hidden_count = 0
         self._remember_output("welcome")
         with self._suspend_output_recording():
             self._render_welcome(clear=True)
@@ -3759,7 +3834,7 @@ class TGAgentCLI:
   [blue]exit[/blue]          - 退出 CLI
   [blue]pwd[/blue]           - 显示当前工作目录
   [blue]ls [path][/blue]     - 列出目录中的文件（AI 也可以完成）
-  [blue]/approval on|off|status[/blue] - 控制高风险工具的人类审批开关
+  [blue]/approval on|off|status[/blue] - 控制 ask 级危险 bash 命令审批开关
 
 [bold cyan]可用工具（供 AI 使用）：[/bold cyan]
 
@@ -3783,7 +3858,7 @@ class TGAgentCLI:
     def _print_approval_status(self) -> None:
         status = "已开启" if self._agent.human_in_loop_config.enabled else "已关闭"
         style = "green" if self._agent.human_in_loop_config.enabled else "yellow"
-        self._console.print(f"[{style}]审批模式：{status}[/{style}]")
+        self._console.print(f"[{style}]ask 级危险 bash 审批：{status}[/{style}]")
 
     async def _request_human_approval(
         self,

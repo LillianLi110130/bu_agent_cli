@@ -245,7 +245,7 @@ class TeamSlashHandler:
         except ValueError as exc:
             self.console.print(f"[yellow]{exc}[/yellow]")
             return
-        self.console.print(f"[yellow]已请求关闭 team：[/yellow]{team_id}")
+        self.console.print(f"[yellow]已关闭 team：[/yellow]{team_id}")
 
     def _members(self, args: list[str]) -> None:
         team_id = self._resolve_team_id(args)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Annotated
 
@@ -199,5 +200,8 @@ async def team_shutdown(
     runtime, error = _runtime_or_error(ctx)
     if error is not None:
         return error
-    runtime.shutdown_team(team_id)
-    return f"Team '{team_id}' shutdown requested."
+    try:
+        await asyncio.to_thread(runtime.shutdown_team, team_id)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    return f"已关闭 team：{team_id}"
