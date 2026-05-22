@@ -598,9 +598,9 @@ Workspace behavior:
 - Global config stays in %USERPROFILE%\.tg_agent.
 - After deploy.bat, `crab` works in cmd, PowerShell, and Git Bash.
 
-Notes:
-- deploy.bat copies the bundled Python runtime into %USERPROFILE%\.tg_agent\python-runtime and creates
-  %USERPROFILE%\.tg_agent\.venv from that stable runtime.
+- deploy.bat recreates %USERPROFILE%\.tg_agent\python-runtime and
+  %USERPROFILE%\.tg_agent\.venv from the bundled runtime.
+- deploy.bat removes old install-managed %USERPROFILE%\.tg_agent\bin before regenerating launchers.
 - crab and dependencies are installed offline from wheelhouse\.
 - deploy.bat also installs a `crab` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
 - deploy.bat registers the `crab://open` protocol for launching the local CLI from a browser.
@@ -638,7 +638,6 @@ $InstalledRuntimeDir = Join-Path $InstallRoot "python-runtime"
 $InstalledRuntimePython = Join-Path $InstalledRuntimeDir "python.exe"
 $VenvDir = Join-Path $InstallRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
-$PyvenvConfig = Join-Path $VenvDir "pyvenv.cfg"
 $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
@@ -672,30 +671,6 @@ function Install-BundledRuntime {
     }
 
     Copy-Item -LiteralPath $SourceRuntimeDir -Destination $InstallRootDir -Recurse -Force
-}
-
-function Test-VenvUsesRuntime {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$PyvenvConfigPath,
-        [Parameter(Mandatory = $true)]
-        [string]$ExpectedRuntimeDir
-    )
-
-    if (-not (Test-Path -LiteralPath $PyvenvConfigPath)) {
-        return $false
-    }
-
-    $homeLine = Get-Content -LiteralPath $PyvenvConfigPath -ErrorAction SilentlyContinue |
-        Where-Object { $_ -match '^\s*home\s*=' } |
-        Select-Object -First 1
-    if (-not $homeLine) {
-        return $false
-    }
-
-    $configuredHome = [System.IO.Path]::GetFullPath(($homeLine -replace '^\s*home\s*=\s*', '').Trim())
-    $expectedHome = [System.IO.Path]::GetFullPath($ExpectedRuntimeDir)
-    return $configuredHome.TrimEnd('\') -ieq $expectedHome.TrimEnd('\')
 }
 
 function Add-UserPathEntry {
@@ -886,6 +861,11 @@ if (-not $projectWheel) {
 }
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+foreach ($installManagedPath in @($VenvDir, $BinDir, $InstalledRuntimeDir)) {
+    if (Test-Path -LiteralPath $installManagedPath) {
+        Remove-Item -LiteralPath $installManagedPath -Recurse -Force
+    }
+}
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 Install-BundledRuntime -SourceRuntimeDir $RuntimeDir -InstallRootDir $InstallRoot -TargetRuntimeDir $InstalledRuntimeDir
 
@@ -893,21 +873,9 @@ if (-not (Test-Path -LiteralPath $InstalledRuntimePython)) {
     throw "Installed Python runtime not found after copy: $InstalledRuntimePython"
 }
 
-if ($ForceRecreateVenv -and (Test-Path -LiteralPath $VenvDir)) {
-    Remove-Item -LiteralPath $VenvDir -Recurse -Force
-}
-
-$venvNeedsRebuild = (-not (Test-Path -LiteralPath $VenvPython)) -or
-    (-not (Test-VenvUsesRuntime -PyvenvConfigPath $PyvenvConfig -ExpectedRuntimeDir $InstalledRuntimeDir))
-if ($venvNeedsRebuild -and (Test-Path -LiteralPath $VenvDir)) {
-    Remove-Item -LiteralPath $VenvDir -Recurse -Force
-}
-
-if (-not (Test-Path -LiteralPath $VenvPython)) {
-    & $InstalledRuntimePython -m venv $VenvDir
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
-        throw "Failed to create virtual environment: $VenvDir"
-    }
+& $InstalledRuntimePython -m venv $VenvDir
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
+    throw "Failed to create virtual environment: $VenvDir"
 }
 
 & $VenvPython -m ensurepip --upgrade

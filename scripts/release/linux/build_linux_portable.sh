@@ -343,7 +343,8 @@ Workspace behavior:
 - Global config stays in \$HOME/.tg_agent.
 
 Notes:
-- deploy.sh creates \$HOME/.tg_agent/.venv using the bundled Python runtime.
+- deploy.sh recreates \$HOME/.tg_agent/.venv using the bundled Python runtime.
+- deploy.sh removes old install-managed \$HOME/.tg_agent/bin and legacy \$HOME/.tg_agent/python-runtime.
 - crab and dependencies are installed offline from wheelhouse/.
 - deploy.sh also installs a crab command shim into \$HOME/.tg_agent/bin and updates shell profile files.
 - deploy.sh registers the crab://open protocol for launching the local CLI from a browser.
@@ -360,13 +361,11 @@ write_deploy_script() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-force_recreate_venv=0
 skip_profile_update=0
 
 while (($# > 0)); do
     case "$1" in
         --force-recreate-venv)
-            force_recreate_venv=1
             shift
             ;;
         --skip-profile-update)
@@ -376,6 +375,11 @@ while (($# > 0)); do
         -h|--help)
             cat <<'USAGE'
 Usage: deploy.sh [--force-recreate-venv] [--skip-profile-update]
+
+Options:
+  --force-recreate-venv   Compatibility option; deploy always recreates ~/.tg_agent/.venv
+  --skip-profile-update   Do not update shell profile files
+  -h, --help              Show this help
 USAGE
             exit 0
             ;;
@@ -395,6 +399,7 @@ user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 venv_dir="${install_root}/.venv"
 bin_dir="${install_root}/bin"
+legacy_runtime_dir="${install_root}/python-runtime"
 entry_shim="${bin_dir}/crab-entry.py"
 command_shim="${bin_dir}/crab"
 protocol_launcher="${bin_dir}/crab-protocol-launcher.sh"
@@ -480,19 +485,15 @@ if [[ -z "${project_wheel}" ]]; then
     exit 1
 fi
 
-mkdir -p "${install_root}" "${bin_dir}"
-
-if ((force_recreate_venv)) && [[ -d "${venv_dir}" ]]; then
-    rm -rf "${venv_dir}"
-fi
+mkdir -p "${install_root}"
+rm -rf "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"
+mkdir -p "${bin_dir}"
 
 venv_python="${venv_dir}/bin/python"
-if [[ ! -x "${venv_python}" ]]; then
-    "${runtime_python}" -m venv "${venv_dir}"
-fi
+"${runtime_python}" -m venv "${venv_dir}"
 
 "${venv_python}" -m ensurepip --upgrade
-"${venv_python}" -m pip install --no-index --find-links "${wheelhouse_dir}" --upgrade "${project_wheel}"
+"${venv_python}" -m pip install --no-index --find-links "${wheelhouse_dir}" --force-reinstall "${project_wheel}"
 
 cat > "${entry_shim}" <<'PY'
 from tg_crab_main import cli_main
