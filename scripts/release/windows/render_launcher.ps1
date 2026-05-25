@@ -36,6 +36,7 @@ $venvPython = Join-Path $installRoot ".venv\Scripts\python.exe"
 $entryShim = Join-Path $installRoot "bin\crab-entry.py"
 $settingsPath = Join-Path $installRoot "settings.json"
 $workspace = (Get-Location).Path
+$defaultWorkspace = ""
 $manualWorkspaceSelected = $false
 
 function Save-DefaultWorkspace {
@@ -68,6 +69,29 @@ function Save-DefaultWorkspace {
     [System.IO.File]::WriteAllText($SettingsFilePath, $json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($false))
 }
 
+function Get-DefaultWorkspace {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SettingsFilePath
+    )
+
+    if (-not (Test-Path -LiteralPath $SettingsFilePath)) {
+        return ""
+    }
+
+    try {
+        $settings = Get-Content -LiteralPath $SettingsFilePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $value = [string]$settings.default_workspace
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value.Trim()
+        }
+    }
+    catch {
+    }
+
+    return ""
+}
+
 $msgPortableNotInstalled = Decode-Text "Y3JhYiDkvr/mkLrnjq/looPlsJrmnKrlronoo4U="
 $msgRunDeployFirst = Decode-Text "6K+35YWI5Zyo5L6/5pC65YyF5qC555uu5b2V6L+Q6KGMIGRlcGxveS5iYXQ="
 $msgEntryShimMissing = Decode-Text "Y3JhYiDlkK/liqjlhaXlj6PnvLrlpLE="
@@ -96,11 +120,17 @@ if (-not (Test-Path -LiteralPath $entryShim)) {
     exit 1
 }
 
-Write-Host ($msgCurrentStartupDir -f $workspace)
-$userWorkspaceInput = Read-Host $msgWorkspacePrompt
-if (-not [string]::IsNullOrWhiteSpace($userWorkspaceInput)) {
-    $workspace = $userWorkspaceInput.Trim().Trim('"')
-    $manualWorkspaceSelected = $true
+$defaultWorkspace = Get-DefaultWorkspace -SettingsFilePath $settingsPath
+if ([string]::IsNullOrWhiteSpace($defaultWorkspace)) {
+    Write-Host ($msgCurrentStartupDir -f $workspace)
+    $userWorkspaceInput = Read-Host $msgWorkspacePrompt
+    if (-not [string]::IsNullOrWhiteSpace($userWorkspaceInput)) {
+        $workspace = $userWorkspaceInput.Trim().Trim('"')
+        $manualWorkspaceSelected = $true
+    }
+}
+else {
+    $workspace = $defaultWorkspace
 }
 
 if (-not (Test-Path -LiteralPath $workspace -PathType Container)) {
