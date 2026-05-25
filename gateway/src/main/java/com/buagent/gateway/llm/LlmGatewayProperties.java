@@ -21,9 +21,9 @@ public class LlmGatewayProperties {
     private String defaultApiKey;
     private int connectTimeoutMs = 5000;
     // 流式响应不能默认无限等待；上游连接成功后长时间无数据时需要释放网关资源。
-    private int responseTimeoutMs = 120000;
+    private int responseTimeoutMs = 60000;
     // 单次上游 LLM 流的总时长上限；防止持续有 chunk 的长流无限占用网关资源。
-    private int totalTimeoutMs = 1200000;
+    private int totalTimeoutMs = 300000;
     private Map<String, Route> routes = new LinkedHashMap<String, Route>();
 
     public String getDefaultModel() {
