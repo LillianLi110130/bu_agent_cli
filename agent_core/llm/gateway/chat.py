@@ -64,10 +64,7 @@ class ChatGateway(BaseChatModel):
         normalized = value.strip()
         if not normalized:
             return None
-        lowered = normalized.lower()
-        if lowered.startswith("bearer ") or lowered.startswith("basic "):
-            return normalized
-        return f"Bearer {normalized}"
+        return normalized
 
     def _resolve_authorization(self) -> str | None:
         if self._authorization:
