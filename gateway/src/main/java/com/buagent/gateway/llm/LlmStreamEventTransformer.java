@@ -106,6 +106,9 @@ class LlmStreamEventTransformer {
         }
 
         String data = trimmedLine.substring("data:".length()).trim();
+        if (data.isEmpty() || ",".equals(data)) {
+            return Collections.emptyList();
+        }
         if ("[DONE]".equals(data)) {
             return emitDoneFromProviderSignal();
         }
