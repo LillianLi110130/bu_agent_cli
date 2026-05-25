@@ -9,6 +9,28 @@ Direct browser control via CDP. For task-specific edits, use `agent-workspace/ag
 
 ## Usage
 
+PowerShell:
+
+```powershell
+@'
+new_tab("https://docs.browser-use.com")
+wait_for_load()
+print(page_info())
+'@ | browser-harness
+```
+
+CMD:
+
+```bat
+(
+echo new_tab("https://docs.browser-use.com"^)
+echo wait_for_load(^)
+echo print(page_info(^)^)
+) | browser-harness
+```
+
+POSIX shell:
+
 ```bash
 browser-harness <<'PY'
 new_tab("https://docs.browser-use.com")
@@ -17,15 +39,42 @@ print(page_info())
 PY
 ```
 
-- Invoke as browser-harness — it's on $PATH. No cd, no uv run.
-- Use the heredoc form for every multi-line command. It prevents shell quote mangling inside Python strings and JavaScript snippets.
+- Invoke as browser-harness — it's on PATH. No cd, no uv run.
+- Use the shell-appropriate multi-line pipe form for every multi-line command:
+  PowerShell here-string, CMD parenthesized echo block, or POSIX heredoc. This
+  prevents shell quote mangling inside Python strings and JavaScript snippets.
+- On Windows, prefer PowerShell here-strings for multi-line code. CMD echo
+  blocks require escaping special characters such as `)`, `&`, `|`, `<`, and
+  `>`, so use PowerShell when Python or JavaScript snippets contain complex
+  quoting.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
 
 ## Tool call shape
 
+Send Python code on stdin to `browser-harness`. Helpers are pre-imported and the
+daemon auto-starts.
+
+PowerShell:
+
+```powershell
+@'
+# any python
+'@ | browser-harness
+```
+
+CMD:
+
+```bat
+(
+echo # any python
+) | browser-harness
+```
+
+POSIX shell:
+
 ```bash
 browser-harness <<'PY'
-# any python. helpers pre-imported. daemon auto-starts.
+# any python
 PY
 ```
 
@@ -36,6 +85,7 @@ run.py calls ensure_daemon() before exec — you never start/stop manually unles
 If you start struggling with a specific mechanic while navigating, look in interaction-skills/ for helpers. The available interaction skills with actionable guidance are:
 - connection.md
 - dialogs.md
+- dropdowns.md
 - screenshots.md
 - tabs.md
 - text-targets.md
@@ -46,6 +96,7 @@ If you start struggling with a specific mechanic while navigating, look in inter
 - Do not use screenshot/image analysis for normal navigation, page understanding, target discovery, clicking, or verification. Screenshot tooling is outside the default workflow; use it only when the user explicitly asks for a screenshot artifact or visual debugging.
 - Page understanding: inspect URL, document state, visible text, links, buttons, inputs, forms, roles, aria labels, hrefs, and bounding rects with js(...). If a page looks missing from DOM/CDP, first verify current_tab(), list_tabs(include_chrome=False), ensure_real_tab(), wait_for_load(), wait_for_element(), and document.body.innerText.
 - Targeting: prefer stable text, aria-label, href, role, name, id, selector, or getBoundingClientRect(). For a target with a rect, click the center with click_at_xy(). Do not derive click coordinates from screenshots.
+- Form controls: verify control identity before interacting. Do not rely only on placeholder text, visual position, or a single text match. Cross-check nearby labels, aria/name/id, current value, available options, disabled/readonly state, and neighboring form structure. If multiple controls share the same placeholder, enumerate candidates first and choose the one whose labels/options match the requested field.
 - Clicking: click_at_xy() takes CSS viewport coordinates. Get those coordinates from getBoundingClientRect(), not from screenshot pixels. Hit-testing happens in Chrome's browser process, so coordinate clicks go through iframes / shadow DOM / cross-origin when the CSS viewport coordinate is correct. For document lists, search results, recent items, table rows, cards, and external links, tab detection is part of the click: record list_tabs(include_chrome=False) before clicking, then inspect all tabs after clicking. Do not judge success only from the current tab URL.
 - New tabs after clicks: for document lists, search results, recent items, table rows, cards, external links, and any target that might use window.open, always record list_tabs(include_chrome=False) before the click. After the click, inspect all tabs, not only newly-created tabs: the site may open a new tab, reuse an existing tab, or leave the source tab URL unchanged. Switch with switch_tab(target) only when the matching tab is the expected continuation of the task. If it is an auth wall, payment/approval flow, download page, or unrelated content, stop or ask the user before continuing.
 - Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
@@ -61,24 +112,33 @@ If you start struggling with a specific mechanic while navigating, look in inter
   Do not pass a params dict as the second positional argument; that slot is
   `session_id`. Prefer `js(...)` for Runtime.evaluate.
 
-After-action verification:
+After-action state scan:
 
-Do not decide success from a single generic signal unless that signal directly
-proves the expected state. Verify the thing the action was supposed to change.
+After any meaningful action, do not declare failure just because URL/title/body
+text did not change. Verify the state class the action may have changed. If a
+click or input appears to do nothing, scan likely post-action changes before
+retrying the same action.
 
-- After filling inputs: read the exact element value / checked / selected state
-  with `js(...)`, not URL, title, or `document.body.innerText`.
-- After clicking navigation, list, or link targets: inspect tabs, URL/title, and
-  visible target text.
-- After SPA buttons or form submits: use `wait_for_network_idle()`, then check
-  success/error text, changed controls, disabled/loading state, or the expected
-  selector.
-- After opening menus, dialogs, or popovers: re-read visible controls, overlays,
-  `aria-expanded`, `role=dialog/menu/listbox`, and bounding rects.
-- After selecting items: verify `aria-selected`, `checked`, `value`, class, or
-  nearby selected-state DOM, not only that the text exists somewhere on the page.
-- If the expected state is ambiguous, print the relevant DOM state and continue
-  from that evidence; do not immediately retry the same action.
+- Navigation/tab: URL, title, route, `list_tabs(include_chrome=False)`, newly
+  opened or reused tabs.
+- Element state: `input.value`, `checked`, `selected`, `disabled`,
+  `aria-expanded`, `aria-selected`, class, loading/spinner state.
+- Visible UI surfaces: native dialogs, modals, drawers, popovers, menus,
+  dropdowns, toasts, overlays, tooltips.
+- Content changes: success/error text, counters, row/list updates, target text
+  appearing/disappearing.
+- Activity: `wait_for_network_idle()`, pending requests, loading indicators.
+- Focus/selection: `document.activeElement`, selected text/range.
+- Frame-local changes: visible iframe contents or iframe target state.
+- Downloads: download/file signals.
+
+At minimum after a "no visible effect" action, re-run `page_info()`,
+`list_tabs(include_chrome=False)`, and a compact DOM scan for visible dialogs,
+modals, popovers, menus, toasts, overlays, loading indicators, disabled states,
+and changed input/control values.
+
+If the expected state is ambiguous, print the relevant DOM state and continue
+from that evidence. Do not immediately retry the same action or report failure.
 
 DOM/CDP targeting order:
 

@@ -461,6 +461,19 @@ function Copy-ShortcutIcon {
     Copy-Item -LiteralPath $SourceIconPath -Destination $TargetIconPath -Force
 }
 
+function Assert-Python311Plus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonExe
+    )
+
+    $version = (& $PythonExe -c "import sys; print(sys.version)" 2>&1 | Out-String).Trim()
+    & $PythonExe -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "browser-harness requires Python >= 3.11. Current Python is: $version"
+    }
+}
+
 function Build-ProjectWheel {
     param(
         [Parameter(Mandatory = $true)]
@@ -490,6 +503,50 @@ function Build-ProjectWheel {
         & $PythonExe -m pip wheel . --no-deps --wheel-dir $TargetWheelhouseDir --no-build-isolation
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to build project wheel with $PythonExe. Install hatchling or pass a prebuilt wheelhouse."
+        }
+    }
+    finally {
+        Pop-Location
+        $env:TEMP = $previousTemp
+        $env:TMP = $previousTmp
+        $env:PIP_BUILD_TRACKER = $previousBuildTracker
+    }
+}
+
+function Build-BrowserHarnessWheel {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PythonExe,
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$TargetWheelhouseDir,
+        [Parameter(Mandatory = $true)]
+        [string]$TempRoot
+    )
+
+    $skillDir = Join-Path $RepoRoot "skills\browser-harness"
+    if (-not (Test-Path -LiteralPath (Join-Path $skillDir "pyproject.toml"))) {
+        throw "browser-harness package metadata not found: $skillDir"
+    }
+
+    Get-ChildItem -LiteralPath $TargetWheelhouseDir -Filter "browser_harness-*.whl" -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+
+    New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
+    $previousTemp = $env:TEMP
+    $previousTmp = $env:TMP
+    $previousBuildTracker = $env:PIP_BUILD_TRACKER
+
+    Push-Location $skillDir
+    try {
+        $env:TEMP = $TempRoot
+        $env:TMP = $TempRoot
+        $env:PIP_BUILD_TRACKER = Join-Path $TempRoot "pip-build-tracker"
+        New-Item -ItemType Directory -Path $env:PIP_BUILD_TRACKER -Force | Out-Null
+        & $PythonExe -m pip wheel . --wheel-dir $TargetWheelhouseDir --find-links $TargetWheelhouseDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to build browser-harness wheel with $PythonExe. Ensure its dependencies are available for this Python version."
         }
     }
     finally {
@@ -596,17 +653,22 @@ Workspace behavior:
 - Running launcher from a terminal uses the current working directory as the workspace.
 - Double-clicking launcher from the bundle directory falls back to the Desktop directory.
 - Global config stays in %USERPROFILE%\.tg_agent.
-- After deploy.bat, `crab` works in cmd, PowerShell, and Git Bash.
+- After deploy.bat, `crab` and `browser-harness` work in cmd, PowerShell, and Git Bash.
 
-Notes:
-- deploy.bat copies the bundled Python runtime into %USERPROFILE%\.tg_agent\python-runtime and creates
-  %USERPROFILE%\.tg_agent\.venv from that stable runtime.
+- deploy.bat recreates %USERPROFILE%\.tg_agent\python-runtime and
+  %USERPROFILE%\.tg_agent\.venv from the bundled runtime.
+- deploy.bat removes old install-managed %USERPROFILE%\.tg_agent\bin before regenerating launchers.
 - crab and dependencies are installed offline from wheelhouse\.
-- deploy.bat also installs a `crab` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
+- deploy.bat also installs `crab` and `browser-harness` command shims into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
 - deploy.bat registers the `crab://open` protocol for launching the local CLI from a browser.
 - deploy.bat removes stale crab/tg-agent command shim files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
 - If `crab` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
+
+Browser harness:
+- deploy.bat installs browser-harness into %USERPROFILE%\.tg_agent\.venv.
+- Enable Chrome remote debugging at chrome://inspect/#remote-debugging.
+- Open a new cmd or PowerShell window and run: browser-harness --doctor.
 "@
     Set-Content -LiteralPath $OutputPath -Value $content -Encoding ASCII
 }
@@ -638,11 +700,12 @@ $InstalledRuntimeDir = Join-Path $InstallRoot "python-runtime"
 $InstalledRuntimePython = Join-Path $InstalledRuntimeDir "python.exe"
 $VenvDir = Join-Path $InstallRoot ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
-$PyvenvConfig = Join-Path $VenvDir "pyvenv.cfg"
 $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
 $BashCommandShim = Join-Path $BinDir "crab"
+$BrowserHarnessCommandShim = Join-Path $BinDir "browser-harness.cmd"
+$BrowserHarnessBashShim = Join-Path $BinDir "browser-harness"
 $ProtocolLauncher = Join-Path $BinDir "crab-protocol-launcher.bat"
 $ProtocolLauncherPs1 = Join-Path $BinDir "crab-protocol-launcher.ps1"
 $LegacyCommandExe = Join-Path $BinDir "crab.exe"
@@ -672,30 +735,6 @@ function Install-BundledRuntime {
     }
 
     Copy-Item -LiteralPath $SourceRuntimeDir -Destination $InstallRootDir -Recurse -Force
-}
-
-function Test-VenvUsesRuntime {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$PyvenvConfigPath,
-        [Parameter(Mandatory = $true)]
-        [string]$ExpectedRuntimeDir
-    )
-
-    if (-not (Test-Path -LiteralPath $PyvenvConfigPath)) {
-        return $false
-    }
-
-    $homeLine = Get-Content -LiteralPath $PyvenvConfigPath -ErrorAction SilentlyContinue |
-        Where-Object { $_ -match '^\s*home\s*=' } |
-        Select-Object -First 1
-    if (-not $homeLine) {
-        return $false
-    }
-
-    $configuredHome = [System.IO.Path]::GetFullPath(($homeLine -replace '^\s*home\s*=\s*', '').Trim())
-    $expectedHome = [System.IO.Path]::GetFullPath($ExpectedRuntimeDir)
-    return $configuredHome.TrimEnd('\') -ieq $expectedHome.TrimEnd('\')
 }
 
 function Add-UserPathEntry {
@@ -885,7 +924,19 @@ if (-not $projectWheel) {
     throw "Project wheel not found in wheelhouse: $WheelhouseDir"
 }
 
+$browserHarnessWheel = Get-ChildItem -LiteralPath $WheelhouseDir -Filter "browser_harness-*.whl" |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+if (-not $browserHarnessWheel) {
+    throw "browser-harness wheel not found in wheelhouse: $WheelhouseDir"
+}
+
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
+foreach ($installManagedPath in @($VenvDir, $BinDir, $InstalledRuntimeDir)) {
+    if (Test-Path -LiteralPath $installManagedPath) {
+        Remove-Item -LiteralPath $installManagedPath -Recurse -Force
+    }
+}
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 Install-BundledRuntime -SourceRuntimeDir $RuntimeDir -InstallRootDir $InstallRoot -TargetRuntimeDir $InstalledRuntimeDir
 
@@ -893,21 +944,9 @@ if (-not (Test-Path -LiteralPath $InstalledRuntimePython)) {
     throw "Installed Python runtime not found after copy: $InstalledRuntimePython"
 }
 
-if ($ForceRecreateVenv -and (Test-Path -LiteralPath $VenvDir)) {
-    Remove-Item -LiteralPath $VenvDir -Recurse -Force
-}
-
-$venvNeedsRebuild = (-not (Test-Path -LiteralPath $VenvPython)) -or
-    (-not (Test-VenvUsesRuntime -PyvenvConfigPath $PyvenvConfig -ExpectedRuntimeDir $InstalledRuntimeDir))
-if ($venvNeedsRebuild -and (Test-Path -LiteralPath $VenvDir)) {
-    Remove-Item -LiteralPath $VenvDir -Recurse -Force
-}
-
-if (-not (Test-Path -LiteralPath $VenvPython)) {
-    & $InstalledRuntimePython -m venv $VenvDir
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
-        throw "Failed to create virtual environment: $VenvDir"
-    }
+& $InstalledRuntimePython -m venv $VenvDir
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
+    throw "Failed to create virtual environment: $VenvDir"
 }
 
 & $VenvPython -m ensurepip --upgrade
@@ -918,6 +957,11 @@ if ($LASTEXITCODE -ne 0) {
 & $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $projectWheel.FullName
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install crab from bundled wheelhouse"
+}
+
+& $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $browserHarnessWheel.FullName
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to install browser-harness from bundled wheelhouse"
 }
 
 $entryShimContent = @(
@@ -977,6 +1021,44 @@ $bashCommandShimContent = @(
     'exec "$venv_python" -u "$entry_shim" "$@"'
 ) -join "`n"
 Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
+
+$browserHarnessCommandShimContent = @(
+    '@echo off',
+    'setlocal',
+    'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
+    'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
+    '',
+    'if not exist "%VENV_PYTHON%" (',
+    '    echo browser-harness is not installed because crab''s Python venv is missing.',
+    '    echo Run deploy.bat from the portable bundle first.',
+    '    exit /b 1',
+    ')',
+    '',
+    '"%VENV_PYTHON%" -m browser_harness.run %*',
+    'exit /b %ERRORLEVEL%'
+) -join "`r`n"
+Set-Content -LiteralPath $BrowserHarnessCommandShim -Value $browserHarnessCommandShimContent -Encoding ASCII
+
+$browserHarnessBashShimContent = @(
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    '',
+    'install_root="${TG_AGENT_HOME:-${HOME}/.tg_agent}"',
+    'if [ -n "${USERPROFILE:-}" ] && [ ! -d "$install_root" ]; then',
+    '  install_root="${USERPROFILE}/.tg_agent"',
+    'fi',
+    '',
+    'venv_python="${install_root}/.venv/Scripts/python.exe"',
+    '',
+    'if [ ! -x "$venv_python" ]; then',
+    '  echo "browser-harness is not installed because crab''s Python venv is missing." >&2',
+    '  echo "Run deploy.bat from the portable bundle first." >&2',
+    '  exit 1',
+    'fi',
+    '',
+    'exec "$venv_python" -m browser_harness.run "$@"'
+) -join "`n"
+Set-Content -LiteralPath $BrowserHarnessBashShim -Value $browserHarnessBashShimContent -Encoding ASCII
 
 $protocolLauncherContent = @(
     '@echo off',
@@ -1213,6 +1295,8 @@ Write-Host "[portable] installed runtime: $InstalledRuntimeDir"
 Write-Host "[portable] venv ready: $VenvDir"
 Write-Host "[portable] command shim: $CommandShim"
 Write-Host "[portable] bash shim: $BashCommandShim"
+Write-Host "[portable] browser-harness shim: $BrowserHarnessCommandShim"
+Write-Host "[portable] browser-harness bash shim: $BrowserHarnessBashShim"
 Write-Host "[portable] protocol launcher: $ProtocolLauncher"
 if ($pathUpdated) {
     Write-Host "[portable] added to user PATH: $BinDir"
@@ -1224,6 +1308,7 @@ Write-Host "[portable] launcher: $LauncherPath"
 Write-Host "[portable] registered protocol: crab://open"
 Write-Host "[portable] open a new cmd window from Explorer and run: crab"
 Write-Host "[portable] in Git Bash, you can also run: crab"
+Write-Host "[portable] browser-harness: enable Chrome remote debugging, then run: browser-harness --doctor"
 Write-Host "[portable] if crab is still not found, sign out and sign back in once."
 if ($existingCrabCommands.Count -gt 0) {
     $conflictingCommand = $existingCrabCommands[0]
@@ -1263,6 +1348,8 @@ $resolvedPythonHome = Resolve-PythonHome -PythonExe $resolvedPythonExe -Explicit
 if ((Test-CondaPythonHome -PythonHomeDir $resolvedPythonHome) -and -not $AllowCondaPythonRuntime) {
     throw "Resolved Python home appears to be a conda runtime: $resolvedPythonHome. Use a standard CPython install or pass -AllowCondaPythonRuntime if you really want to continue."
 }
+Assert-Python311Plus -PythonExe $resolvedPythonExe
+Assert-Python311Plus -PythonExe (Join-Path $resolvedPythonHome "python.exe")
 $resolvedSourceWheelhouse = if ($SourceWheelhouse) {
     [System.IO.Path]::GetFullPath($SourceWheelhouse)
 }
@@ -1320,6 +1407,9 @@ if ($resolvedSourceWheelhouse -and -not $SkipProjectWheelBuild) {
     Write-Host "[portable] building project wheel..."
     Build-ProjectWheel -PythonExe $resolvedPythonExe -RepoRoot $repoRoot -TargetWheelhouseDir $wheelhouseDir -TempRoot $tempDir
 }
+
+Write-Host "[portable] building browser-harness wheel..."
+Build-BrowserHarnessWheel -PythonExe $resolvedPythonExe -RepoRoot $repoRoot -TargetWheelhouseDir $wheelhouseDir -TempRoot $tempDir
 
 if (Test-Path -LiteralPath $tempDir) {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
