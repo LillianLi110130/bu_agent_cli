@@ -109,6 +109,9 @@ If the user hasn't said which connection method to use, default to Way 1 if Chro
    PY
    ```
 
+   On Windows agents with the `browser_harness` tool available, run the same
+   `print(page_info())` script through that tool instead of shell pipes.
+
    If it prints page info, you're done.
 
 2. Otherwise run `browser-harness --doctor`. The two lines that matter for connection are `chrome running` and `daemon alive`.
