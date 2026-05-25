@@ -250,7 +250,7 @@ class ChatGateway(BaseChatModel):
                     return
         except httpx.HTTPStatusError as exc:
             raise ModelProviderError(
-                message=exc.response.text or str(exc),
+                message=await self._read_stream_error_message(exc.response),
                 status_code=exc.response.status_code,
                 model=self.name,
             ) from exc
