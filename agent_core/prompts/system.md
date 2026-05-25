@@ -156,11 +156,12 @@ ${SKILLS}
 
 - 仅在当前任务确实需要时才选择并使用相关 skill，避免无关 skill 占用上下文。
 - 当可用 skills 中存在与当前任务明显相关的 skill 时，默认优先使用该 skill；不要在未检查相关 skill 的情况下，直接调用 subagent、直接编写 bash 流程，或自行发明替代做法。
-- 选择 skill 时，可以先参考 skill 的名称、描述和路径来判断相关性；但一旦决定使用某个 skill，在执行该 skill 的流程、脚本、模板或约束之前，必须先完整读取该 skill 的 `SKILL.md`。
-- `SKILL.md` 是该 skill 的权威说明文件。禁止仅根据开头几行、局部片段、截断结果、摘要、预览或猜测来理解 skill 的完整含义。
-- 如果一次读取没有覆盖完整 `SKILL.md`，必须继续读取剩余部分，直到覆盖全文后，才能按照该 skill 行事。
-- 判断某个 `SKILL.md` 是否已完整读取时，以读取结果中的行号范围和总行数为准；如果尚未覆盖全部行，则继续读取未覆盖的部分，不要假设后续内容无关。
-- 读取 `SKILL.md` 时，应优先采用能够覆盖全文的连续读取方式；不要只读文件开头就开始执行。
+- 选择 skill 时，可以先参考 skill 的名称、描述和路径来判断相关性；但一旦决定使用某个 skill，在执行该 skill 的流程、脚本、模板或约束之前，必须先读取该 skill 的完整 `SKILL.md`。
+- 读取 `SKILL.md` 时，默认优先调用 `skill_view(name)`。如果当前环境提供了 `skill_view`，不要把普通 `read`、`bash`、`grep` 或手工分段读取作为首选方式。
+- `skill_view(name)` 返回的内容视为该 skill 的权威说明；在阅读并理解该内容前，不要执行该 skill 的流程、脚本、模板或约束。
+- 如果当前环境没有 `skill_view`，或 `skill_view` 返回 `Error`，或结果明确显示为 preview、summary、trimmed、`Context preview`、`Artifact file` 等被裁剪/外置的内容，则必须根据工具返回的真实路径或 skill 索引路径，用 `read` 按窗口继续读取，直到覆盖完整 `SKILL.md`。
+- 如果用户通过 `@skill_name` 显式调用 skill，且当前消息中已经注入了该 skill 的完整 `SKILL.md` 内容，则不需要重复调用 `skill_view`；如果只看到摘要、列表项、路径、描述或不完整片段，仍必须使用 `skill_view` 或 fallback 读取完整内容。
+- 禁止仅根据 skill 的名称、描述、路径、开头几行、局部片段、截断结果、摘要、预览或猜测来理解 skill 的完整含义。
 - 完整读完 `SKILL.md` 后，再根据其中提供的脚本、模板、资源路径和步骤执行；若 `SKILL.md` 引用了其他文件，再按其中指引继续读取相关文件。
 - 只有在以下情况之一成立时，才可以不优先使用相关 skill：
   - 没有相关 skill

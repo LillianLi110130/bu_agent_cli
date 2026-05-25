@@ -498,14 +498,14 @@ class HumanApprovalHook(BaseAgentHook):
         if not isinstance(event, ToolCallRequested):
             return None
 
+        if not ctx.agent.human_in_loop_config.enabled:
+            return None
+
         mandatory_request = self._build_mandatory_request(event, ctx)
         if mandatory_request is not None:
             if self._is_session_approved(mandatory_request):
                 return None
             return await self._request_or_terminate(event, ctx, mandatory_request)
-
-        if not ctx.agent.human_in_loop_config.enabled:
-            return None
 
         request = self._build_request(event, ctx)
         if request is None:

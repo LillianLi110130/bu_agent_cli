@@ -39,6 +39,7 @@ from agent_core.agent.runtime_events import (
     ToolResultReceived,
 )
 from agent_core.agent.runtime_state import AgentRunState
+from agent_core.agent.thinking_parser import ThinkTagParser
 from agent_core.agent.tool_args import parse_tool_arguments_for_display
 from agent_core.agent.tool_call_validation import build_invalid_tool_call_recovery_prompt
 from agent_core.llm.messages import AssistantMessage, SystemMessage, ToolMessage, UserMessage
@@ -118,6 +119,7 @@ class AgentRuntimeLoop:
                     stop_reason = None
                     think_id = f"think-{event.iteration}"
                     thinking_started = False
+                    think_parser = ThinkTagParser()
 
                     try:
                         async for chunk in self.agent._astream_llm(
@@ -126,9 +128,29 @@ class AgentRuntimeLoop:
                             tool_choice=event.tool_choice,
                         ):
                             if chunk.delta:
-                                content_parts.append(chunk.delta)
-                                if emit_ui_events:
-                                    yield TextDeltaEvent(delta=chunk.delta)
+                                for parse_event in think_parser.feed_events(chunk.delta):
+                                    if parse_event.kind == "text":
+                                        content_parts.append(parse_event.content)
+                                        if emit_ui_events:
+                                            yield TextDeltaEvent(delta=parse_event.content)
+                                    elif parse_event.kind == "thinking_start":
+                                        if emit_ui_events and not thinking_started:
+                                            thinking_started = True
+                                            yield ThinkingStartEvent(think_id=think_id)
+                                    elif parse_event.kind == "thinking_delta":
+                                        thinking_parts.append(parse_event.content)
+                                        if emit_ui_events:
+                                            if not thinking_started:
+                                                thinking_started = True
+                                                yield ThinkingStartEvent(think_id=think_id)
+                                            yield ThinkingDeltaEvent(
+                                                delta=parse_event.content,
+                                                think_id=think_id,
+                                            )
+                                    elif parse_event.kind == "thinking_end":
+                                        if emit_ui_events and thinking_started:
+                                            yield ThinkingEndEvent(think_id=think_id)
+                                        thinking_started = False
                             if chunk.thinking:
                                 thinking_parts.append(chunk.thinking)
                                 if emit_ui_events:
@@ -145,6 +167,29 @@ class AgentRuntimeLoop:
                                 usage = chunk.usage
                             if chunk.stop_reason is not None:
                                 stop_reason = chunk.stop_reason
+                        for parse_event in think_parser.flush_events():
+                            if parse_event.kind == "text":
+                                content_parts.append(parse_event.content)
+                                if emit_ui_events:
+                                    yield TextDeltaEvent(delta=parse_event.content)
+                            elif parse_event.kind == "thinking_start":
+                                if emit_ui_events and not thinking_started:
+                                    thinking_started = True
+                                    yield ThinkingStartEvent(think_id=think_id)
+                            elif parse_event.kind == "thinking_delta":
+                                thinking_parts.append(parse_event.content)
+                                if emit_ui_events:
+                                    if not thinking_started:
+                                        thinking_started = True
+                                        yield ThinkingStartEvent(think_id=think_id)
+                                    yield ThinkingDeltaEvent(
+                                        delta=parse_event.content,
+                                        think_id=think_id,
+                                    )
+                            elif parse_event.kind == "thinking_end":
+                                if emit_ui_events and thinking_started:
+                                    yield ThinkingEndEvent(think_id=think_id)
+                                thinking_started = False
                         if emit_ui_events and thinking_started:
                             yield ThinkingEndEvent(think_id=think_id)
                     except asyncio.CancelledError:

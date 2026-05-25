@@ -26,6 +26,7 @@ from cli.session_store import CLISessionStore, workspace_identity
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.runtime_factory import EchoLLM
 from tools import SandboxContext
+from tools.image_analysis import analyze_image
 
 
 class _DummyPrompter:
@@ -320,6 +321,51 @@ async def test_run_agent_preinjects_workspace_tgagents_for_main_agent(workspace_
     assert final_content == "processed:hello"
     assert "test" in seen_system_contents
     assert "repo rules" in seen_system_contents
+
+
+@pytest.mark.asyncio
+async def test_run_agent_hides_analyze_image_for_image_turn(workspace_root, monkeypatch):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+    cli._agent.tools = [analyze_image]
+    cli._agent._tool_map = {analyze_image.name: analyze_image}
+    seen_tool_names: list[list[str]] = []
+    seen_tool_map_names: list[list[str]] = []
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del user_input, cancel_event
+        seen_tool_names.append([tool.name for tool in cli._agent.tools])
+        seen_tool_map_names.append(sorted(cli._agent._tool_map))
+        yield FinalResponseEvent(content="done")
+
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+
+    final_content = await cli._run_agent("image payload", has_image=True)
+
+    assert final_content == "done"
+    assert seen_tool_names == [[]]
+    assert seen_tool_map_names == [[]]
+    assert [tool.name for tool in cli._agent.tools] == ["analyze_image"]
+    assert sorted(cli._agent._tool_map) == ["analyze_image"]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_keeps_analyze_image_for_text_turn(workspace_root, monkeypatch):
+    cli, _store = _create_cli(workspace_root, monkeypatch)
+    cli._agent.tools = [analyze_image]
+    cli._agent._tool_map = {analyze_image.name: analyze_image}
+    seen_tool_names: list[list[str]] = []
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del user_input, cancel_event
+        seen_tool_names.append([tool.name for tool in cli._agent.tools])
+        yield FinalResponseEvent(content="done")
+
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+
+    final_content = await cli._run_agent("please analyze D:\\shot.png", has_image=False)
+
+    assert final_content == "done"
+    assert seen_tool_names == [["analyze_image"]]
 
 
 @pytest.mark.asyncio
