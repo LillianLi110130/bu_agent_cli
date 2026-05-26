@@ -66,6 +66,7 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
+from agent_core.release_notes import load_release_notes
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from agent_core.version import get_cli_version
@@ -3831,16 +3832,21 @@ class TGAgentCLI:
         )
 
         version_header = Text()
+        current_version = get_cli_version()
+        release_notes = load_release_notes(expected_version=current_version)
         version_header.append("当前版本：", style="#e5e7eb")
-        version_header.append(" v0.7.0  2026-05-11 ", style="bold #ffeb82 on #332313")
-        version_notes = """- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
-- ✨ 优化edit工具
-- 🐞 修复模型响应内容被截断的阻断问题
-- 🐞 上下文压缩改为流式
-"""
+        version_label = f" v{current_version} "
+        if release_notes and release_notes.published_at:
+            version_label = f" v{current_version}  {release_notes.published_at} "
+        version_header.append(version_label, style="bold #ffeb82 on #332313")
+
+        version_content: list[Any] = [version_header]
+        if release_notes and release_notes.notes:
+            version_notes = "\n".join(f"- {note}" for note in release_notes.notes)
+            version_content.extend([Text(""), Markdown(version_notes, style="#e5e7eb")])
         self._console.print(
             Panel(
-                Group(version_header, Text(""), Markdown(version_notes, style="#e5e7eb")),
+                Group(*version_content),
                 border_style="#ffeb82",
                 padding=(1, 2),
                 width=self._panel_width(),
