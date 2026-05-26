@@ -72,6 +72,7 @@ from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
+from rich import box
 from rich.color import Color
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -3854,6 +3855,7 @@ class TGAgentCLI:
                 banner,
                 subtitle="[dim]ready when you are[/dim]",
                 border_style=accent,
+                box=box.DOUBLE,
                 padding=(2, 2),
                 width=self._panel_width(),
             )
