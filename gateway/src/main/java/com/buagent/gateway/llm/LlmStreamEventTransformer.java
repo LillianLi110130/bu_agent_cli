@@ -32,6 +32,12 @@ class LlmStreamEventTransformer {
     private int anonymousToolCallCounter = 0;
     private boolean doneEmitted = false;
     private boolean terminalCommentEmitted = false;
+    // terminal 表示下游 SSE 已经完成收尾；后续上游 chunk 必须被忽略，
+    // 避免出现 error/done 之后继续输出 text 或 tool_call 的协议错乱。
+    private boolean terminal = false;
+    // abortUpstream 只用于不可恢复的上游协议错误。它要求 service 停止继续消费
+    // 当前上游 Flux，而不是安静地丢弃后续 chunk 直到连接自然结束。
+    private boolean abortUpstream = false;
     private String lastStopReason;
 
     LlmStreamEventTransformer(ObjectMapper objectMapper) {
@@ -42,6 +48,9 @@ class LlmStreamEventTransformer {
      * 接收一段上游流文本，只处理其中已经完整到达的 SSE 行。
      */
     List<String> accept(String text) {
+        if (terminal) {
+            return Collections.emptyList();
+        }
         if (text == null || text.isEmpty()) {
             return Collections.emptyList();
         }
@@ -62,7 +71,7 @@ class LlmStreamEventTransformer {
      */
     List<String> finish() {
         List<String> events = new ArrayList<String>();
-        if (pendingText.length() > 0) {
+        if (!terminal && pendingText.length() > 0) {
             String line = pendingText.toString();
             pendingText.setLength(0);
             events.addAll(processLine(removeTrailingCarriageReturn(line)));
@@ -76,7 +85,12 @@ class LlmStreamEventTransformer {
             events.add(": done\n\n");
             terminalCommentEmitted = true;
         }
+        terminal = true;
         return events;
+    }
+
+    boolean shouldAbortUpstream() {
+        return abortUpstream;
     }
 
     /**
@@ -92,6 +106,9 @@ class LlmStreamEventTransformer {
         }
 
         String data = trimmedLine.substring("data:".length()).trim();
+        if (data.isEmpty() || ",".equals(data)) {
+            return Collections.emptyList();
+        }
         if ("[DONE]".equals(data)) {
             return emitDoneFromProviderSignal();
         }
@@ -119,12 +136,16 @@ class LlmStreamEventTransformer {
             events.addAll(buildUsageEvents(root.path("usage")));
             return events;
         } catch (Exception exception) {
+            // 上游 JSON 已经无法解析，本次流的协议语义不可继续信任。
+            // 这里立即输出 error 和终止注释，并让 service 取消后续上游消费。
             events.add(buildErrorEvent(
                 "Invalid LLM upstream stream payload: " + exception.getMessage()
             ));
             events.add(": done\n\n");
             doneEmitted = true;
             terminalCommentEmitted = true;
+            terminal = true;
+            abortUpstream = true;
             return events;
         }
     }
@@ -251,6 +272,7 @@ class LlmStreamEventTransformer {
         events.addAll(flushToolCalls());
         events.add(buildDoneEvent(lastStopReason));
         doneEmitted = true;
+        terminal = true;
         return events;
     }
 

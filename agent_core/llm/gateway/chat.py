@@ -68,10 +68,7 @@ class ChatGateway(BaseChatModel):
         normalized = value.strip()
         if not normalized:
             return None
-        lowered = normalized.lower()
-        if lowered.startswith("bearer ") or lowered.startswith("basic "):
-            return normalized
-        return f"Bearer {normalized}"
+        return normalized
 
     def _resolve_authorization(self) -> str | None:
         if self._authorization:
@@ -278,7 +275,7 @@ class ChatGateway(BaseChatModel):
                     return
         except httpx.HTTPStatusError as exc:
             raise ModelProviderError(
-                message=exc.response.text or str(exc),
+                message=await self._read_stream_error_message(exc.response),
                 status_code=exc.response.status_code,
                 model=self.name,
             ) from exc
