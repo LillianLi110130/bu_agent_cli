@@ -23,6 +23,7 @@ import logging
 import os
 import socket
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -427,6 +428,7 @@ def _strip_internal_team_worker_flag(argv: list[str] | None = None) -> list[str]
 def _build_worker_process_command(
     *,
     worker_id: str,
+    worker_no: str,
     gateway_base_url: str,
     config_dir: Path,
     root_dir: Path,
@@ -442,6 +444,8 @@ def _build_worker_process_command(
         [
             "--worker-id",
             worker_id,
+            "--worker-no",
+            worker_no,
             "--gateway-base-url",
             gateway_base_url,
             "--config-dir",
@@ -453,6 +457,11 @@ def _build_worker_process_command(
     if model:
         command.extend(["--model", model])
     return command
+
+
+def _generate_worker_no() -> str:
+    """Generate one terminal-instance identifier for this CLI process."""
+    return f"worker-{uuid.uuid4().hex[:12]}"
 
 
 def parse_args():
@@ -497,7 +506,11 @@ def parse_args():
     if args.im_enable:
         args.local_bridge = True
         args.im_worker_id = _DEFAULT_IM_WORKER_ID
+        args.im_worker_no = _generate_worker_no()
         args.im_gateway_base_url = args.im_gateway_base_url or auth_config.gateway_base_url
+    else:
+        args.im_worker_id = None
+        args.im_worker_no = _generate_worker_no()
     return args
 
 
@@ -509,7 +522,7 @@ def _build_bridge_store(
     """Create the file-backed bridge store for local or IM-enabled runs."""
     if not (args.local_bridge or args.im_enable):
         return None
-    binding_source = args.im_worker_id or "local-cli"
+    binding_source = getattr(args, "im_worker_no", None) or "local-cli"
     session_binding_id = resolve_session_binding_id(binding_source)
     return FileBridgeStore(root_dir=ctx.working_dir, session_binding_id=session_binding_id)
 
@@ -527,6 +540,7 @@ async def _start_im_worker_process(
         name
         for name, value in (
             ("worker_id", args.im_worker_id),
+            ("worker_no", args.im_worker_no),
             ("gateway_base_url", args.im_gateway_base_url),
         )
         if not value
@@ -537,6 +551,7 @@ async def _start_im_worker_process(
 
     command = _build_worker_process_command(
         worker_id=str(args.im_worker_id),
+        worker_no=str(args.im_worker_no),
         gateway_base_url=str(args.im_gateway_base_url),
         config_dir=Path(getattr(args, "config_dir", Path.cwd())).resolve(),
         root_dir=ctx.working_dir,
@@ -591,6 +606,7 @@ async def _mark_worker_offline(
     *,
     worker_id: str | None,
     gateway_base_url: str | None,
+    worker_no: str | None = None,
     base_dir: Path | str | None = None,
 ) -> None:
     """Best-effort offline notification sent by the parent CLI process."""
@@ -608,7 +624,13 @@ async def _mark_worker_offline(
         base_dir=base_dir,
     )
     try:
-        await client.offline(worker_id=worker_id)
+        offline_kwargs: dict[str, str | None] = {
+            "worker_id": worker_id,
+            "worker_no": worker_no,
+        }
+        if "worker_no" not in inspect.signature(client.offline).parameters:
+            offline_kwargs.pop("worker_no", None)
+        await client.offline(**offline_kwargs)
     except Exception:
         pass
     finally:
@@ -826,7 +848,9 @@ async def main():
         bridge_store=bridge_store,
         session_runtime=session_runtime,
         im_worker_id=args.im_worker_id if args.im_enable else None,
+        im_worker_no=args.im_worker_no if args.im_enable else None,
         im_gateway_base_url=args.im_gateway_base_url if args.im_enable else None,
+        im_auth_base_dir=args.config_dir if args.im_enable else None,
     )
 
     try:
@@ -842,6 +866,7 @@ async def main():
         await _close_llm_runtime(agent.llm)
         await _mark_worker_offline(
             worker_id=args.im_worker_id,
+            worker_no=args.im_worker_no,
             gateway_base_url=args.im_gateway_base_url,
             base_dir=args.config_dir,
         )

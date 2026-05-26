@@ -18,8 +18,11 @@ def test_parse_args_defaults_enable_local_bridge_and_im(monkeypatch, tmp_path):
 
     assert args.local_bridge is True
     assert args.im_enable is True
-    assert args.im_gateway_base_url == "http://127.0.0.1:8765"
+    assert args.im_gateway_base_url == tg_crab_main.load_auth_config(
+        base_dir=tmp_path.resolve()
+    ).gateway_base_url
     assert args.im_worker_id.startswith("worker-")
+    assert args.im_worker_no.startswith("worker-")
 
 
 def test_parse_args_can_disable_im_and_local_bridge(monkeypatch, tmp_path):
@@ -212,24 +215,40 @@ def test_build_system_prompt_delegates_to_agent_factory(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 async def test_parent_process_marks_worker_offline(monkeypatch):
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str | None, Path | None]] = []
 
     class FakeGatewayClient:
-        def __init__(self, *, base_url: str, client=None, authorization=None):
+        def __init__(self, *, base_url: str, client=None, authorization=None, base_dir=None):
             self.base_url = base_url
+            self.authorization = authorization
+            self.base_dir = Path(base_dir).resolve() if base_dir is not None else None
 
         async def offline(self, *, worker_id: str) -> bool:
-            calls.append((self.base_url, worker_id))
+            calls.append((self.base_url, worker_id, self.authorization, self.base_dir))
             return True
 
         async def aclose(self) -> None:
             return None
 
     monkeypatch.setattr(tg_crab_main, "WorkerGatewayClient", FakeGatewayClient)
+    monkeypatch.setattr(
+        tg_crab_main,
+        "load_persisted_auth_result",
+        lambda *, base_dir: type(
+            "PersistedAuth",
+            (),
+            {"authorization": "Bearer test-token"},
+        )(),
+    )
+
+    config_dir = Path("d:/tmp/test-config")
 
     await tg_crab_main._mark_worker_offline(
         worker_id="worker-1",
         gateway_base_url="http://127.0.0.1:8765",
+        base_dir=config_dir,
     )
 
-    assert calls == [("http://127.0.0.1:8765", "worker-1")]
+    assert calls == [
+        ("http://127.0.0.1:8765", "worker-1", "Bearer test-token", config_dir.resolve())
+    ]

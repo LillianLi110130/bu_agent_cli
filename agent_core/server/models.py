@@ -46,6 +46,18 @@ class LLMQueryRequest(BaseModel):
     """Request model for the pure LLM gateway streaming endpoint."""
 
     model: str = Field(..., description="Target gateway model or alias")
+    worker_no: str | None = Field(
+        default=None,
+        description="CLI terminal instance identifier used for request attribution.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Unified local/remote conversation session identifier.",
+    )
+    user_id: str | None = Field(
+        default=None,
+        description="Optional authenticated user identity for attribution.",
+    )
     messages: list[BaseMessage] = Field(..., description="Serialized local runtime messages")
     tools: list[ToolDefinition] | None = Field(
         default=None,
@@ -246,6 +258,14 @@ class LLMUsageEvent(StreamEventType):
     usage: ChatInvokeUsage = Field(..., description="Per-invocation usage information")
 
 
+class LLMSessionEvent(StreamEventType):
+    """Emitted when the gateway creates or confirms the unified session id."""
+
+    type: Literal["session"] = "session"
+    session_id: str = Field(..., description="Unified conversation session identifier")
+    is_new: bool = Field(default=False, description="Whether the session was created now")
+
+
 class LLMDoneEvent(StreamEventType):
     """Emitted when the pure LLM gateway stream completes."""
 
@@ -267,6 +287,7 @@ StreamEvent = (
     | StepCompleteEvent
     | FinalResponseEvent
     | HiddenMessageEvent
+    | LLMSessionEvent
     | LLMUsageEvent
     | LLMDoneEvent
 )
