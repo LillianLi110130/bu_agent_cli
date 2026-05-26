@@ -23,6 +23,7 @@ from .admin import (
     stop_remote_daemon,
     sync_local_profile,
 )
+from ._ipc import cdp_probe_ports
 from .helpers import *
 
 HELP = """Browser Harness
@@ -54,10 +55,10 @@ USAGE = """Usage:
 
 
 # Probe /json/version (not a bare TCP connect) so a non-Chrome process bound to
-# 9222/9223 doesn't masquerade as Chrome and skip the cloud bootstrap. Mirrors
-# daemon.py's fallback probe.
+# a common CDP port doesn't masquerade as Chrome and skip the cloud bootstrap.
+# Mirrors daemon.py's fallback probe.
 def _local_chrome_listening():
-    for port in (9222, 9223):
+    for port in cdp_probe_ports():
         try:
             urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3).close()
             return True
