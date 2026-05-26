@@ -206,7 +206,9 @@ windows-x64
   -> updater 检查 stable.json
   -> 没有更新则继续启动 crab
   -> 有更新则询问用户
-  -> 用户确认后下载并安装
+  -> 用户确认后下载、校验、解压
+  -> updater 生成 pending 部署脚本并退出
+  -> launcher 执行 pending 部署脚本
   -> 安装完成后启动新版本 crab
 ```
 
@@ -216,13 +218,21 @@ windows-x64
 CRAB_SKIP_UPDATE_CHECK=1 crab
 ```
 
-launcher 只调用 updater，不写下载和安装逻辑。真正安装只发生在 `check-before-launch` 阶段，此时 Crab 主进程还没有启动，可以避免运行中覆盖 `.venv`。
+launcher 只负责调用 updater 和执行 updater 生成的 pending 部署脚本，不写下载和安装细节。`check-before-launch` 负责检查、下载、校验、解压，并生成 pending 部署脚本；真正安装由 launcher 在 Crab 主进程启动前执行 pending 部署脚本完成。
 
 Linux launcher 调用方式：
 
 ```bash
 if [[ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]]; then
-  "${venv_python}" -m agent_core.updater check-before-launch || true
+  set +e
+  "${venv_python}" -m agent_core.updater check-before-launch
+  update_status=$?
+  set -e
+  if [[ "${update_status}" -eq 20 ]]; then
+    "${install_root}/updates/pending_update.sh"
+  elif [[ "${update_status}" -ne 0 ]]; then
+    exit "${update_status}"
+  fi
 fi
 
 exec "${venv_python}" -u "${entry_shim}" "$@"
@@ -233,6 +243,18 @@ Windows launcher 调用方式：
 ```powershell
 if ($env:CRAB_SKIP_UPDATE_CHECK -ne "1") {
     & $venvPython -m agent_core.updater check-before-launch
+    $updateExitCode = $LASTEXITCODE
+    if ($updateExitCode -eq 20) {
+        $pendingUpdate = Join-Path $installRoot "updates\pending_update.ps1"
+        powershell -NoProfile -ExecutionPolicy Bypass -File $pendingUpdate
+        $pendingExitCode = $LASTEXITCODE
+        if ($pendingExitCode -ne 0) {
+            exit $pendingExitCode
+        }
+    }
+    elseif ($updateExitCode -ne 0) {
+        exit $updateExitCode
+    }
 }
 
 & $venvPython -u $entryShim @CliArgs
@@ -273,8 +295,10 @@ python -m agent_core.updater status
 4. 比较 latest 和当前版本
 5. 无更新则退出
 6. 有更新则显示版本和 notes
-7. 用户确认后下载、校验、解压并调用 deploy 更新
-8. 更新完成后启动新版本 crab
+7. 用户确认后下载、校验、解压
+8. 生成 `~/.tg_agent/updates/pending_update.sh` 或 `pending_update.ps1`
+9. updater 退出后，launcher 执行 pending 部署脚本
+10. 更新完成后启动新版本 crab
 ```
 
 有更新时固定使用以下交互：
