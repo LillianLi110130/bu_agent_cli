@@ -53,8 +53,10 @@ public class WorkerController {
     @PostMapping("/complete")
     public SimpleOkResponse complete(@RequestBody CompleteRequest request) {
         logger.info(
-            "Received complete request. workerId={}, finalContentLength={}",
+            "Received complete request. workerId={}, finalStatus={}, errorCode={}, finalContentLength={}",
             request.getWorkerId(),
+            request.getFinalStatus(),
+            request.getErrorCode(),
             request.getFinalContent() == null ? 0 : request.getFinalContent().length()
         );
         SimpleOkResponse response = workerGatewayService.complete(request);
