@@ -22,12 +22,31 @@ _RUNTIME = Path(BH_RUNTIME_DIR).expanduser() if BH_RUNTIME_DIR else _DEFAULT_RUN
 _TMP.mkdir(parents=True, exist_ok=True)
 _RUNTIME.mkdir(parents=True, exist_ok=True)
 _NAME_RE = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+DEFAULT_CDP_PROBE_PORTS = (9220, 9221, 9222, 9223, 9224, 9225, 9333)
 
 # Set by serve() on Windows. Daemon's handle() requires every request to carry
 # this token (TCP loopback has no chmod-equivalent so any local process could
 # otherwise issue CDP commands). Stays None on POSIX where AF_UNIX + chmod 600
 # is the boundary.
 _server_token = None
+
+
+def cdp_probe_ports():
+    raw = os.environ.get("BU_CDP_PROBE_PORTS", "")
+    if not raw.strip():
+        return DEFAULT_CDP_PROBE_PORTS
+    ports = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            port = int(part)
+        except ValueError:
+            continue
+        if 1 <= port <= 65535 and port not in ports:
+            ports.append(port)
+    return tuple(ports) or DEFAULT_CDP_PROBE_PORTS
 
 
 def _check(name):  # path-traversal guard for BU_NAME

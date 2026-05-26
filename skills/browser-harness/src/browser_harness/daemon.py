@@ -151,13 +151,19 @@ def get_ws_url():
         raise RuntimeError(
             f"Chrome's remote-debugging page is open, but DevTools is not live yet on 127.0.0.1:{port} — if Chrome opened a profile picker, choose your normal profile first, then tick the checkbox and click Allow if shown"
         )
-    for probe_port in (9222, 9223):
+    for probe_port in ipc.cdp_probe_ports():
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{probe_port}/json/version", timeout=1) as r:
+            probe_url = f"http://127.0.0.1:{probe_port}/json/version"
+            with urllib.request.urlopen(probe_url, timeout=1) as r:
                 return json.loads(r.read())["webSocketDebuggerUrl"]
         except (OSError, KeyError, ValueError):
             continue
-    raise RuntimeError(f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} — enable chrome://inspect/#remote-debugging, or set BU_CDP_WS for a remote browser")
+    raise RuntimeError(
+        f"DevToolsActivePort not found in {[str(p) for p in PROFILES]} and no Chrome "
+        f"DevTools endpoint found on ports {ipc.cdp_probe_ports()} — enable "
+        "chrome://inspect/#remote-debugging, set BU_CDP_URL, or set BU_CDP_WS for a "
+        "remote browser"
+    )
 
 
 def stop_remote():

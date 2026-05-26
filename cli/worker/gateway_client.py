@@ -54,14 +54,16 @@ class WorkerGatewayClient:
             trust_env=trust_env,
         )
 
-    async def poll(self, worker_id: str) -> list[WorkerMessage]:
+    async def poll(self, worker_id: str, worker_no: str | None = None) -> list[WorkerMessage]:
         """Long poll for at most one message for the bound worker."""
-        logger.info(f"Polling gateway for worker_id={worker_id}")
+        logger.info(
+            "Polling gateway for worker_id=%s, worker_no=%s",
+            worker_id,
+            worker_no or worker_id,
+        )
         response = await self._post_with_auth_refresh(
             "/api/worker/poll",
-            {
-                "worker_id": worker_id,
-            },
+            self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
         )
         payload = response.json()
         messages = payload.get("messages", [])
@@ -77,16 +79,24 @@ class WorkerGatewayClient:
             for message in messages
         ]
 
-    async def stream_events(self, worker_id: str) -> AsyncIterator[WorkerStreamEvent]:
+    async def stream_events(
+        self,
+        worker_id: str,
+        worker_no: str | None = None,
+    ) -> AsyncIterator[WorkerStreamEvent]:
         """Consume SSE events for the bound worker."""
-        logger.info(f"Opening gateway SSE stream for worker_id={worker_id}")
+        logger.info(
+            "Opening gateway SSE stream for worker_id=%s, worker_no=%s",
+            worker_id,
+            worker_no or worker_id,
+        )
         request_authorization = self.authorization
 
         for attempt in range(2):
             async with self._client.stream(
                 "GET",
                 "/api/worker/stream",
-                params={"worker_id": worker_id},
+                params=self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
                 headers=self._build_headers(
                     request_authorization if attempt == 0 else None,
                 ),
@@ -117,11 +127,12 @@ class WorkerGatewayClient:
         final_status: str = "completed",
         error_code: str | None = None,
         error_message: str | None = None,
+        worker_no: str | None = None,
     ) -> bool:
         """Submit the final response for one delivery."""
         logger.info(f"Completing delivery for worker_id={worker_id}")
         payload: dict[str, object] = {
-            "worker_id": worker_id,
+            **self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
             "final_content": final_content,
             "final_status": final_status,
         }
@@ -139,11 +150,12 @@ class WorkerGatewayClient:
         worker_id: str,
         content: str,
         source: str | None = None,
+        worker_no: str | None = None,
     ) -> bool:
         """Submit one intermediate progress update for one delivery."""
         logger.info(f"Sending progress update for worker_id={worker_id}")
         payload: dict[str, object] = {
-            "worker_id": worker_id,
+            **self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
             "content": content,
         }
         if source:
@@ -151,23 +163,21 @@ class WorkerGatewayClient:
         response = await self._post_with_auth_refresh("/api/worker/progress", payload)
         return bool(response.json().get("ok", False))
 
-    async def online(self, worker_id: str) -> bool:
+    async def online(self, worker_id: str, worker_no: str | None = None) -> bool:
         """Mark the worker as online."""
         response = await self._post_with_auth_refresh(
             "/api/worker/online",
-            {
-                "worker_id": worker_id,
-            },
+            self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
         )
         return bool(response.json().get("ok", False))
 
-    async def send_text(self, worker_id: str, text: str) -> bool:
+    async def send_text(self, worker_id: str, text: str, worker_no: str | None = None) -> bool:
         """Send one proactive text message through the gateway."""
         logger.info(f"Sending proactive text for worker_id={worker_id}")
         response = await self._client.post(
             "/api/worker/send_text",
             json={
-                "worker_id": worker_id,
+                **self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
                 "text": text,
             },
             headers=self._build_headers(),
@@ -179,6 +189,7 @@ class WorkerGatewayClient:
         self,
         *,
         worker_id: str,
+        worker_no: str | None = None,
         file_name: str,
         mime_type: str,
         file_size: int,
@@ -188,6 +199,7 @@ class WorkerGatewayClient:
         logger.info(f"Uploading proactive attachment for worker_id={worker_id}, file_name={file_name}")
         response = await self._client.post(
             "/api/worker/upload_attachment",
+            data=self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
             files={
                 "file": (file_name, file_bytes, mime_type),
             },
@@ -196,15 +208,38 @@ class WorkerGatewayClient:
         response.raise_for_status()
         return bool(response.json().get("ok", False))
 
-    async def offline(self, worker_id: str) -> bool:
+    async def offline(self, worker_id: str, worker_no: str | None = None) -> bool:
         """Mark the worker as offline."""
         response = await self._post_with_auth_refresh(
             "/api/worker/offline",
-            {
-                "worker_id": worker_id,
-            },
+            self._build_worker_payload(worker_id=worker_id, worker_no=worker_no),
         )
         return bool(response.json().get("ok", False))
+
+    async def create_session(
+        self,
+        *,
+        worker_id: str | None = None,
+        worker_no: str | None = None,
+    ) -> str:
+        """Ask the gateway to create a new unified conversation session."""
+        payload: dict[str, object] = {}
+        if worker_id:
+            payload["worker_id"] = worker_id
+        if worker_no:
+            payload["worker_no"] = worker_no
+        response = await self._post_with_auth_refresh("/new", payload)
+        session_id = str(response.json().get("session_id") or "").strip()
+        if not session_id:
+            raise RuntimeError("Gateway /new response did not include session_id")
+        return session_id
+
+    @staticmethod
+    def _build_worker_payload(worker_id: str, worker_no: str | None = None) -> dict[str, str]:
+        return {
+            "worker_id": worker_id,
+            "worker_no": worker_no or worker_id,
+        }
 
     def _build_headers(self, authorization: str | None = None) -> dict[str, str] | None:
         """Build optional request headers for worker protocol calls."""

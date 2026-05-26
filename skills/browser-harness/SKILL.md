@@ -9,24 +9,15 @@ Direct browser control via CDP. For task-specific edits, use `agent-workspace/ag
 
 ## Usage
 
-PowerShell:
+Windows:
 
-```powershell
-@'
-new_tab("https://docs.browser-use.com")
-wait_for_load()
-print(page_info())
-'@ | browser-harness
-```
+Use the `browser_harness` tool. Pass the complete Python script as the `script`
+argument.
 
-CMD:
-
-```bat
-(
-echo new_tab("https://docs.browser-use.com"^)
-echo wait_for_load(^)
-echo print(page_info(^)^)
-) | browser-harness
+```json
+{
+  "script": "new_tab(\"https://docs.browser-use.com\")\nwait_for_load()\nprint(page_info())\n"
+}
 ```
 
 POSIX shell:
@@ -40,13 +31,9 @@ PY
 ```
 
 - Invoke as browser-harness — it's on PATH. No cd, no uv run.
-- Use the shell-appropriate multi-line pipe form for every multi-line command:
-  PowerShell here-string, CMD parenthesized echo block, or POSIX heredoc. This
-  prevents shell quote mangling inside Python strings and JavaScript snippets.
-- On Windows, prefer PowerShell here-strings for multi-line code. CMD echo
-  blocks require escaping special characters such as `)`, `&`, `|`, `<`, and
-  `>`, so use PowerShell when Python or JavaScript snippets contain complex
-  quoting.
+- On Windows, use the `browser_harness` tool instead of invoking
+  browser-harness through CMD or PowerShell shell syntax.
+- On POSIX shells, use a heredoc for multi-line commands.
 - First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
 
 ## Tool call shape
@@ -54,20 +41,14 @@ PY
 Send Python code on stdin to `browser-harness`. Helpers are pre-imported and the
 daemon auto-starts.
 
-PowerShell:
+Windows:
 
-```powershell
-@'
-# any python
-'@ | browser-harness
-```
+Call the `browser_harness` tool with the full Python script:
 
-CMD:
-
-```bat
-(
-echo # any python
-) | browser-harness
+```json
+{
+  "script": "# any python\n"
+}
 ```
 
 POSIX shell:

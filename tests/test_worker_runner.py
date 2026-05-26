@@ -435,6 +435,76 @@ async def test_mock_gateway_assigns_message_to_worker_queue():
     assert state.queued_messages[0].source == "im"
 
 
+@pytest.mark.asyncio
+async def test_mock_gateway_routes_messages_by_worker_no():
+    state = MockGatewayState()
+    state.mark_online(worker_id="worker-terminal-a")
+    state.mark_online(worker_id="worker-terminal-b")
+    app = create_mock_gateway_app(state)
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        response = await http_client.post(
+            "/mock/messages",
+            json={
+                "worker_id": "user-1",
+                "worker_no": "worker-terminal-b",
+                "content": "hello terminal b",
+            },
+        )
+        assert response.status_code == 200
+
+        poll_a = await http_client.post(
+            "/api/worker/poll",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-a"},
+        )
+        poll_b = await http_client.post(
+            "/api/worker/poll",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-b"},
+        )
+
+    assert poll_a.json() == {"messages": []}
+    assert poll_b.json()["messages"][0]["content"] == "hello terminal b"
+    assert poll_b.json()["messages"][0]["worker_no"] == "worker-terminal-b"
+
+
+@pytest.mark.asyncio
+async def test_mock_gateway_new_and_llm_stream_return_session_event():
+    state = MockGatewayState()
+    app = create_mock_gateway_app(state)
+
+    class FakeLLMGateway:
+        async def query_stream(self, request):  # noqa: ANN001
+            assert request.session_id.startswith("session-")
+            yield type("TextEvent", (), {"model_dump": lambda self: {"type": "text", "content": "hello"}})()
+            yield type("DoneEvent", (), {"model_dump": lambda self: {"type": "done", "stop_reason": "stop"}})()
+
+    app.state.llm_gateway = FakeLLMGateway()
+    transport = httpx.ASGITransport(app=app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        new_response = await http_client.post(
+            "/new",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-1"},
+        )
+        stream_response = await http_client.post(
+            "/llm/query-stream",
+            json={
+                "model": "coding-default",
+                "worker_no": "worker-terminal-1",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+    new_payload = new_response.json()
+    assert new_payload["session_id"].startswith("session-")
+    assert '"type": "session"' in stream_response.text
+    assert '"is_new": true' in stream_response.text
+    assert '"type": "text"' in stream_response.text
+    assert '"content": "hello"' in stream_response.text
+    assert '"type": "done"' in stream_response.text
+
+
 def test_mock_gateway_register_stream_replaces_previous_connection():
     state = MockGatewayState()
     first_version = state.register_stream(worker_id="worker-1")

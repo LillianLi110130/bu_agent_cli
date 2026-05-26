@@ -66,12 +66,14 @@ from agent_core.bootstrap.session_bootstrap import (
     WorkspaceInstructionState,
     sync_workspace_agents_md,
 )
+from agent_core.release_notes import load_release_notes
 from agent_core.runtime_paths import application_root, tg_agent_home
 from agent_core.skill.discovery import builtin_skills_dir, user_skills_dir
 from agent_core.version import get_cli_version
 from agent_core.skill.review import SkillReviewChange, SkillReviewHook
 from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.team.protocol import LEAD_AUTO_TRIGGER_MESSAGE_TYPES
+from rich import box
 from rich.color import Color
 from rich.console import Console, Group
 from rich.markdown import Markdown
@@ -119,6 +121,8 @@ from cli.session_store import (
     workspace_identity,
 )
 from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
+from cli.worker.auth import load_persisted_auth_result
+from cli.worker.gateway_client import WorkerGatewayClient
 from config.model_config import (
     ModelPreset,
     get_auto_vision_preset,
@@ -505,7 +509,9 @@ class TGAgentCLI:
         bridge_store: FileBridgeStore | None = None,
         session_runtime: CLISessionRuntime | None = None,
         im_worker_id: str | None = None,
+        im_worker_no: str | None = None,
         im_gateway_base_url: str | None = None,
+        im_auth_base_dir: str | Path | None = None,
     ):
         """Initialize CLI with pre-configured agent and context.
 
@@ -560,7 +566,9 @@ class TGAgentCLI:
                 self._skill_runtime_service.system_prompt_builder = self._system_prompt_builder
         self._bridge_store = bridge_store
         self._im_worker_id = im_worker_id
+        self._im_worker_no = im_worker_no
         self._im_gateway_base_url = im_gateway_base_url
+        self._im_auth_base_dir = Path(im_auth_base_dir).resolve() if im_auth_base_dir else None
         self._session_runtime = session_runtime
         if self._session_runtime is not None:
             self._agent.bind_session_runtime(self._session_runtime)
@@ -640,6 +648,67 @@ class TGAgentCLI:
         )
         if self._bridge_store is not None:
             self._bridge_store.initialize()
+        self._sync_gateway_llm_context(self._agent)
+
+    def _sync_gateway_llm_context(self, agent: Agent | None = None) -> None:
+        """Attach worker/session attribution to gateway-backed LLMs."""
+        active_agent = agent or self._agent
+        llm = getattr(active_agent, "llm", None)
+        if llm is None:
+            return
+        if hasattr(llm, "worker_no"):
+            setattr(llm, "worker_no", self._im_worker_no)
+        if hasattr(llm, "session_id"):
+            setattr(llm, "session_id", self._conversation_session_id)
+        if hasattr(llm, "user_id"):
+            setattr(llm, "user_id", self._im_worker_id)
+        if hasattr(llm, "session_callback"):
+            setattr(llm, "session_callback", self._handle_gateway_session_event)
+
+    def _handle_gateway_session_event(self, session_id: str, is_new: bool = False) -> None:
+        """Adopt a server-created session id before local history is first persisted."""
+        normalized_session_id = (session_id or "").strip()
+        if not normalized_session_id or normalized_session_id == self._conversation_session_id:
+            return
+        if self._conversation_session_created:
+            logger.warning(
+                "Ignoring gateway session switch after local session was created: "
+                "current=%s incoming=%s",
+                self._conversation_session_id,
+                normalized_session_id,
+            )
+            return
+        self._conversation_session_id = normalized_session_id
+        self._sync_gateway_llm_context(self._agent)
+
+    async def _request_gateway_new_session(self) -> str | None:
+        """Best-effort /new call used to align local and gateway session ids."""
+        if not self._im_gateway_base_url:
+            return None
+
+        authorization: str | None = None
+        try:
+            persisted_auth = load_persisted_auth_result(base_dir=self._im_auth_base_dir)
+        except Exception:
+            persisted_auth = None
+        if persisted_auth is not None:
+            authorization = persisted_auth.authorization
+
+        client = WorkerGatewayClient(
+            base_url=self._im_gateway_base_url,
+            authorization=authorization,
+            base_dir=self._im_auth_base_dir,
+        )
+        try:
+            return await client.create_session(
+                worker_id=self._im_worker_id,
+                worker_no=self._im_worker_no,
+            )
+        except Exception as exc:
+            logger.warning("Gateway /new failed; falling back to local session id: %s", exc)
+            return None
+        finally:
+            await client.aclose()
 
     def _workspace_skill_dirs(self, workspace_dir: Path | None = None) -> list[Path]:
         resolved_workspace = (workspace_dir or self._ctx.working_dir).resolve()
@@ -953,9 +1022,12 @@ class TGAgentCLI:
         if self._session_store is not None and self._conversation_session_created:
             self._session_store.end_session(old_conversation_session_id, reason="new_session")
 
-        self._conversation_session_id = str(uuid.uuid4())[:8]
+        self._conversation_session_id = (
+            await self._request_gateway_new_session()
+        ) or str(uuid.uuid4())[:8]
         self._conversation_session_created = False
         self._last_transcript_flushed_idx = 0
+        self._sync_gateway_llm_context(self._agent)
         self._agent.clear_history()
         clear_todo_store(self._ctx.session_id)
 
@@ -1319,6 +1391,7 @@ class TGAgentCLI:
 
         self._conversation_session_id = target_session_id
         self._conversation_session_created = True
+        self._sync_gateway_llm_context(self._agent)
         self._agent.system_prompt = meta.system_prompt
         self._agent.load_history(snapshot.messages)
         clear_todo_store(self._ctx.session_id)
@@ -2731,6 +2804,7 @@ class TGAgentCLI:
                     "analyze_image",
                 )
 
+            self._sync_gateway_llm_context(active_agent)
             # Pass cancel_event to agent for immediate cancellation
             async for event in active_agent.query_stream(
                 user_input,
@@ -3782,22 +3856,28 @@ class TGAgentCLI:
                 banner,
                 subtitle="[dim]ready when you are[/dim]",
                 border_style=accent,
+                box=box.DOUBLE,
                 padding=(2, 2),
                 width=self._panel_width(),
             )
         )
 
         version_header = Text()
+        current_version = get_cli_version()
+        release_notes = load_release_notes(expected_version=current_version)
         version_header.append("当前版本：", style="#e5e7eb")
-        version_header.append(" v0.7.0  2026-05-11 ", style="bold #ffeb82 on #332313")
-        version_notes = """- ✨ 新增memory review功能，按对话轮次触发本地长期记忆USER.md和MEMORY.md的自动更新
-- ✨ 优化edit工具
-- 🐞 修复模型响应内容被截断的阻断问题
-- 🐞 上下文压缩改为流式
-"""
+        version_label = f" v{current_version} "
+        if release_notes and release_notes.published_at:
+            version_label = f" v{current_version}  {release_notes.published_at} "
+        version_header.append(version_label, style="bold #ffeb82 on #332313")
+
+        version_content: list[Any] = [version_header]
+        if release_notes and release_notes.notes:
+            version_notes = "\n".join(f"- {note}" for note in release_notes.notes)
+            version_content.extend([Text(""), Markdown(version_notes, style="#e5e7eb")])
         self._console.print(
             Panel(
-                Group(version_header, Text(""), Markdown(version_notes, style="#e5e7eb")),
+                Group(*version_content),
                 border_style="#ffeb82",
                 padding=(1, 2),
                 width=self._panel_width(),

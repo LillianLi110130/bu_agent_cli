@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 from html import escape as html_escape
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,9 @@ if TYPE_CHECKING:
 class TGAgentTUI:
     """Keep only the input prompt anchored while normal output uses terminal scrollback."""
 
+    RESIZE_REPAINT_DEBOUNCE_SECONDS = 0.2
+    CMD_RESIZE_REPAINT_DEBOUNCE_SECONDS = 1.0
+
     def __init__(self, cli: TGAgentCLI) -> None:
         self._cli = cli
         self._active_task: asyncio.Task[None] | None = None
@@ -40,6 +44,7 @@ class TGAgentTUI:
         self._prompt_spinner_active = False
         self._last_console_size = cli._console.size
         self._resize_repaint_at: float | None = None
+        self._resize_repaint_in_progress = False
 
     async def run(self) -> None:
         old_tui_enabled = self._cli._fixed_input_tui_enabled
@@ -296,16 +301,48 @@ class TGAgentTUI:
         if current_size == self._last_console_size:
             return
         self._last_console_size = current_size
-        self._resize_repaint_at = asyncio.get_running_loop().time() + 0.2
+        self._resize_repaint_at = (
+            asyncio.get_running_loop().time()
+            + self._resize_repaint_debounce_seconds()
+        )
 
     def _repaint_after_resize_if_ready(self) -> None:
         if self._resize_repaint_at is None:
             return
         if asyncio.get_running_loop().time() < self._resize_repaint_at:
             return
+        if self._resize_repaint_in_progress:
+            return
         self._resize_repaint_at = None
-        self._cli._repaint_output_history(preserve_activity=True)
-        self._invalidate_prompt()
+        self._resize_repaint_in_progress = True
+        try:
+            if self._is_legacy_windows_console():
+                self._erase_prompt_renderer()
+            self._cli._repaint_output_history(preserve_activity=True)
+            self._invalidate_prompt()
+        finally:
+            self._resize_repaint_in_progress = False
+
+    @classmethod
+    def _resize_repaint_debounce_seconds(cls) -> float:
+        if cls._is_legacy_windows_console():
+            return cls.CMD_RESIZE_REPAINT_DEBOUNCE_SECONDS
+        return cls.RESIZE_REPAINT_DEBOUNCE_SECONDS
+
+    @staticmethod
+    def _is_legacy_windows_console() -> bool:
+        return os.name == "nt" and not os.environ.get("WT_SESSION")
+
+    def _erase_prompt_renderer(self) -> None:
+        app = getattr(self._session, "app", None)
+        renderer = getattr(app, "renderer", None)
+        erase = getattr(renderer, "erase", None)
+        if not callable(erase):
+            return
+        try:
+            erase()
+        except Exception:
+            return
 
     async def _prompt_async(self) -> str:
         with patch_stdout(raw=True):

@@ -68,6 +68,8 @@ Chrome / Browser Use cloud -> CDP WS -> browser_harness.daemon -> IPC -> browser
 - BU_NAME namespaces the daemon's IPC, pid, and log files.
 - BU_CDP_WS overrides local Chrome discovery for remote browsers.
 - BU_CDP_URL overrides local Chrome discovery with a specific DevTools HTTP endpoint (used for Way 2).
+- BU_CDP_PROBE_PORTS overrides the fallback local DevTools probe ports. If unset,
+  browser-harness probes `9220,9221,9222,9223,9224,9225,9333`.
 - BU_BROWSER_ID + BROWSER_USE_API_KEY lets the daemon stop a Browser Use cloud browser on shutdown.
 
 # Browser connection setup and troubleshooting
@@ -91,6 +93,10 @@ Browser-harness can connect to any Chrome or Chromium-based browser on your comp
 
 Tell the harness which port you launched on by setting `BU_CDP_URL=http://127.0.0.1:9222` before running `browser-harness`.
 
+If `BU_CDP_URL` is not set, browser-harness also probes common local CDP ports:
+`9220,9221,9222,9223,9224,9225,9333`. Override this list with
+`BU_CDP_PROBE_PORTS`, for example `9220,9222,9333`.
+
 For most tasks where the agent acts on your behalf in your normal browser, use Way 1. For automation that runs without you watching, or any case where popup interruptions are unacceptable, use Way 2 or a cloud browser.
 
 [^1]: The conditions that cause Chrome to re-show the "Allow remote debugging?" popup on a subsequent attach (time elapsed since previous Allow, daemon restart, browser restart, new CDP session, version-dependent options like "Allow for N hours") are not fully characterized. Way 2 sidesteps this entirely.
@@ -108,6 +114,9 @@ If the user hasn't said which connection method to use, default to Way 1 if Chro
    print(page_info())
    PY
    ```
+
+   On Windows agents with the `browser_harness` tool available, run the same
+   `print(page_info())` script through that tool instead of shell pipes.
 
    If it prints page info, you're done.
 

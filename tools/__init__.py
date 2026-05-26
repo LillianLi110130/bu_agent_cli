@@ -2,6 +2,7 @@
 
 from tools.agent_tool import delegate, delegate_parallel
 from tools.bash import bash
+from tools.browser_harness import browser_harness
 from tools.files import edit, read, write
 from tools.image_analysis import analyze_image
 from tools.message import message
@@ -28,6 +29,7 @@ from tools.xlsx import read_excel
 
 ALL_TOOLS = [
     bash,
+    browser_harness,
     resolve_path,
     read,
     read_excel,
@@ -64,6 +66,7 @@ __all__ = [
     "SecurityError",
     "get_sandbox_context",
     "bash",
+    "browser_harness",
     "resolve_path",
     "read",
     "read_excel",

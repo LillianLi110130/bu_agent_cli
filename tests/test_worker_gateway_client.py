@@ -166,9 +166,44 @@ async def test_gateway_client_sends_progress_payload() -> None:
     assert seen_payloads == [
         {
             "worker_id": "worker-1",
+            "worker_no": "worker-1",
             "content": "partial text",
             "source": "web",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_client_sends_explicit_worker_no_and_creates_session() -> None:
+    seen_payloads: list[tuple[str, dict[str, object]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8") or "{}")
+        seen_payloads.append((request.url.path, payload))
+        if request.url.path == "/new":
+            return httpx.Response(200, json={"session_id": "session-remote-1"})
+        return httpx.Response(200, json={"ok": True})
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        client = WorkerGatewayClient(base_url="http://testserver", client=http_client)
+        ok = await client.online(worker_id="user-1", worker_no="worker-terminal-1")
+        session_id = await client.create_session(
+            worker_id="user-1",
+            worker_no="worker-terminal-1",
+        )
+
+    assert ok is True
+    assert session_id == "session-remote-1"
+    assert seen_payloads == [
+        (
+            "/api/worker/online",
+            {"worker_id": "user-1", "worker_no": "worker-terminal-1"},
+        ),
+        (
+            "/new",
+            {"worker_id": "user-1", "worker_no": "worker-terminal-1"},
+        ),
     ]
 
 

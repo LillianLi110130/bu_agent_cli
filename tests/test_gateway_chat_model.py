@@ -51,9 +51,13 @@ async def test_chat_gateway_aggregates_sse_events(
         captured_auth = request.headers.get("Authorization")
         payload = json.loads(request.content.decode("utf-8"))
         assert payload["model"] == "coding-default"
+        assert payload["worker_no"] == "worker-terminal-1"
+        assert payload["session_id"] == "session-local-1"
+        assert payload["user_id"] == "user-1"
         assert payload["messages"][0]["role"] == "user"
 
         body = (
+            'data: {"type":"session","session_id":"session-local-1","is_new":false}\n\n'
             'data: {"type":"text","content":"hello "}\n\n'
             'data: {"type":"text","content":"world"}\n\n'
             'data: {"type":"tool_call","tool":"read","args":{"path":"README.md"},'
@@ -88,12 +92,19 @@ async def test_chat_gateway_aggregates_sse_events(
     )
 
     transport = httpx.MockTransport(handler)
+    session_events: list[tuple[str, bool]] = []
     async with httpx.AsyncClient(transport=transport) as client:
         llm = ChatGateway(
             model="coding-default",
             base_url="https://gateway.example.com",
             http_client=client,
             base_dir=tmp_path,
+            worker_no="worker-terminal-1",
+            session_id="session-local-1",
+            user_id="user-1",
+            session_callback=lambda session_id, is_new: session_events.append(
+                (session_id, is_new)
+            ),
         )
         response = await llm.ainvoke([UserMessage(content="hi")])
 
@@ -105,6 +116,8 @@ async def test_chat_gateway_aggregates_sse_events(
     assert len(response.tool_calls) == 1
     assert response.tool_calls[0].function.name == "read"
     assert json.loads(response.tool_calls[0].function.arguments) == {"path": "README.md"}
+    assert session_events == [("session-local-1", False)]
+    assert llm.session_id == "session-local-1"
     assert persisted_updates == [(tmp_path.resolve(), "Bearer refreshed-token")]
 
 
