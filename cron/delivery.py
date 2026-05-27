@@ -10,7 +10,7 @@ logger = logging.getLogger("cron.delivery")
 
 
 class CronDeliveryPort:
-    """Send remote completion through the current worker gateway context."""
+    """Send remote cron output through the current worker gateway context."""
 
     async def complete(
         self,
@@ -29,9 +29,9 @@ class CronDeliveryPort:
             )
 
         try:
-            ok = await context.gateway_client.complete(
+            ok = await context.gateway_client.progress(
                 worker_id=context.worker_id,
-                final_content=final_content,
+                content=final_content,
                 source=job.source,
             )
         except Exception as exc:
@@ -41,6 +41,6 @@ class CronDeliveryPort:
             return CronDeliveryResult(
                 ok=False,
                 status="failed",
-                error="gateway complete returned ok=false",
+                error="gateway progress returned ok=false",
             )
         return CronDeliveryResult(ok=True, status="delivered")
