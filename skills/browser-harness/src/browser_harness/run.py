@@ -1,11 +1,30 @@
-import os, sys, urllib.request
+import io, os, sys, urllib.request
 
-# Windows default stdout encoding is cp1252, which can't encode the 🐴 marker
-# helpers prepend to tab titles (or anything else outside Latin-1). Force UTF-8
-# so `print(page_info())` doesn't UnicodeEncodeError on Windows. Issue #124(4).
-if hasattr(sys.stdout, "reconfigure"):
-    try: sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    except Exception: pass
+# Windows default text streams can be cp1252/strict, and page text from CDP may
+# contain lone UTF-16 surrogate code points. Force replacement semantics so
+# `print(js(...))` and tracebacks do not crash on unencodable page text.
+def _configure_text_stream(stream):
+    if hasattr(stream, "reconfigure"):
+        try: stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception: pass
+        else: return stream
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        try:
+            return io.TextIOWrapper(
+                buffer,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=getattr(stream, "line_buffering", False),
+                write_through=True,
+            )
+        except Exception:
+            pass
+    return stream
+
+
+sys.stdout = _configure_text_stream(sys.stdout)
+sys.stderr = _configure_text_stream(sys.stderr)
 
 from .admin import (
     _version,
