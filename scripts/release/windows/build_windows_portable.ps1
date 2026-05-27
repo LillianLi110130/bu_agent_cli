@@ -1486,7 +1486,7 @@ if (-not $SkipZip) {
     & $resolvedPythonExe $manifestGenerator `
         --repo-root $repoRoot `
         --output-root $resolvedOutputRoot `
-        --version $version `
+        --version $resolvedVersion `
         --platform windows-x64 `
         --artifact $zipPath
     if ($LASTEXITCODE -ne 0) {
