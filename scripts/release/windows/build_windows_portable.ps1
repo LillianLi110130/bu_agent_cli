@@ -461,16 +461,16 @@ function Copy-ShortcutIcon {
     Copy-Item -LiteralPath $SourceIconPath -Destination $TargetIconPath -Force
 }
 
-function Assert-Python311Plus {
+function Assert-Python310Plus {
     param(
         [Parameter(Mandatory = $true)]
         [string]$PythonExe
     )
 
     $version = (& $PythonExe -c "import sys; print(sys.version)" 2>&1 | Out-String).Trim()
-    & $PythonExe -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
+    & $PythonExe -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" 2>$null
     if ($LASTEXITCODE -ne 0) {
-        throw "browser-harness requires Python >= 3.11. Current Python is: $version"
+        throw "tg-agent-cli requires Python >= 3.10. Current Python is: $version"
     }
 }
 
@@ -503,50 +503,6 @@ function Build-ProjectWheel {
         & $PythonExe -m pip wheel . --no-deps --wheel-dir $TargetWheelhouseDir --no-build-isolation
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to build project wheel with $PythonExe. Install hatchling or pass a prebuilt wheelhouse."
-        }
-    }
-    finally {
-        Pop-Location
-        $env:TEMP = $previousTemp
-        $env:TMP = $previousTmp
-        $env:PIP_BUILD_TRACKER = $previousBuildTracker
-    }
-}
-
-function Build-BrowserHarnessWheel {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$PythonExe,
-        [Parameter(Mandatory = $true)]
-        [string]$RepoRoot,
-        [Parameter(Mandatory = $true)]
-        [string]$TargetWheelhouseDir,
-        [Parameter(Mandatory = $true)]
-        [string]$TempRoot
-    )
-
-    $skillDir = Join-Path $RepoRoot "skills\browser-harness"
-    if (-not (Test-Path -LiteralPath (Join-Path $skillDir "pyproject.toml"))) {
-        throw "browser-harness package metadata not found: $skillDir"
-    }
-
-    Get-ChildItem -LiteralPath $TargetWheelhouseDir -Filter "browser_harness-*.whl" -ErrorAction SilentlyContinue |
-        Remove-Item -Force -ErrorAction SilentlyContinue
-
-    New-Item -ItemType Directory -Path $TempRoot -Force | Out-Null
-    $previousTemp = $env:TEMP
-    $previousTmp = $env:TMP
-    $previousBuildTracker = $env:PIP_BUILD_TRACKER
-
-    Push-Location $skillDir
-    try {
-        $env:TEMP = $TempRoot
-        $env:TMP = $TempRoot
-        $env:PIP_BUILD_TRACKER = Join-Path $TempRoot "pip-build-tracker"
-        New-Item -ItemType Directory -Path $env:PIP_BUILD_TRACKER -Force | Out-Null
-        & $PythonExe -m pip wheel . --wheel-dir $TargetWheelhouseDir --find-links $TargetWheelhouseDir
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to build browser-harness wheel with $PythonExe. Ensure its dependencies are available for this Python version."
         }
     }
     finally {
@@ -599,10 +555,13 @@ function Write-DeployBatch {
         [string]$OutputPath
     )
 
-    $content = @'
+$content = @'
 @echo off
 setlocal
-powershell -ExecutionPolicy Bypass -File "%~dp0win_deploy.ps1" %*
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=powershell.exe"
+"%POWERSHELL_EXE%" -ExecutionPolicy Bypass -File "%~dp0win_deploy.ps1" %*
 set "EXITCODE=%ERRORLEVEL%"
 if not "%EXITCODE%"=="0" (
     echo.
@@ -653,22 +612,17 @@ Workspace behavior:
 - Running launcher from a terminal uses the current working directory as the workspace.
 - Double-clicking launcher from the bundle directory falls back to the Desktop directory.
 - Global config stays in %USERPROFILE%\.tg_agent.
-- After deploy.bat, `crab` and `browser-harness` work in cmd, PowerShell, and Git Bash.
+- After deploy.bat, `crab` works in cmd, PowerShell, and Git Bash.
 
 - deploy.bat recreates %USERPROFILE%\.tg_agent\python-runtime and
   %USERPROFILE%\.tg_agent\.venv from the bundled runtime.
 - deploy.bat removes old install-managed %USERPROFILE%\.tg_agent\bin before regenerating launchers.
 - crab and dependencies are installed offline from wheelhouse\.
-- deploy.bat also installs `crab` and `browser-harness` command shims into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
+- deploy.bat also installs the `crab` command shim into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
 - deploy.bat registers the `crab://open` protocol for launching the local CLI from a browser.
 - deploy.bat removes stale crab/tg-agent command shim files left behind in %USERPROFILE%\.tg_agent\bin by older installs.
 - If `crab` already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
-
-Browser harness:
-- deploy.bat installs browser-harness into %USERPROFILE%\.tg_agent\.venv.
-- Enable Chrome remote debugging at chrome://inspect/#remote-debugging.
-- Open a new cmd or PowerShell window and run: browser-harness --doctor.
 "@
     Set-Content -LiteralPath $OutputPath -Value $content -Encoding ASCII
 }
@@ -705,10 +659,10 @@ $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
 $BashCommandShim = Join-Path $BinDir "crab"
-$BrowserHarnessCommandShim = Join-Path $BinDir "browser-harness.cmd"
-$BrowserHarnessBashShim = Join-Path $BinDir "browser-harness"
 $ProtocolLauncher = Join-Path $BinDir "crab-protocol-launcher.bat"
 $ProtocolLauncherPs1 = Join-Path $BinDir "crab-protocol-launcher.ps1"
+$LegacyBrowserHarnessCommandShim = Join-Path $BinDir "browser-harness.cmd"
+$LegacyBrowserHarnessBashShim = Join-Path $BinDir "browser-harness"
 $LegacyCommandExe = Join-Path $BinDir "crab.exe"
 $LegacyCommandScript = Join-Path $BinDir "crab-script.py"
 $LegacyTgAgentEntryShim = Join-Path $BinDir "tg-agent-entry.py"
@@ -927,13 +881,6 @@ if (-not $projectWheel) {
     throw "Project wheel not found in wheelhouse: $WheelhouseDir"
 }
 
-$browserHarnessWheel = Get-ChildItem -LiteralPath $WheelhouseDir -Filter "browser_harness-*.whl" |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -First 1
-if (-not $browserHarnessWheel) {
-    throw "browser-harness wheel not found in wheelhouse: $WheelhouseDir"
-}
-
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 if ($Update) {
     if (Test-Path -LiteralPath $BackupsDir) {
@@ -976,11 +923,6 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to install crab from bundled wheelhouse"
 }
 
-& $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $browserHarnessWheel.FullName
-if ($LASTEXITCODE -ne 0) {
-    throw "Failed to install browser-harness from bundled wheelhouse"
-}
-
 $entryShimContent = @(
     'from tg_crab_main import cli_main',
     '',
@@ -991,10 +933,13 @@ Set-Content -LiteralPath $EntryShim -Value $entryShimContent -Encoding UTF8
 
 $commandShimContent = @(
     '@echo off',
-    'setlocal',
+    'setlocal EnableExtensions EnableDelayedExpansion',
     'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
     'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
     'set "ENTRY_SHIM=%INSTALL_ROOT%\bin\crab-entry.py"',
+    'set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"',
+    'if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"',
+    'if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=powershell.exe"',
     '',
     'if not exist "%VENV_PYTHON%" (',
     '    echo crab is not installed.',
@@ -1009,12 +954,12 @@ $commandShimContent = @(
     '',
     'if not "%CRAB_SKIP_UPDATE_CHECK%"=="1" (',
     '    "%VENV_PYTHON%" -m agent_core.updater check-before-launch',
-    '    set "UPDATE_EXIT=%ERRORLEVEL%"',
-    '    if "%UPDATE_EXIT%"=="20" (',
-    '        powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_ROOT%\updates\pending_update.ps1"',
-    '        if errorlevel 1 exit /b %ERRORLEVEL%',
-    '    ) else if not "%UPDATE_EXIT%"=="0" (',
-    '        exit /b %UPDATE_EXIT%',
+    '    set "UPDATE_EXIT=!ERRORLEVEL!"',
+    '    if "!UPDATE_EXIT!"=="20" (',
+    '        "%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_ROOT%\updates\pending_update.ps1"',
+    '        if errorlevel 1 exit /b !ERRORLEVEL!',
+    '    ) else if not "!UPDATE_EXIT!"=="0" (',
+    '        exit /b !UPDATE_EXIT!',
     '    )',
     ')',
     '',
@@ -1066,51 +1011,14 @@ if (-not ($Update -and (Test-Path -LiteralPath $BashCommandShim))) {
     Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
 }
 
-$browserHarnessCommandShimContent = @(
-    '@echo off',
-    'setlocal',
-    'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
-    'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
-    '',
-    'if not exist "%VENV_PYTHON%" (',
-    '    echo browser-harness is not installed because crab''s Python venv is missing.',
-    '    echo Run deploy.bat from the portable bundle first.',
-    '    exit /b 1',
-    ')',
-    '',
-    '"%VENV_PYTHON%" -m browser_harness.run %*',
-    'exit /b %ERRORLEVEL%'
-) -join "`r`n"
-Set-Content -LiteralPath $BrowserHarnessCommandShim -Value $browserHarnessCommandShimContent -Encoding ASCII
-
-$browserHarnessBashShimContent = @(
-    '#!/usr/bin/env bash',
-    'set -euo pipefail',
-    '',
-    'install_root="${TG_AGENT_HOME:-${HOME}/.tg_agent}"',
-    'if [ -n "${USERPROFILE:-}" ] && [ ! -d "$install_root" ]; then',
-    '  install_root="${USERPROFILE}/.tg_agent"',
-    'fi',
-    '',
-    'venv_python="${install_root}/.venv/Scripts/python.exe"',
-    '',
-    'if [ ! -x "$venv_python" ]; then',
-    '  echo "browser-harness is not installed because crab''s Python venv is missing." >&2',
-    '  echo "Run deploy.bat from the portable bundle first." >&2',
-    '  exit 1',
-    'fi',
-    '',
-    'exec "$venv_python" -m browser_harness.run "$@"'
-) -join "`n"
-Set-Content -LiteralPath $BrowserHarnessBashShim -Value $browserHarnessBashShimContent -Encoding ASCII
-
 $protocolLauncherContent = @(
     '@echo off',
     'setlocal',
-    'powershell -NoProfile -ExecutionPolicy Bypass -File "%~dpn0.ps1" %*',
-    'set "EXITCODE=%ERRORLEVEL%"',
-    'if not "%EXITCODE%"=="0" pause',
-    'exit /b %EXITCODE%'
+    'set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"',
+    'if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"',
+    'if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=powershell.exe"',
+    'start "Crab Portable" cmd /k ""%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dpn0.ps1" %*"',
+    'exit /b 0'
 ) -join "`r`n"
 Set-Content -LiteralPath $ProtocolLauncher -Value $protocolLauncherContent -Encoding ASCII
 
@@ -1135,57 +1043,19 @@ if (-not (__PS_DOLLAR__protocolUrl.StartsWith("crab://open", [System.StringCompa
     exit 1
 }
 
-__PS_DOLLAR__installRoot = Join-Path __PS_DOLLAR__env:USERPROFILE ".tg_agent"
-__PS_DOLLAR__commandShim = Join-Path __PS_DOLLAR__installRoot "bin\crab.cmd"
-__PS_DOLLAR__settingsPath = Join-Path __PS_DOLLAR__installRoot "settings.json"
+__PS_DOLLAR__launcherPath = Decode-Text "__LAUNCHER_PATH_B64__"
 __PS_DOLLAR__desktopPath = Join-Path __PS_DOLLAR__env:USERPROFILE "Desktop"
-__PS_DOLLAR__workspace = if (Test-Path -LiteralPath __PS_DOLLAR__desktopPath -PathType Container) { __PS_DOLLAR__desktopPath } else { __PS_DOLLAR__env:USERPROFILE }
-__PS_DOLLAR__defaultWorkspace = ""
-__PS_DOLLAR__manualWorkspaceSelected = __PS_DOLLAR__false
-
-function Save-DefaultWorkspace {
-    param(
-        [Parameter(Mandatory = __PS_DOLLAR__true)]
-        [string]__PS_DOLLAR__SettingsFilePath,
-        [Parameter(Mandatory = __PS_DOLLAR__true)]
-        [string]__PS_DOLLAR__WorkspacePath
-    )
-
-    __PS_DOLLAR__settings = @{}
-    if (Test-Path -LiteralPath __PS_DOLLAR__SettingsFilePath) {
-        try {
-            __PS_DOLLAR__loaded = Get-Content -LiteralPath __PS_DOLLAR__SettingsFilePath -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable
-            if (__PS_DOLLAR__loaded -is [hashtable]) {
-                __PS_DOLLAR__settings = __PS_DOLLAR__loaded
-            }
-        }
-        catch {
-        }
-    }
-
-    __PS_DOLLAR__settings["default_workspace"] = [System.IO.Path]::GetFullPath(__PS_DOLLAR__WorkspacePath)
-    __PS_DOLLAR__settingsDir = Split-Path -Parent __PS_DOLLAR__SettingsFilePath
-    if (__PS_DOLLAR__settingsDir) {
-        New-Item -ItemType Directory -Path __PS_DOLLAR__settingsDir -Force | Out-Null
-    }
-
-    __PS_DOLLAR__json = __PS_DOLLAR__settings | ConvertTo-Json -Depth 10
-    [System.IO.File]::WriteAllText(__PS_DOLLAR__SettingsFilePath, __PS_DOLLAR__json + [Environment]::NewLine, [System.Text.UTF8Encoding]::new(__PS_DOLLAR__false))
+__PS_DOLLAR__workingDirectory = if (Test-Path -LiteralPath __PS_DOLLAR__desktopPath -PathType Container) { __PS_DOLLAR__desktopPath } else { __PS_DOLLAR__env:USERPROFILE }
+__PS_DOLLAR__launcherTarget = __PS_DOLLAR__launcherPath
+__PS_DOLLAR__launcherPowerShellPath = [System.IO.Path]::ChangeExtension(__PS_DOLLAR__launcherPath, ".ps1")
+if (Test-Path -LiteralPath __PS_DOLLAR__launcherPowerShellPath) {
+    __PS_DOLLAR__launcherTarget = __PS_DOLLAR__launcherPowerShellPath
 }
 
-__PS_DOLLAR__msgCrabNotInstalled = Decode-Text "Y3JhYiDlsJrlsJrmnKrlronoo4U="
-__PS_DOLLAR__msgRunDeployFirst = Decode-Text "6K+35YWI5Zyo5L6/5pC65YyF5qC555uu5b2V6L+Q6KGMIGRlcGxveS5iYXQ="
-__PS_DOLLAR__msgCurrentStartupDir = Decode-Text "5b2T5YmN5ZCv5Yqo55uu5b2VOiB7MH0="
-__PS_DOLLAR__msgWorkspacePrompt = Decode-Text "6K+36L6T5YWl5bel5L2c5Yy66Lev5b6EKOebtOaOpeWbnui9puS9v+eUqOahjOmdoik="
-__PS_DOLLAR__msgWorkspaceMissing = Decode-Text "5bel5L2c5Yy655uu5b2V5LiN5a2Y5ZyoOiB7MH0="
-__PS_DOLLAR__msgSwitchFailed = Decode-Text "5peg5rOV5YiH5o2i5Yiw6YCJ5a6a55qE5bel5L2c5Yy6"
 __PS_DOLLAR__msgExitCode = Decode-Text "Y3JhYiDlt7LpgIDlh7osIOmAgOWHuueggTogezB9"
 __PS_DOLLAR__msgPressAnyKey = Decode-Text "6K+35oyJ5Lu75oSP6ZSu5YWz6Zet5q2k56qX5Y+j"
-__PS_DOLLAR__msgConfirmDefaultWorkspace = Decode-Text "5piv5ZCm5bCG6K+l6Lev5b6E6K6+5Li66buY6K6k5bel5L2c6Lev5b6E77yf5Lul5ZCO5omT5byA5bCP6J6D6J+56YO95bCG6L+Z5Liq6Lev5b6E5L2c5Li65bel5L2c6Lev5b6EICh5L04p"
-__PS_DOLLAR__msgDefaultWorkspaceSaved = Decode-Text "5bey5bCG6K+l6Lev5b6E5L+d5a2Y5Li66buY6K6k5bel5L2c6Lev5b6E"
-__PS_DOLLAR__msgDefaultWorkspaceUnchanged = Decode-Text "5pyq5L+u5pS56buY6K6k5bel5L2c6Lev5b6E"
-__PS_DOLLAR__msgDefaultWorkspaceSaveFailed = Decode-Text "5L+d5a2Y6buY6K6k5bel5L2c6Lev5b6E5aSx6LSlOiB7MH0="
 __PS_DOLLAR__msgUnexpectedError = Decode-Text "5ZCv5Yqo5aSx6LSlOiB7MH0="
+__PS_DOLLAR__msgLauncherMissing = Decode-Text "5ZCv5Yqo5Zmo5LiN5a2Y5ZyoOiB7MH0="
 
 function Pause-OnError {
     Write-Host __PS_DOLLAR__msgPressAnyKey
@@ -1193,68 +1063,14 @@ function Pause-OnError {
 }
 
 try {
-    if (-not (Test-Path -LiteralPath __PS_DOLLAR__commandShim)) {
-        Write-Host __PS_DOLLAR__msgCrabNotInstalled
-        Write-Host __PS_DOLLAR__msgRunDeployFirst
+    if (-not (Test-Path -LiteralPath __PS_DOLLAR__launcherTarget)) {
+        Write-Host (__PS_DOLLAR__msgLauncherMissing -f __PS_DOLLAR__launcherTarget)
         Pause-OnError
         exit 1
     }
 
-    if (Test-Path -LiteralPath __PS_DOLLAR__settingsPath) {
-        try {
-            __PS_DOLLAR__settings = Get-Content -LiteralPath __PS_DOLLAR__settingsPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            __PS_DOLLAR__value = [string]__PS_DOLLAR__settings.default_workspace
-            if (-not [string]::IsNullOrWhiteSpace(__PS_DOLLAR__value)) {
-                __PS_DOLLAR__defaultWorkspace = __PS_DOLLAR__value.Trim()
-            }
-        }
-        catch {
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace(__PS_DOLLAR__defaultWorkspace)) {
-        Write-Host (__PS_DOLLAR__msgCurrentStartupDir -f __PS_DOLLAR__workspace)
-        __PS_DOLLAR__userWorkspaceInput = Read-Host __PS_DOLLAR__msgWorkspacePrompt
-        if (-not [string]::IsNullOrWhiteSpace(__PS_DOLLAR__userWorkspaceInput)) {
-            __PS_DOLLAR__workspace = __PS_DOLLAR__userWorkspaceInput.Trim().Trim('"')
-            __PS_DOLLAR__manualWorkspaceSelected = __PS_DOLLAR__true
-        }
-    } else {
-        __PS_DOLLAR__workspace = __PS_DOLLAR__defaultWorkspace
-    }
-
-    if (-not (Test-Path -LiteralPath __PS_DOLLAR__workspace -PathType Container)) {
-        Write-Host (__PS_DOLLAR__msgWorkspaceMissing -f __PS_DOLLAR__workspace)
-        Pause-OnError
-        exit 1
-    }
-
-    if (__PS_DOLLAR__manualWorkspaceSelected) {
-        __PS_DOLLAR__saveChoice = Read-Host __PS_DOLLAR__msgConfirmDefaultWorkspace
-        if (__PS_DOLLAR__saveChoice -match '^(?i:y|yes)$') {
-            try {
-                Save-DefaultWorkspace -SettingsFilePath __PS_DOLLAR__settingsPath -WorkspacePath __PS_DOLLAR__workspace
-                Write-Host __PS_DOLLAR__msgDefaultWorkspaceSaved
-            }
-            catch {
-                Write-Host (__PS_DOLLAR__msgDefaultWorkspaceSaveFailed -f __PS_DOLLAR___.Exception.Message)
-            }
-        }
-        else {
-            Write-Host __PS_DOLLAR__msgDefaultWorkspaceUnchanged
-        }
-    }
-
-    try {
-        Set-Location -LiteralPath __PS_DOLLAR__workspace
-    }
-    catch {
-        Write-Host __PS_DOLLAR__msgSwitchFailed
-        Pause-OnError
-        exit 1
-    }
-
-    & __PS_DOLLAR__commandShim
+    Set-Location -LiteralPath __PS_DOLLAR__workingDirectory
+    & __PS_DOLLAR__launcherTarget
     __PS_DOLLAR__exitCode = __PS_DOLLAR__LASTEXITCODE
     if (__PS_DOLLAR__exitCode -ne 0) {
         Write-Host ""
@@ -1271,6 +1087,10 @@ catch {
     exit 1
 }
 "@
+$protocolLauncherPs1Content = $protocolLauncherPs1Content.Replace(
+    '__LAUNCHER_PATH_B64__',
+    [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($LauncherPath))
+)
 $protocolLauncherPs1Content = $protocolLauncherPs1Content.Replace('__PS_DOLLAR__', '$')
 $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
 [System.IO.File]::WriteAllText($ProtocolLauncherPs1, $protocolLauncherPs1Content, $utf8WithBom)
@@ -1282,7 +1102,9 @@ foreach ($legacyPath in @(
     $LegacyTgAgentCommandShim,
     $LegacyTgAgentBashShim,
     $LegacyTgAgentCommandExe,
-    $LegacyTgAgentCommandScript
+    $LegacyTgAgentCommandScript,
+    $LegacyBrowserHarnessCommandShim,
+    $LegacyBrowserHarnessBashShim
 )) {
     if (Test-Path -LiteralPath $legacyPath) {
         try {
@@ -1342,8 +1164,6 @@ Write-Host "[portable] installed runtime: $InstalledRuntimeDir"
 Write-Host "[portable] venv ready: $VenvDir"
 Write-Host "[portable] command shim: $CommandShim"
 Write-Host "[portable] bash shim: $BashCommandShim"
-Write-Host "[portable] browser-harness shim: $BrowserHarnessCommandShim"
-Write-Host "[portable] browser-harness bash shim: $BrowserHarnessBashShim"
 Write-Host "[portable] protocol launcher: $ProtocolLauncher"
 if ($pathUpdated) {
     Write-Host "[portable] added to user PATH: $BinDir"
@@ -1355,7 +1175,6 @@ Write-Host "[portable] launcher: $LauncherPath"
 Write-Host "[portable] registered protocol: crab://open"
 Write-Host "[portable] open a new cmd window from Explorer and run: crab"
 Write-Host "[portable] in Git Bash, you can also run: crab"
-Write-Host "[portable] browser-harness: enable Chrome remote debugging, then run: browser-harness --doctor"
 Write-Host "[portable] if crab is still not found, sign out and sign back in once."
 if ($existingCrabCommands.Count -gt 0) {
     $conflictingCommand = $existingCrabCommands[0]
@@ -1395,8 +1214,8 @@ $resolvedPythonHome = Resolve-PythonHome -PythonExe $resolvedPythonExe -Explicit
 if ((Test-CondaPythonHome -PythonHomeDir $resolvedPythonHome) -and -not $AllowCondaPythonRuntime) {
     throw "Resolved Python home appears to be a conda runtime: $resolvedPythonHome. Use a standard CPython install or pass -AllowCondaPythonRuntime if you really want to continue."
 }
-Assert-Python311Plus -PythonExe $resolvedPythonExe
-Assert-Python311Plus -PythonExe (Join-Path $resolvedPythonHome "python.exe")
+Assert-Python310Plus -PythonExe $resolvedPythonExe
+Assert-Python310Plus -PythonExe (Join-Path $resolvedPythonHome "python.exe")
 $resolvedSourceWheelhouse = if ($SourceWheelhouse) {
     [System.IO.Path]::GetFullPath($SourceWheelhouse)
 }
@@ -1454,9 +1273,6 @@ if ($resolvedSourceWheelhouse -and -not $SkipProjectWheelBuild) {
     Write-Host "[portable] building project wheel..."
     Build-ProjectWheel -PythonExe $resolvedPythonExe -RepoRoot $repoRoot -TargetWheelhouseDir $wheelhouseDir -TempRoot $tempDir
 }
-
-Write-Host "[portable] building browser-harness wheel..."
-Build-BrowserHarnessWheel -PythonExe $resolvedPythonExe -RepoRoot $repoRoot -TargetWheelhouseDir $wheelhouseDir -TempRoot $tempDir
 
 if (Test-Path -LiteralPath $tempDir) {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue

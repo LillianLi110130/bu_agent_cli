@@ -10,7 +10,10 @@ $ErrorActionPreference = "Stop"
 $batContent = @'
 @echo off
 setlocal
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dpn0.ps1" %*
+set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=powershell.exe"
+"%POWERSHELL_EXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dpn0.ps1" %*
 set "EXITCODE=%ERRORLEVEL%"
 exit /b %EXITCODE%
 '@
@@ -164,7 +167,11 @@ if ($env:CRAB_SKIP_UPDATE_CHECK -ne "1") {
     $updateExitCode = $LASTEXITCODE
     if ($updateExitCode -eq 20) {
         $pendingUpdate = Join-Path $installRoot "updates\pending_update.ps1"
-        powershell -NoProfile -ExecutionPolicy Bypass -File $pendingUpdate
+        $powerShellExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        if (-not (Test-Path -LiteralPath $powerShellExe)) {
+            $powerShellExe = "powershell.exe"
+        }
+        & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $pendingUpdate
         $pendingExitCode = $LASTEXITCODE
         if ($pendingExitCode -ne 0) {
             exit $pendingExitCode
