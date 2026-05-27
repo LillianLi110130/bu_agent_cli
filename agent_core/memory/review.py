@@ -79,6 +79,7 @@ class MemoryReviewRunner:
             max_iterations=self.max_iterations,
             dependency_overrides={get_memory_store: lambda: self.store},
             runtime_role="skill_review",
+            llm_session_role="memory_review",
             hooks=[],
         )
         review_agent.load_history(list(messages_snapshot))

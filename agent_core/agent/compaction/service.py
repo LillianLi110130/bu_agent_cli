@@ -215,6 +215,10 @@ class CompactionService:
             messages=prepared_messages,
             tools=None,
             tool_choice=None,
+            metadata={
+                "runtime_role": "compaction",
+                "session_role": "skill_review",
+            },
         )
 
         summary_text = response.content or ""
