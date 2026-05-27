@@ -443,9 +443,17 @@ def prepare_update_before_launch(info: UpdateInfo) -> Path:
 
         root = updates_root()
         downloads_dir = root / "downloads"
+        staging_root = root / "staging"
         staging_dir = root / "staging" / info.latest_version
         file_name = _release_file_name(info)
         archive_path = downloads_dir / file_name
+
+        if downloads_dir.exists():
+            shutil.rmtree(downloads_dir)
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        staging_root.mkdir(parents=True, exist_ok=True)
 
         print(f"正在下载: {url}")
         _download_file(url, archive_path)

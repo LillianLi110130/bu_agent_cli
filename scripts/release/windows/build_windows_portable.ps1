@@ -936,6 +936,9 @@ if (-not $browserHarnessWheel) {
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 if ($Update) {
+    if (Test-Path -LiteralPath $BackupsDir) {
+        Remove-Item -LiteralPath $BackupsDir -Recurse -Force
+    }
     $backupDir = Join-Path $BackupsDir (Get-Date -Format "yyyyMMdd-HHmmss")
     New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
     foreach ($installManagedPath in @($VenvDir, $BinDir, $InstalledRuntimeDir)) {

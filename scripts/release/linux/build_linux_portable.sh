@@ -538,6 +538,7 @@ fi
 
 mkdir -p "${install_root}"
 if ((update_mode)); then
+    rm -rf "${backups_dir}"
     backup_dir="${backups_dir}/$(date +%Y%m%d-%H%M%S)"
     mkdir -p "${backup_dir}"
     for managed_path in "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"; do
