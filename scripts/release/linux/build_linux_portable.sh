@@ -397,9 +397,15 @@ write_deploy_script() {
 set -Eeuo pipefail
 
 skip_profile_update=0
+update_mode=0
 
 while (($# > 0)); do
     case "$1" in
+        --update)
+            update_mode=1
+            skip_profile_update=1
+            shift
+            ;;
         --force-recreate-venv)
             shift
             ;;
@@ -409,9 +415,10 @@ while (($# > 0)); do
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: deploy.sh [--force-recreate-venv] [--skip-profile-update]
+Usage: deploy.sh [--update] [--force-recreate-venv] [--skip-profile-update]
 
 Options:
+  --update                Update an existing install without modifying shell profiles
   --force-recreate-venv   Compatibility option; deploy always recreates ~/.tg_agent/.venv
   --skip-profile-update   Do not update shell profile files
   -h, --help              Show this help
@@ -446,6 +453,8 @@ packaged_worker_config="${app_dir}/tg_crab_worker.json"
 desktop_dir="${user_home}/.local/share/applications"
 protocol_desktop="${desktop_dir}/crab-protocol.desktop"
 profile_line='export PATH="$HOME/.tg_agent/bin:$PATH"'
+updates_dir="${install_root}/updates"
+backups_dir="${updates_dir}/backups"
 
 find_runtime_python() {
     local runtime_root="$1"
@@ -528,6 +537,16 @@ if [[ -z "${browser_harness_wheel}" ]]; then
 fi
 
 mkdir -p "${install_root}"
+if ((update_mode)); then
+    backup_dir="${backups_dir}/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "${backup_dir}"
+    for managed_path in "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"; do
+        if [[ -e "${managed_path}" ]]; then
+            cp -a "${managed_path}" "${backup_dir}/"
+        fi
+    done
+    echo "[portable] backup created: ${backup_dir}"
+fi
 rm -rf "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"
 mkdir -p "${bin_dir}"
 
@@ -564,6 +583,18 @@ if [[ ! -f "${entry_shim}" ]]; then
     echo "crab entry shim is missing." >&2
     echo "Run ./deploy.sh from the portable bundle first." >&2
     exit 1
+fi
+
+if [[ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]]; then
+    set +e
+    "${venv_python}" -m agent_core.updater check-before-launch
+    update_status=$?
+    set -e
+    if [[ "${update_status}" -eq 20 ]]; then
+        "${install_root}/updates/pending_update.sh"
+    elif [[ "${update_status}" -ne 0 ]]; then
+        exit "${update_status}"
+    fi
 fi
 
 exec "${venv_python}" -u "${entry_shim}" "$@"
@@ -833,6 +864,18 @@ if [[ ! -f "${entry_shim}" ]]; then
     exit 1
 fi
 
+if [[ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]]; then
+    set +e
+    "${venv_python}" -m agent_core.updater check-before-launch
+    update_status=$?
+    set -e
+    if [[ "${update_status}" -eq 20 ]]; then
+        "${install_root}/updates/pending_update.sh"
+    elif [[ "${update_status}" -ne 0 ]]; then
+        exit "${update_status}"
+    fi
+fi
+
 exec "${venv_python}" -u "${entry_shim}" "$@"
 EOF
 
@@ -942,6 +985,13 @@ if ((skip_tar == 0)); then
     rm -f "${tar_path}"
     echo "[portable] creating tar.gz archive..."
     tar -C "${resolved_output_root}" -czf "${tar_path}" "${bundle_name}"
+    "${resolved_python_exe}" "${repo_root}/scripts/release/generate_update_manifest.py" \
+        --repo-root "${repo_root}" \
+        --output-root "${resolved_output_root}" \
+        --version "${version}" \
+        --platform linux-x64 \
+        --artifact "${tar_path}" \
+        --base-url "${CRAB_RELEASE_BASE_URL:-}"
 fi
 
 echo "[portable] build complete"

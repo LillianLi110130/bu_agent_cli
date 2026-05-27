@@ -121,6 +121,7 @@ from cli.session_store import (
     workspace_identity,
 )
 from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
+from cli.update_handler import UpdateSlashHandler
 from config.model_config import (
     ModelPreset,
     get_auto_vision_preset,
@@ -2291,6 +2292,9 @@ class TGAgentCLI:
             self._settings_handler.bind_console(self._console)
             self._settings_handler.start()
             return True
+
+        if command_name == "update":
+            return await UpdateSlashHandler(console=self._console).handle(args)
 
         if command_name == "init":
             await self._run_init_agent()
