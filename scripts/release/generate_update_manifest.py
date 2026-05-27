@@ -80,9 +80,9 @@ def main() -> int:
     sha_path = artifact.with_name(f"{artifact.name}.sha256")
     sha_path.write_text(f"{artifact_sha}  {artifact.name}\n", encoding="utf-8")
 
-    base_url = args.base_url.rstrip("/")
+    base_url = args.base_url.strip().strip("/")
     artifact_url = (
-        f"{base_url}/releases/{args.version}/{artifact.name}" if base_url else artifact.name
+        f"{base_url}/releases/{args.version}/{artifact.name}" if base_url else f"releases/{args.version}/{artifact.name}"
     )
 
     update_root = output_root / "update"
@@ -103,7 +103,6 @@ def main() -> int:
     manifest["notes"] = notes
     manifest.setdefault("releases", {})
     manifest["releases"][args.platform] = {
-        "file": artifact.name,
         "url": artifact_url,
         "sha256": artifact_sha,
         "size": artifact.stat().st_size,
@@ -115,10 +114,7 @@ def main() -> int:
         "channel": "stable",
         "latest": args.version,
         "published_at": manifest["published_at"],
-        "releases": {
-            key: {field: value for field, value in release.items() if field != "file"}
-            for key, release in manifest["releases"].items()
-        },
+        "releases": manifest["releases"],
         "notes": manifest["notes"],
     }
     stable_path = update_root / "channels" / "stable.json"

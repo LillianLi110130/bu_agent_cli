@@ -57,12 +57,12 @@ crab-cli/
   "published_at": "2026-05-26",
   "releases": {
     "linux-x64": {
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
+      "url": "crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
       "sha256": "replace-with-linux-sha256",
       "size": 123456789
     },
     "windows-x64": {
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
+      "url": "crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
       "sha256": "replace-with-windows-sha256",
       "size": 123456789
     }
@@ -87,14 +87,12 @@ crab-cli/
   "published_at": "2026-05-26",
   "releases": {
     "linux-x64": {
-      "file": "tg-agent-linux-x64-v0.8.0-portable.tar.gz",
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
+      "url": "crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
       "sha256": "replace-with-linux-sha256",
       "size": 123456789
     },
     "windows-x64": {
-      "file": "tg-agent-windows-x64-v0.8.0-portable.zip",
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
+      "url": "crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
       "sha256": "replace-with-windows-sha256",
       "size": 123456789
     }
@@ -154,6 +152,45 @@ crab-cli/
 linux-x64
 windows-x64
 ```
+
+远端文件下载使用 `boto3`。bucket 固定通过环境变量提供，manifest 和安装包地址只写对象 key。
+
+```text
+CRAB_OSS_BUCKET=your-bucket
+CRAB_UPDATE_MANIFEST_URL=crab-cli/channels/stable.json
+```
+
+S3 兼容对象存储 endpoint 通过环境变量配置：
+
+```text
+CRAB_OSS_ENDPOINT_URL=https://your-oss-endpoint
+```
+
+对象存储访问参数通过环境变量配置：
+
+```text
+CRAB_OSS_ACCESS_KEY_ID=<access-key>
+CRAB_OSS_SECRET_ACCESS_KEY=<secret-key>
+CRAB_OSS_BUCKET=lt3623-tt54-uat
+CRAB_OSS_ENDPOINT_URL=http://tsz.ks3.cmbchina.cn
+CRAB_OSS_REGION=sz
+CRAB_OSS_VERIFY_SSL=false
+```
+
+这些变量会映射到 boto3：
+
+```python
+boto3.client(
+    "s3",
+    aws_access_key_id=CRAB_OSS_ACCESS_KEY_ID,
+    aws_secret_access_key=CRAB_OSS_SECRET_ACCESS_KEY,
+    endpoint_url=CRAB_OSS_ENDPOINT_URL,
+    region_name=CRAB_OSS_REGION,
+    verify=CRAB_OSS_VERIFY_SSL,
+)
+```
+
+如果没有设置 `CRAB_OSS_*`，则回退使用 boto3 默认凭证链，例如 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_DEFAULT_REGION`。
 
 ## 本地文件
 

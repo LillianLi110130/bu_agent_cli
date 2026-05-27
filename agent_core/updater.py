@@ -8,7 +8,6 @@ import platform
 import shutil
 import sys
 import tarfile
-import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
@@ -24,6 +23,12 @@ from agent_core.version import get_cli_version
 
 MANIFEST_URL_ENV = "CRAB_UPDATE_MANIFEST_URL"
 SKIP_UPDATE_CHECK_ENV = "CRAB_SKIP_UPDATE_CHECK"
+OSS_ENDPOINT_URL_ENV = "CRAB_OSS_ENDPOINT_URL"
+OSS_BUCKET_ENV = "CRAB_OSS_BUCKET"
+OSS_ACCESS_KEY_ID_ENV = "CRAB_OSS_ACCESS_KEY_ID"
+OSS_SECRET_ACCESS_KEY_ENV = "CRAB_OSS_SECRET_ACCESS_KEY"
+OSS_REGION_ENV = "CRAB_OSS_REGION"
+OSS_VERIFY_SSL_ENV = "CRAB_OSS_VERIFY_SSL"
 
 
 @dataclass(frozen=True)
@@ -91,10 +96,64 @@ def _platform_key() -> str:
     return f"{system}-{machine}"
 
 
-def _download_json(url: str) -> dict[str, Any]:
+def _parse_s3_url(url: str) -> tuple[str, str] | None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme:
+        return None
+    bucket = os.environ.get(OSS_BUCKET_ENV, "").strip()
+    key = url.lstrip("/")
+    if not bucket or not key:
+        raise ValueError(f"{OSS_BUCKET_ENV} and object key url are required")
+    return bucket, key
+
+
+def _s3_client() -> Any:
+    try:
+        import boto3
+    except ImportError as exc:
+        raise RuntimeError("boto3 is required for s3:// update URLs") from exc
+
+    endpoint_url = (
+        os.environ.get(OSS_ENDPOINT_URL_ENV)
+        or os.environ.get("AWS_ENDPOINT_URL_S3")
+        or os.environ.get("AWS_ENDPOINT_URL")
+    )
+    access_key_id = os.environ.get(OSS_ACCESS_KEY_ID_ENV) or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret_access_key = os.environ.get(OSS_SECRET_ACCESS_KEY_ENV) or os.environ.get(
+        "AWS_SECRET_ACCESS_KEY"
+    )
+    region_name = os.environ.get(OSS_REGION_ENV) or os.environ.get("AWS_DEFAULT_REGION")
+    verify_value = os.environ.get(OSS_VERIFY_SSL_ENV, "").strip().lower()
+    verify: bool | str = verify_value not in {"0", "false", "no", "off"}
+
+    kwargs: dict[str, Any] = {}
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    if access_key_id:
+        kwargs["aws_access_key_id"] = access_key_id
+    if secret_access_key:
+        kwargs["aws_secret_access_key"] = secret_access_key
+    if region_name:
+        kwargs["region_name"] = region_name
+    kwargs["verify"] = verify
+    return boto3.client("s3", **kwargs)
+
+
+def _download_bytes(url: str) -> bytes:
+    s3_location = _parse_s3_url(url)
+    if s3_location is not None:
+        bucket, key = s3_location
+        response = _s3_client().get_object(Bucket=bucket, Key=key)
+        body = response["Body"]
+        return body.read()
+
     request = urllib.request.Request(url, headers={"User-Agent": "CrabCLI-Updater/1"})
     with urllib.request.urlopen(request, timeout=15) as response:
-        data = response.read()
+        return response.read()
+
+
+def _download_json(url: str) -> dict[str, Any]:
+    data = _download_bytes(url)
     payload = json.loads(data.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("manifest root must be a JSON object")
@@ -173,6 +232,12 @@ def _print_update_info(info: UpdateInfo) -> None:
 
 def _download_file(url: str, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    s3_location = _parse_s3_url(url)
+    if s3_location is not None:
+        bucket, key = s3_location
+        _s3_client().download_file(bucket, key, str(destination))
+        return
+
     request = urllib.request.Request(url, headers={"User-Agent": "CrabCLI-Updater/1"})
     with urllib.request.urlopen(request, timeout=120) as response:
         with destination.open("wb") as output:
