@@ -207,7 +207,11 @@ class CronJobStore:
         created_at = ensure_aware(now or utc_now())
         schedule = parse_schedule(schedule_text, now=created_at)
         default_repeat = 1 if schedule.kind == "once" else None
-        repeat = CronRepeat(times=repeat_times if repeat_times is not None else default_repeat)
+        repeat = CronRepeat(
+            times=normalize_repeat_times(repeat_times)
+            if repeat_times is not None
+            else default_repeat
+        )
         job = CronJob(
             id=new_job_id(),
             name=name.strip() if name and name.strip() else default_job_name(prompt),
@@ -326,6 +330,12 @@ def new_job_id() -> str:
 def default_job_name(prompt: str) -> str:
     stripped = " ".join(prompt.strip().split())
     return stripped[:40] or "Scheduled Job"
+
+
+def normalize_repeat_times(repeat_times: int | None) -> int | None:
+    if repeat_times == 0:
+        return None
+    return repeat_times
 
 
 def _parse_duration_seconds(text: str) -> int:

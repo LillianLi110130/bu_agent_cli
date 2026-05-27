@@ -11,6 +11,7 @@ from typing import Any
 from cron.jobs import (
     CronJobStore,
     compute_next_run,
+    normalize_repeat_times,
     parse_schedule,
     utc_now,
     validate_prompt_safety,
@@ -96,7 +97,7 @@ class CronService:
             if execution_mode is not None:
                 job.execution.mode = _coerce_execution_mode(execution_mode)
             if repeat_times is not None:
-                job.repeat.times = repeat_times
+                job.repeat.times = normalize_repeat_times(repeat_times)
             job.updated_at = current_time
             return job
 
