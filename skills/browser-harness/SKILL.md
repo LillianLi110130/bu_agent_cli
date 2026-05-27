@@ -5,14 +5,20 @@ description: Direct browser control via CDP. Use when the user wants to automate
 
 # browser-harness
 
-Direct browser control via CDP. For task-specific edits, use `agent-workspace/agent_helpers.py`. For setup, install, or connection problems, read install.md.
+Direct browser control via CDP. Use it for browser automation, scraping,
+testing, and page interaction when the task should run in the user's browser.
 
-## Usage
+This skill is registered as `browser`; load it with `skill_view(name="browser")`.
 
-Windows:
+For setup, installation, daemon, or connection problems, read `install.md`.
+For task-specific helper code, use `agent-workspace/agent_helpers.py`.
 
-Use the `browser_harness` tool. Pass the complete Python script as the `script`
-argument.
+## Invocation
+
+Use the `browser_harness` tool on all platforms. Pass the complete Python
+script as the `script` argument. The tool starts the underlying harness and
+passes the script directly to stdin. Helpers are pre-imported and `run.py`
+calls `ensure_daemon()` before executing the script.
 
 ```json
 {
@@ -20,217 +26,167 @@ argument.
 }
 ```
 
-POSIX shell:
+Rules:
 
-```bash
-browser-harness <<'PY'
-new_tab("https://docs.browser-use.com")
-wait_for_load()
-print(page_info())
-PY
-```
+- Use `browser_harness` for every browser-harness script in this repository.
+- First navigation is `new_tab(url)`, not `goto_url(url)`. `goto_url()` runs in
+  the user's active tab and can clobber their work.
+- Stop on auth walls. Do not type credentials unless the user explicitly
+  provides them in text.
 
-- Invoke as browser-harness — it's on PATH. No cd, no uv run.
-- On Windows, use the `browser_harness` tool instead of invoking
-  browser-harness through CMD or PowerShell shell syntax.
-- On POSIX shells, use a heredoc for multi-line commands.
-- First navigation is new_tab(url), not goto_url(url) — goto runs in the user's active tab and clobbers their work.
+## Default Workflow
 
-## Tool call shape
-
-Send Python code on stdin to `browser-harness`. Helpers are pre-imported and the
-daemon auto-starts.
-
-Windows:
-
-Call the `browser_harness` tool with the full Python script:
-
-```json
-{
-  "script": "# any python\n"
-}
-```
-
-POSIX shell:
-
-```bash
-browser-harness <<'PY'
-# any python
-PY
-```
-
-run.py calls ensure_daemon() before exec — you never start/stop manually unless you want to.
-
-## Interaction skills
-
-If you start struggling with a specific mechanic while navigating, look in interaction-skills/ for helpers. The available interaction skills with actionable guidance are:
-- connection.md
-- dialogs.md
-- dropdowns.md
-- screenshots.md
-- tabs.md
-- text-targets.md
-
-## What actually works
-
-- Default workflow is DOM/CDP-only. Use page_info(), js(...), DOM queries, wait_for_element(), fill_input(), getBoundingClientRect(), wait_for_network_idle(), http_get(), and raw cdp(...) for normal browser inspection and actions.
-- Do not use screenshot/image analysis for normal navigation, page understanding, target discovery, clicking, or verification. Screenshot tooling is outside the default workflow; use it only when the user explicitly asks for a screenshot artifact or visual debugging.
-- Page understanding: inspect URL, document state, visible text, links, buttons, inputs, forms, roles, aria labels, hrefs, and bounding rects with js(...). If a page looks missing from DOM/CDP, first verify current_tab(), list_tabs(include_chrome=False), ensure_real_tab(), wait_for_load(), wait_for_element(), and document.body.innerText.
-- Targeting: prefer stable text, aria-label, href, role, name, id, selector, or getBoundingClientRect(). For a target with a rect, click the center with click_at_xy(). Do not derive click coordinates from screenshots.
-- Form controls: verify control identity before interacting. Do not rely only on placeholder text, visual position, or a single text match. Cross-check nearby labels, aria/name/id, current value, available options, disabled/readonly state, and neighboring form structure. If multiple controls share the same placeholder, enumerate candidates first and choose the one whose labels/options match the requested field.
-- Clicking: click_at_xy() takes CSS viewport coordinates. Get those coordinates from getBoundingClientRect(), not from screenshot pixels. Hit-testing happens in Chrome's browser process, so coordinate clicks go through iframes / shadow DOM / cross-origin when the CSS viewport coordinate is correct. For document lists, search results, recent items, table rows, cards, and external links, tab detection is part of the click: record list_tabs(include_chrome=False) before clicking, then inspect all tabs after clicking. Do not judge success only from the current tab URL.
-- New tabs after clicks: for document lists, search results, recent items, table rows, cards, external links, and any target that might use window.open, always record list_tabs(include_chrome=False) before the click. After the click, inspect all tabs, not only newly-created tabs: the site may open a new tab, reuse an existing tab, or leave the source tab URL unchanged. Switch with switch_tab(target) only when the matching tab is the expected continuation of the task. If it is an auth wall, payment/approval flow, download page, or unrelated content, stop or ask the user before continuing.
-- Bulk HTTP: http_get(url) + ThreadPoolExecutor. No browser for static pages (249 Netflix pages in 2.8s).
-- After goto: wait_for_load().
-- Wrong/stale tab: ensure_real_tab(). Use it when the current tab is stale or internal; the daemon also auto-recovers from stale sessions on the next call.
-- Verification: print(page_info()) is the simplest "is this alive?" check. Prefer URL/title/selector/text/network-idle checks. Do not verify normal browser actions with screenshot/image analysis.
-- page_info()["title"] is document.title, not the visible page heading. If it is empty, inspect visible headings or body text with js(...) before assuming the page is blank or unloaded.
-- DOM reads: use js(...) for inspection and extraction when coordinates are the wrong tool or when the needed information is text/structure rather than visual state.
-- Iframe sites (Azure blades, Salesforce): click_at_xy(x, y) passes through; only drop to iframe DOM work when coordinate clicks are the wrong tool.
-- Auth wall: redirected to login → stop and ask the user. Don't type credentials unless the user explicitly provides them in text.
-- Raw CDP for anything helpers don't cover: pass CDP params as keyword args,
-  e.g. `cdp("Runtime.evaluate", expression="document.title", returnByValue=True)`.
-  Do not pass a params dict as the second positional argument; that slot is
-  `session_id`. Prefer `js(...)` for Runtime.evaluate.
-
-After-action state scan:
-
-After any meaningful action, do not declare failure just because URL/title/body
-text did not change. Verify the state class the action may have changed. If a
-click or input appears to do nothing, scan likely post-action changes before
-retrying the same action.
-
-- Navigation/tab: URL, title, route, `list_tabs(include_chrome=False)`, newly
-  opened or reused tabs.
-- Element state: `input.value`, `checked`, `selected`, `disabled`,
-  `aria-expanded`, `aria-selected`, class, loading/spinner state.
-- Visible UI surfaces: native dialogs, modals, drawers, popovers, menus,
-  dropdowns, toasts, overlays, tooltips.
-- Content changes: success/error text, counters, row/list updates, target text
-  appearing/disappearing.
-- Activity: `wait_for_network_idle()`, pending requests, loading indicators.
-- Focus/selection: `document.activeElement`, selected text/range.
-- Frame-local changes: visible iframe contents or iframe target state.
-- Downloads: download/file signals.
-
-At minimum after a "no visible effect" action, re-run `page_info()`,
-`list_tabs(include_chrome=False)`, and a compact DOM scan for visible dialogs,
-modals, popovers, menus, toasts, overlays, loading indicators, disabled states,
-and changed input/control values.
-
-If the expected state is ambiguous, print the relevant DOM state and continue
-from that evidence. Do not immediately retry the same action or report failure.
-
-DOM/CDP targeting order:
+Use DOM/CDP first. Screenshots are not part of normal navigation,
+understanding, clicking, or verification.
 
 ```text
-1. Confirm the attached tab: current_tab(), list_tabs(include_chrome=False),
-   ensure_real_tab(), page_info().
-2. Wait for readiness: wait_for_load(), then wait_for_element(...) for SPA content.
-3. Build a compact DOM inventory with js(...): visible text, links, buttons,
-   inputs, roles, aria labels, hrefs, disabled states, and bounding rects.
-4. Choose a deterministic target by text, aria-label, role, href, name, id,
-   selector, or nearby DOM structure.
-5. For inputs, use fill_input(); for buttons/links, click the rect center with
-   click_at_xy(); for special cases, use raw cdp(...).
-6. Verify with URL/title/text/selector/network-idle.
-7. If DOM/CDP cannot proceed, report the exact blocker or ask the user. Do not
-   switch to screenshot analysis unless the user explicitly asks for visual debugging.
+1. Confirm the attached tab:
+   current_tab(), list_tabs(include_chrome=False), ensure_real_tab(), page_info()
+2. Navigate or attach:
+   new_tab(url), switch_tab(target), wait_for_load()
+3. Wait for dynamic content:
+   wait_for_element(selector, timeout=5, visible=True) when needed
+4. Inspect DOM state with js(...):
+   visible text, links, buttons, inputs, roles, aria labels, hrefs, disabled
+   states, selected values, and bounding rects
+5. Act:
+   fill_input() for normal inputs, press_key() for special keys, click_at_xy()
+   for visible buttons/links/rows, raw cdp(...) only when helpers are not enough.
+   Before clicking anything that may navigate, open content, or use window.open,
+   record before_tabs = list_tabs(include_chrome=False)
+6. Verify:
+   Re-read list_tabs(include_chrome=False) before deciding a click had no
+   effect. Then verify URL, title, visible text, selector state, network idle,
+   dialogs, toasts, loading state, input values, and other state changed by the
+   action
 ```
 
-Useful DOM inventory snippet:
+Minimal DOM inventory:
 
 ```python
 print(js("""
-(() => {
-  const pick = e => {
+(() => [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link],[tabindex]')]
+  .filter(e => {
     const r = e.getBoundingClientRect();
-    const text = (e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim();
+    return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 &&
+           r.top <= innerHeight && r.left <= innerWidth;
+  })
+  .slice(0, 80)
+  .map(e => {
+    const r = e.getBoundingClientRect();
     return {
       tag: e.tagName,
-      text: text.slice(0, 120),
+      text: (e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim().slice(0, 120),
       id: e.id || '',
-      cls: String(e.className || '').slice(0, 120),
       role: e.getAttribute('role') || '',
       aria: e.getAttribute('aria-label') || '',
       href: e.href || '',
       disabled: !!e.disabled || e.getAttribute('aria-disabled') === 'true',
       rect: {x:r.x, y:r.y, w:r.width, h:r.height}
     };
-  };
-  return [...document.querySelectorAll('a,button,input,textarea,select,[role=button],[role=link],[tabindex]')]
-    .filter(e => {
-      const r = e.getBoundingClientRect();
-      return r.width > 0 && r.height > 0 && r.bottom >= 0 && r.right >= 0 &&
-             r.top <= innerHeight && r.left <= innerWidth;
-    })
-    .slice(0, 80)
-    .map(pick);
-})()
+  }))()
 """))
 ```
 
-Text targets in list/table/card UIs:
+## Interaction Skill Routing
 
-For document lists, search results, recent files, tables, cards, workspace apps,
-and other SPA rows, the visible target text is often a `span`/`div` with a
-framework click handler, not an `a[href]`.
-Do not stop after `querySelectorAll("a")` returns nothing, and do not assume the
-center of a full row container is the real hit target. Search by visible text,
-inspect several candidate elements, prefer the smallest visible rect that
-contains the exact title, then click the rect center. After clicking, inspect
-tabs as part of the click; a stable current-page URL does not prove failure.
-Full snippet: `interaction-skills/text-targets.md`.
+Before handling a specialized browser mechanic, read the matching file:
 
-When a click may open a new tab, detect and decide explicitly. If the user asked
-for a named document/page, prefer a tab whose title or URL matches that requested
-target over blindly switching to the newest tab.
+- Connection, install, daemon, or Chrome remote debugging issues:
+  `install.md` first, then `interaction-skills/connection.md` if needed.
+- Native `alert`, `confirm`, `prompt`, or `beforeunload` dialogs:
+  `interaction-skills/dialogs.md`.
+- Custom selects, menus, dropdowns, comboboxes, or ARIA listboxes:
+  `interaction-skills/dropdowns.md`.
+- New or reused tabs, visible tab order, or tab switching:
+  `interaction-skills/tabs.md`.
+- Named documents, rows, cards, search results, workspace items, or table cells:
+  `interaction-skills/text-targets.md`.
+- Screenshot artifacts or visual debugging requested by the user:
+  `interaction-skills/screenshots.md`.
 
-```python
-before = {t["targetId"] for t in list_tabs(include_chrome=False)}
-expected_text = "expected document or page title"
+Other files in `interaction-skills/` cover cookies, downloads, iframes,
+cross-origin iframes, shadow DOM, scrolling, viewport, print-to-PDF, uploads,
+network requests, drag-and-drop, and profile sync. Use them when the task hits
+that mechanism.
 
-click_at_xy(x, y)
-wait(1)
+## Tab-Aware Clicks
 
-tabs = list_tabs(include_chrome=False)
-new_tabs = [
-    t for t in tabs
-    if t["targetId"] not in before
-]
-print(new_tabs)
+For links, search results, documents, rows, cards, recent items, external links,
+and any target that may open or reuse another tab:
 
-# Decide from title/url and the user's task. Switch only if it is the expected next page.
-matching_tabs = [
-    t for t in tabs
-    if expected_text in ((t.get("title") or "") + " " + (t.get("url") or ""))
-]
-new_matching_tabs = [
-    t for t in new_tabs
-    if expected_text in ((t.get("title") or "") + " " + (t.get("url") or ""))
-]
-if new_matching_tabs:
-    switch_tab(new_matching_tabs[-1])
-    wait_for_load()
-    print(page_info())
-elif matching_tabs:
-    switch_tab(matching_tabs[-1])
-    wait_for_load()
-    print(page_info())
-elif new_tabs:
-    target = new_tabs[-1]
-    if "expected-host-or-title" in (target.get("url", "") + " " + target.get("title", "")):
-        switch_tab(target)
-        wait_for_load()
-        print(page_info())
-    else:
-        print("New tab opened; not switching until it is confirmed relevant:", target)
-```
+1. Record `before_tabs = list_tabs(include_chrome=False)` before clicking.
+2. Click once.
+3. Wait briefly.
+4. Re-read `tabs = list_tabs(include_chrome=False)`.
+5. Inspect both new and existing tabs by title and URL.
+6. Switch only to a tab confirmed relevant to the user's requested target.
+7. Do not report "no effect" until tab changes have been checked.
 
-## Common form/search workflow
+Many workspace apps leave the source tab URL and body unchanged while opening
+or reusing another tab for the actual content.
 
-For ordinary search boxes and form inputs, prefer the existing helpers before
-inventing selectors, helper names, or raw CDP calls.
+## After-Action Scan
+
+After every meaningful click, input, submit, navigation, or tab switch, inspect
+the state class that may have changed before retrying the same action or
+reporting failure.
+
+At minimum after a "no visible effect" action, re-run:
+
+- `page_info()`
+- `list_tabs(include_chrome=False)`
+- a compact DOM scan for dialogs, modals, drawers, popovers, menus, dropdowns,
+  toasts, overlays, tooltips, loading indicators, disabled states, changed
+  input/control values, and target text appearing or disappearing
+
+Check these state classes as relevant:
+
+- Navigation/tab: URL, title, route, new tabs, reused tabs.
+- Native dialogs: `page_info()` may return `{"dialog": ...}` for `alert`,
+  `confirm`, `prompt`, or `beforeunload`; read `interaction-skills/dialogs.md`
+  before handling them.
+- DOM surfaces: modals, drawers, popovers, menus, dropdowns, toasts, overlays,
+  tooltips, confirmation panels, permission prompts rendered in the page.
+- Element state: value, checked, selected, disabled, readonly, `aria-expanded`,
+  `aria-selected`, class, loading/spinner state.
+- Content/network: success/error text, counters, row/list updates,
+  `wait_for_network_idle()`, pending loading indicators.
+- Focus/frame/download: active element, selection, iframe-local content,
+  download or file signals.
+
+If the expected state is ambiguous, print the relevant DOM state and continue
+from that evidence. Do not immediately retry the same action.
+
+## Core Rules
+
+- Page understanding: inspect URL, title, visible text, links, buttons, inputs,
+  forms, roles, aria labels, hrefs, disabled states, and bounding rects with
+  `js(...)`.
+- `page_info()["title"]` is `document.title`, not the visible page heading. If
+  it is empty, inspect headings or body text before assuming the page is blank.
+- Clicking: `click_at_xy()` takes CSS viewport coordinates. Derive them from
+  `getBoundingClientRect()`, not screenshot pixels.
+- Coordinate clicks go through iframes, shadow DOM, and cross-origin content
+  when the viewport coordinate is correct. Drop to frame-specific DOM work only
+  when coordinates are the wrong tool.
+- After clicks on document lists, search results, recent items, tables, cards,
+  and external links, inspect `list_tabs(include_chrome=False)`. Sites may open
+  a new tab, reuse an existing tab, or leave the source tab URL unchanged.
+- If a click or input appears to do nothing, run the After-Action Scan before
+  retrying or reporting failure.
+- For raw CDP, pass params as keyword arguments:
+  `cdp("Runtime.evaluate", expression="document.title", returnByValue=True)`.
+  Do not pass a params dict as the second positional argument; that slot is
+  `session_id`.
+- Prefer `js(...)` over raw `Runtime.evaluate` for page JavaScript.
+- Use `http_get(url)` for static pages and APIs. Wrap it in
+  `ThreadPoolExecutor` for bulk fetches. Do not use a browser when HTTP is
+  enough.
+
+## Common Recipes
+
+### Form Or Search
 
 ```python
 new_tab("https://www.baidu.com")
@@ -242,28 +198,63 @@ wait_for_load()
 print(js("document.body.innerText"))
 ```
 
-- Open or switch to the correct page first: use `new_tab(url)` for first navigation and `ensure_real_tab()` if the current tab may be stale, internal, or not the intended page.
-- Wait before interacting: after navigation use `wait_for_load()`, and before touching dynamic fields use `wait_for_element(selector, timeout=5, visible=True)`.
-- `getBoundingClientRect()` already returns viewport coordinates suitable for click_at_xy(). If it returns zero, do not assume a coordinate-system mismatch; first check current tab, selector correctness, load state, and element visibility.
-- For normal inputs, use `fill_input(selector, text, timeout=5)`. It focuses, clears, inserts the full text with `Input.insertText`, and dispatches input/change events for framework-managed fields. This avoids duplicate non-ASCII input such as `你你好好`.
-- `type_text(text)` only inserts into the currently focused element. Do not use it unless focus was just set intentionally by a coordinate click, `fill_input`, or explicit JS focus.
-- Use exact helper names. Use `press_key("Enter")`; do not invent `press_enter()` or similar helpers. Use `press_key()` for keys such as Enter, Tab, Backspace, Escape, and arrows, not for general text input.
-- Submit forms with `press_key("Enter")` or a visible `click_at_xy(x, y)` first. Use DOM fallbacks such as `form.submit()` only after helper-based interaction fails.
-- Avoid raw `cdp("Input.dispatchKeyEvent", ...)` for keyboard input unless existing helpers are insufficient and the active session has been verified.
+Rules:
 
-## Helper boundary
+- Use `fill_input(selector, text, timeout=5)` for normal inputs. It focuses,
+  clears, inserts the full text with `Input.insertText`, and dispatches
+  `input/change` events for framework-managed fields.
+- Use `type_text(text)` only when focus was just set intentionally.
+- Use `press_key("Enter")`, `press_key("Tab")`, `press_key("Escape")`,
+  `press_key("Backspace")`, and arrow keys for special keys. Do not invent
+  helper names such as `press_enter()`.
+- Submit with `press_key("Enter")` or a visible `click_at_xy(x, y)` first. Use
+  DOM fallbacks such as `form.submit()` only after helper-based interaction
+  fails.
+- For multiple similar controls, enumerate candidates first and choose by
+  nearby labels, aria/name/id, current value, options, and form structure.
 
-- Connect to the user's running Chrome. Don't launch your own browser.
-- Put task-specific helpers in `agent-workspace/agent_helpers.py`; do not edit core helpers for one-off page logic.
+### Text Targets
+
+For named documents, rows, cards, search results, and workspace items, the
+visible target is often a `span` or `div` with delegated framework handlers,
+not an `a[href]` or native button.
+
+Use `interaction-skills/text-targets.md` before acting. The short version:
+
+- Search by exact visible text.
+- Inspect several candidate elements.
+- Prefer the smallest visible rect containing the target text.
+- Re-read the rect immediately before clicking.
+- Record tabs before the click and inspect all tabs after the click.
+- Switch only to a tab that is confirmed relevant to the user's requested
+  target.
+
+## Helper Boundary
+
+- Connect to the user's running Chrome. Do not launch your own browser unless
+  `install.md` explicitly calls for a dedicated automation Chrome during setup
+  or troubleshooting.
+- Core reusable helpers live in `src/browser_harness/helpers.py`.
+- Task-specific or site-specific helpers belong in
+  `agent-workspace/agent_helpers.py`.
 - Prefer existing helpers and raw CDP calls before adding abstractions.
+- Do not edit core helpers for one-off page logic.
 
-## Gotchas (field-tested)
+## Gotchas
 
-- Omnibox popups are fake page targets. Filter chrome://omnibox-popup... and other internals when you need a real tab.
-- CDP target order != Chrome's visible tab-strip order. Use UI automation when the user means "the first/second tab I can see"; Target.activateTarget only shows a known target.
-- Default daemon sessions can go stale. ensure_real_tab() re-attaches to a real page.
-- Use DOM/CDP to drive exploration. Build summaries of visible controls, text, forms, links, roles, aria labels, and rects with js(...).
-- Prefer compositor-level actions for visible UI targets, but derive coordinates from getBoundingClientRect().
-- Current URL unchanged after a click does not mean the click failed. Check tabs first, especially on document/workspace apps that open content in a new or reused tab.
-- If a coordinate click misses, do not blindly retry. Re-read the target rect, viewport size, scroll position, visibility, disabled state, and overlay/modals from DOM/CDP. Do not switch to screenshot analysis unless the user explicitly asks for visual debugging.
-- If you need framework-specific DOM tricks, check interaction-skills/ first. That is where dropdown, dialog, iframe, shadow DOM, and form-specific guidance belongs.
+- Omnibox popups and other internal pages can appear as page targets. Use
+  `list_tabs(include_chrome=False)` or `ensure_real_tab()` when you need a real
+  user page.
+- CDP target order is not Chrome's visible tab-strip order. Use platform UI
+  automation when the user means "the first/second tab I can see".
+- `switch_tab()` attaches the harness to a tab. Use
+  `cdp("Target.activateTarget", targetId=tid)` when the tab also needs to become
+  visibly active.
+- Default daemon sessions can go stale. `ensure_real_tab()` and the daemon's
+  stale-session recovery usually fix the next call.
+- If `getBoundingClientRect()` returns zero, first check the current tab,
+  selector correctness, load state, visibility, and overlays.
+- Current URL, title, or body text unchanged after a click is not evidence of
+  failure until `list_tabs(include_chrome=False)` has been checked. Many
+  workspace apps open or reuse a different tab while leaving the source tab
+  unchanged.

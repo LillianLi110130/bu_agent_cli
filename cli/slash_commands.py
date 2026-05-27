@@ -153,6 +153,16 @@ class SlashCommandRegistry:
                 category="配置",
             ),
             SlashCommand(
+                name="update",
+                description="检查 Crab CLI 更新状态",
+                usage="/update [check|status]",
+                examples=[
+                    "/update check",
+                    "/update status",
+                ],
+                category="配置",
+            ),
+            SlashCommand(
                 name="init",
                 description="生成 TGAGENTS.md",
                 usage="/init",

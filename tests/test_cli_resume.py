@@ -392,6 +392,26 @@ async def test_new_command_does_not_create_empty_session_row(
 
 
 @pytest.mark.asyncio
+async def test_new_command_clears_session_until_gateway_session_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    cli = _make_cli(tmp_path, monkeypatch, workspace=workspace)
+    cli._im_worker_id = "user@example.com"
+    monkeypatch.setattr(app_module.os, "system", lambda command: 0)
+
+    await cli._handle_slash_command("/new")
+
+    assert cli._conversation_session_id is None
+    assert cli._conversation_session_created is False
+
+    cli._handle_gateway_session_event("server-session-1", is_new=True)
+
+    assert cli._conversation_session_id == "server-session-1"
+
+
+@pytest.mark.asyncio
 async def test_new_command_keeps_previous_persisted_session_resumable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -412,7 +432,7 @@ async def test_new_command_keeps_previous_persisted_session_resumable(
         exclude_session_id=cli._conversation_session_id,
     )
     assert [session.id for session in sessions] == [old_conversation_id]
-    assert cli._session_store.get_session(cli._conversation_session_id) is None
+    assert cli._conversation_session_id is None
     assert cli._agent.messages == []
 
 
@@ -431,12 +451,14 @@ async def test_new_command_followup_messages_write_to_new_session_only(
     monkeypatch.setattr(app_module.os, "system", lambda command: 0)
 
     await cli._handle_slash_command("/new")
+    cli._handle_gateway_session_event("server-session-new", is_new=True)
     new_conversation_id = cli._conversation_session_id
     cli._agent._context.add_message(UserMessage(content="new user"))
     cli._agent._context.add_message(AssistantMessage(content="new assistant"))
     cli._persist_current_session_state()
 
     assert new_conversation_id != old_conversation_id
+    assert new_conversation_id == "server-session-new"
     assert cli._session_store.count_messages(old_conversation_id) == 2
     assert cli._session_store.count_messages(new_conversation_id) == 2
     old_rounds = cli._session_store.recent_user_assistant_rounds(

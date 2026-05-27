@@ -57,6 +57,10 @@ async def test_browser_harness_passes_script_to_stdin_without_shell(
     assert kwargs["shell"] is False
     assert kwargs["stdin"] == browser_harness_module.subprocess.PIPE
     assert kwargs["cwd"] == str(workspace_root)
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["PYTHONIOENCODING"] == "utf-8:replace"
+    assert env["PYTHONUTF8"] == "1"
 
 
 @pytest.mark.asyncio
@@ -106,3 +110,19 @@ async def test_browser_harness_reports_missing_command(
 def test_browser_harness_is_registered() -> None:
     assert browser_harness in ALL_TOOLS
     assert browser_harness.name == "browser_harness"
+
+
+def test_browser_harness_result_replaces_lone_surrogates() -> None:
+    result = browser_harness_module._format_browser_harness_result(
+        returncode=0,
+        stdout="中文\udcff",
+        stderr="错误\udcff",
+        timed_out=False,
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert "\udcff" not in payload["stdout"]
+    assert "\udcff" not in payload["stderr"]
+    assert payload["stdout"].startswith("中文")
+    assert payload["stderr"].startswith("错误")

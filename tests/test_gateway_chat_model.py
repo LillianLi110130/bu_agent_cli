@@ -57,7 +57,7 @@ async def test_chat_gateway_aggregates_sse_events(
         assert payload["messages"][0]["role"] == "user"
 
         body = (
-            'data: {"type":"session","session_id":"session-local-1","is_new":false}\n\n'
+            'data: {"type":"session_created","session_no":"session-local-1","is_new":true}\n\n'
             'data: {"type":"text","content":"hello "}\n\n'
             'data: {"type":"text","content":"world"}\n\n'
             'data: {"type":"tool_call","tool":"read","args":{"path":"README.md"},'
@@ -116,7 +116,7 @@ async def test_chat_gateway_aggregates_sse_events(
     assert len(response.tool_calls) == 1
     assert response.tool_calls[0].function.name == "read"
     assert json.loads(response.tool_calls[0].function.arguments) == {"path": "README.md"}
-    assert session_events == [("session-local-1", False)]
+    assert session_events == [("session-local-1", True)]
     assert llm.session_id == "session-local-1"
     assert persisted_updates == [(tmp_path.resolve(), "Bearer refreshed-token")]
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 from typing import Annotated
 
@@ -14,7 +15,9 @@ from tools.shell_tasks import terminate_process_tree
 
 @tool(
     "Run Python code in browser-harness by passing it directly to stdin. "
-    "Use this for browser automation instead of shell pipes, especially on Windows.",
+    'Before calling this tool for browser work, load the browser skill with '
+    'skill_view(name="browser") unless its SKILL.md is already in context. '
+    "Use this as the repository browser automation entrypoint across platforms.",
     name="browser_harness",
     context_policy="trim",
     context_max_inline_chars=12800,
@@ -64,6 +67,7 @@ async def _run_browser_harness(*, script: str, cwd: str, timeout: int) -> _Brows
         "text": True,
         "encoding": "utf-8",
         "errors": "replace",
+        "env": _browser_harness_env(),
         "shell": False,
     }
     if subprocess._mswindows:
@@ -102,8 +106,19 @@ def _format_browser_harness_result(
     payload = {
         "ok": returncode == 0 and not timed_out,
         "returncode": returncode,
-        "stdout": stdout,
-        "stderr": stderr,
+        "stdout": _replace_surrogates(stdout),
+        "stderr": _replace_surrogates(stderr),
         "timed_out": timed_out,
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _replace_surrogates(value: str) -> str:
+    return value.encode("utf-8", "replace").decode("utf-8", "replace")
+
+
+def _browser_harness_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8:replace"
+    env["PYTHONUTF8"] = "1"
+    return env

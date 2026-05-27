@@ -159,6 +159,22 @@ if ($manualWorkspaceSelected) {
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONDONTWRITEBYTECODE = "1"
 
+if ($env:CRAB_SKIP_UPDATE_CHECK -ne "1") {
+    & $venvPython -m agent_core.updater check-before-launch
+    $updateExitCode = $LASTEXITCODE
+    if ($updateExitCode -eq 20) {
+        $pendingUpdate = Join-Path $installRoot "updates\pending_update.ps1"
+        powershell -NoProfile -ExecutionPolicy Bypass -File $pendingUpdate
+        $pendingExitCode = $LASTEXITCODE
+        if ($pendingExitCode -ne 0) {
+            exit $pendingExitCode
+        }
+    }
+    elseif ($updateExitCode -ne 0) {
+        exit $updateExitCode
+    }
+}
+
 Write-Host $msgStartingCrab
 Write-Host ($msgWorkspaceLabel -f $workspace)
 Write-Host ""

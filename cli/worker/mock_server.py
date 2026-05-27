@@ -794,7 +794,8 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
             try:
                 yield _encode_web_sse(
                     {
-                        "type": "session",
+                        "type": "session_created" if is_new else "session",
+                        "session_no": session_id,
                         "session_id": session_id,
                         "is_new": is_new,
                     }

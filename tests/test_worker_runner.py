@@ -498,7 +498,8 @@ async def test_mock_gateway_new_and_llm_stream_return_session_event():
 
     new_payload = new_response.json()
     assert new_payload["session_id"].startswith("session-")
-    assert '"type": "session"' in stream_response.text
+    assert '"type": "session_created"' in stream_response.text
+    assert '"session_no": "session-' in stream_response.text
     assert '"is_new": true' in stream_response.text
     assert '"type": "text"' in stream_response.text
     assert '"content": "hello"' in stream_response.text

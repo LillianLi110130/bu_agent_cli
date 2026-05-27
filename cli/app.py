@@ -121,8 +121,7 @@ from cli.session_store import (
     workspace_identity,
 )
 from cli.skills_handler import SkillReviewHistoryItem, SkillSlashHandler
-from cli.worker.auth import load_persisted_auth_result
-from cli.worker.gateway_client import WorkerGatewayClient
+from cli.update_handler import UpdateSlashHandler
 from config.model_config import (
     ModelPreset,
     get_auto_vision_preset,
@@ -681,35 +680,6 @@ class TGAgentCLI:
         self._conversation_session_id = normalized_session_id
         self._sync_gateway_llm_context(self._agent)
 
-    async def _request_gateway_new_session(self) -> str | None:
-        """Best-effort /new call used to align local and gateway session ids."""
-        if not self._im_gateway_base_url:
-            return None
-
-        authorization: str | None = None
-        try:
-            persisted_auth = load_persisted_auth_result(base_dir=self._im_auth_base_dir)
-        except Exception:
-            persisted_auth = None
-        if persisted_auth is not None:
-            authorization = persisted_auth.authorization
-
-        client = WorkerGatewayClient(
-            base_url=self._im_gateway_base_url,
-            authorization=authorization,
-            base_dir=self._im_auth_base_dir,
-        )
-        try:
-            return await client.create_session(
-                worker_id=self._im_worker_id,
-                worker_no=self._im_worker_no,
-            )
-        except Exception as exc:
-            logger.warning("Gateway /new failed; falling back to local session id: %s", exc)
-            return None
-        finally:
-            await client.aclose()
-
     def _workspace_skill_dirs(self, workspace_dir: Path | None = None) -> list[Path]:
         resolved_workspace = (workspace_dir or self._ctx.working_dir).resolve()
         return [
@@ -745,6 +715,8 @@ class TGAgentCLI:
     def _ensure_current_session_created(self) -> bool:
         """Create the current conversation session row on first real transcript write."""
         if self._session_store is None:
+            return False
+        if not self._conversation_session_id:
             return False
         if self._conversation_session_created:
             return True
@@ -1022,9 +994,7 @@ class TGAgentCLI:
         if self._session_store is not None and self._conversation_session_created:
             self._session_store.end_session(old_conversation_session_id, reason="new_session")
 
-        self._conversation_session_id = (
-            await self._request_gateway_new_session()
-        ) or str(uuid.uuid4())[:8]
+        self._conversation_session_id = None
         self._conversation_session_created = False
         self._last_transcript_flushed_idx = 0
         self._sync_gateway_llm_context(self._agent)
@@ -2314,7 +2284,7 @@ class TGAgentCLI:
             self._resume_handler.bind_console(self._console)
             self._resume_handler.bind_store(self._session_store)
             self._resume_handler.start_pick_mode(
-                current_session_id=self._conversation_session_id,
+                current_session_id=self._conversation_session_id or "",
             )
             return True
 
@@ -2322,6 +2292,9 @@ class TGAgentCLI:
             self._settings_handler.bind_console(self._console)
             self._settings_handler.start()
             return True
+
+        if command_name == "update":
+            return await UpdateSlashHandler(console=self._console).handle(args)
 
         if command_name == "init":
             await self._run_init_agent()

@@ -1,6 +1,6 @@
 # Crab CLI 自动更新详细设计
 
-本文档定义 Crab CLI 第一版自动更新实现。更新基于对象存储完成：客户端启动前读取远端 `manifest`，发现新版本后下载 portable 安装包，校验后调用新包里的部署脚本完成升级。
+本文档定义 Crab CLI 第一版自动更新实现。更新基于对象存储完成：客户端启动前读取远端 `manifest`，发现新版本后下载 portable 安装包，校验后调用新包里的部署脚本完成升级。运行中的 Crab 只提供检查能力，不直接安装更新。
 
 ## 目标
 
@@ -10,6 +10,7 @@
 - 更新前让用户确认，不做静默安装。
 - 下载后校验 `sha256`。
 - 更新失败时保留旧版本可启动。
+- 运行中只支持 `/update check` 和 `/update status`，不支持 `/update install`。
 
 ## 职责边界
 
@@ -17,7 +18,7 @@
 scripts/release/*        构建安装包、生成 sha256、根据 release_notes.json 生成 manifest
 对象存储                 保存 manifest 和 portable 安装包
 launcher / crab shim     启动 crab 前调用 updater
-agent_core.updater       检查版本、下载、校验、解压、调用 deploy
+agent_core.updater       启动前检查、下载、校验、解压、调用 deploy；运行中只检查状态
 deploy.sh / deploy.bat   安装或更新已经解压好的 bundle
 ```
 
@@ -56,12 +57,12 @@ crab-cli/
   "published_at": "2026-05-26",
   "releases": {
     "linux-x64": {
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
+      "url": "crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
       "sha256": "replace-with-linux-sha256",
       "size": 123456789
     },
     "windows-x64": {
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
+      "url": "crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
       "sha256": "replace-with-windows-sha256",
       "size": 123456789
     }
@@ -86,14 +87,12 @@ crab-cli/
   "published_at": "2026-05-26",
   "releases": {
     "linux-x64": {
-      "file": "tg-agent-linux-x64-v0.8.0-portable.tar.gz",
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
+      "url": "crab-cli/releases/0.8.0/tg-agent-linux-x64-v0.8.0-portable.tar.gz",
       "sha256": "replace-with-linux-sha256",
       "size": 123456789
     },
     "windows-x64": {
-      "file": "tg-agent-windows-x64-v0.8.0-portable.zip",
-      "url": "https://oss.example.com/crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
+      "url": "crab-cli/releases/0.8.0/tg-agent-windows-x64-v0.8.0-portable.zip",
       "sha256": "replace-with-windows-sha256",
       "size": 123456789
     }
@@ -154,6 +153,45 @@ linux-x64
 windows-x64
 ```
 
+远端文件下载使用 `boto3`。bucket 固定通过环境变量提供，manifest 和安装包地址只写对象 key。
+
+```text
+CRAB_OSS_BUCKET=your-bucket
+CRAB_UPDATE_MANIFEST_URL=crab-cli/channels/stable.json
+```
+
+S3 兼容对象存储 endpoint 通过环境变量配置：
+
+```text
+CRAB_OSS_ENDPOINT_URL=https://your-oss-endpoint
+```
+
+对象存储访问参数通过环境变量配置：
+
+```text
+CRAB_OSS_ACCESS_KEY_ID=<access-key>
+CRAB_OSS_SECRET_ACCESS_KEY=<secret-key>
+CRAB_OSS_BUCKET=lt3623-tt54-uat
+CRAB_OSS_ENDPOINT_URL=http://tsz.ks3.cmbchina.cn
+CRAB_OSS_REGION=sz
+CRAB_OSS_VERIFY_SSL=false
+```
+
+这些变量会映射到 boto3：
+
+```python
+boto3.client(
+    "s3",
+    aws_access_key_id=CRAB_OSS_ACCESS_KEY_ID,
+    aws_secret_access_key=CRAB_OSS_SECRET_ACCESS_KEY,
+    endpoint_url=CRAB_OSS_ENDPOINT_URL,
+    region_name=CRAB_OSS_REGION,
+    verify=CRAB_OSS_VERIFY_SSL,
+)
+```
+
+如果没有设置 `CRAB_OSS_*`，则回退使用 boto3 默认凭证链，例如 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`、`AWS_DEFAULT_REGION`。
+
 ## 本地文件
 
 自动更新文件固定放在：
@@ -165,6 +203,15 @@ windows-x64
 ~/.tg_agent/updates/logs/
 ~/.tg_agent/updates/backups/
 ```
+
+目录用途：
+
+| 目录 | 用途 |
+| --- | --- |
+| `downloads/` | 保存下载到本地的 portable 压缩包 |
+| `staging/` | 保存解压后的待安装新版本，用于执行 `deploy.sh` / `deploy.bat` |
+| `logs/` | 保存更新和部署过程日志，用于失败排查 |
+| `backups/` | 保存更新前的旧版本备份，用于失败回滚 |
 
 `update_state.json` 记录检查和安装状态：
 
@@ -196,8 +243,10 @@ windows-x64
   -> updater 检查 stable.json
   -> 没有更新则继续启动 crab
   -> 有更新则询问用户
-  -> 用户确认后下载并安装
-  -> 安装完成后继续启动 crab
+  -> 用户确认后下载、校验、解压
+  -> updater 生成 pending 部署脚本并退出
+  -> launcher 执行 pending 部署脚本
+  -> 安装完成后启动新版本 crab
 ```
 
 启动前检查每次启动都会执行一次。检查失败不阻断启动。用户可以用环境变量跳过：
@@ -206,13 +255,21 @@ windows-x64
 CRAB_SKIP_UPDATE_CHECK=1 crab
 ```
 
-launcher 只调用 updater，不写下载和安装逻辑。
+launcher 只负责调用 updater 和执行 updater 生成的 pending 部署脚本，不写下载和安装细节。`check-before-launch` 负责检查、下载、校验、解压，并生成 pending 部署脚本；真正安装由 launcher 在 Crab 主进程启动前执行 pending 部署脚本完成。
 
 Linux launcher 调用方式：
 
 ```bash
 if [[ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]]; then
-  "${venv_python}" -m agent_core.updater check-before-launch || true
+  set +e
+  "${venv_python}" -m agent_core.updater check-before-launch
+  update_status=$?
+  set -e
+  if [[ "${update_status}" -eq 20 ]]; then
+    "${install_root}/updates/pending_update.sh"
+  elif [[ "${update_status}" -ne 0 ]]; then
+    exit "${update_status}"
+  fi
 fi
 
 exec "${venv_python}" -u "${entry_shim}" "$@"
@@ -223,6 +280,18 @@ Windows launcher 调用方式：
 ```powershell
 if ($env:CRAB_SKIP_UPDATE_CHECK -ne "1") {
     & $venvPython -m agent_core.updater check-before-launch
+    $updateExitCode = $LASTEXITCODE
+    if ($updateExitCode -eq 20) {
+        $pendingUpdate = Join-Path $installRoot "updates\pending_update.ps1"
+        powershell -NoProfile -ExecutionPolicy Bypass -File $pendingUpdate
+        $pendingExitCode = $LASTEXITCODE
+        if ($pendingExitCode -ne 0) {
+            exit $pendingExitCode
+        }
+    }
+    elseif ($updateExitCode -ne 0) {
+        exit $updateExitCode
+    }
 }
 
 & $venvPython -u $entryShim @CliArgs
@@ -242,7 +311,6 @@ cli/update_handler.py
 ```bash
 python -m agent_core.updater check-before-launch
 python -m agent_core.updater check
-python -m agent_core.updater install
 python -m agent_core.updater status
 ```
 
@@ -250,9 +318,10 @@ python -m agent_core.updater status
 
 ```text
 /update check
-/update install
 /update status
 ```
+
+第一版不提供 `/update install`。运行中的 Crab 不直接下载和安装新版本，只提示用户关闭所有 Crab 后重新启动，通过启动前更新流程完成安装。
 
 `check-before-launch` 行为：
 
@@ -263,7 +332,10 @@ python -m agent_core.updater status
 4. 比较 latest 和当前版本
 5. 无更新则退出
 6. 有更新则显示版本和 notes
-7. 用户确认后执行 install
+7. 用户确认后下载、校验、解压
+8. 生成 `~/.tg_agent/updates/pending_update.sh` 或 `pending_update.ps1`
+9. updater 退出后，launcher 执行 pending 部署脚本
+10. 更新完成后启动新版本 crab
 ```
 
 有更新时固定使用以下交互：
@@ -298,20 +370,28 @@ python -m agent_core.updater status
 如果当前不是交互式终端，只打印一行提示并继续启动：
 
 ```text
-发现 Crab CLI 新版本 0.8.0，当前版本 0.7.0。请运行 /update install 更新。
+发现 Crab CLI 新版本 0.8.0，当前版本 0.7.0。请关闭所有 Crab 后重新启动以更新。
 ```
 
-`install` 行为：
+`/update check` 行为：
 
 ```text
-1. 获取 update.lock
-2. 下载当前平台安装包到 ~/.tg_agent/updates/downloads/
-3. 计算 sha256
-4. sha256 不一致则停止
-5. 解压到 ~/.tg_agent/updates/staging/<version>/
-6. 调用 staging 内的 deploy.sh 或 deploy.bat
-7. 写入 update_state.json
-8. 释放 update.lock
+1. 下载 stable.json
+2. 比较 latest 和当前版本
+3. 无更新则提示当前已是最新版本
+4. 有更新则展示版本、发布时间和 notes
+5. 提示用户关闭所有 Crab 后重新启动以更新
+6. 写入 update_state.json
+```
+
+`/update status` 行为：
+
+```text
+1. 读取当前版本
+2. 读取 update_state.json
+3. 展示当前版本
+4. 展示上次检查时间
+5. 展示上一次成功更新时间
 ```
 
 ## Deploy 更新模式
@@ -344,7 +424,13 @@ python -m agent_core.updater status
 ~/.tg_agent/update.lock
 ```
 
-已有锁时，新的更新请求直接退出并提示“已有更新正在进行”。检查 manifest 不需要持有锁。
+launcher 启动时如果发现 `update.lock` 已存在，说明另一个更新流程正在运行。此时不检查 manifest，也不启动 Crab，直接提示并退出：
+
+```text
+Crab 正在更新中，请稍后重新启动。
+```
+
+检查 manifest 不需要持有锁。下载和安装必须先获取 `update.lock`。
 
 ## 发布流程
 
@@ -374,27 +460,13 @@ python -m agent_core.updater status
 
 对象存储上传第一版手动完成，`scripts/release/*` 不实现上传功能。
 
-## 实施步骤
-
-第一版按这个顺序实现：
-
-1. 欢迎页版本显示改为读取 `agent_core.version.get_cli_version()`。
-2. 新增 `agent_core/updater.py`，实现版本比较、平台识别、manifest 读取和状态文件。
-3. 新增 `/update check` 和 `/update status`。
-4. 打包脚本生成 `.sha256` 和 `stable.json`。
-5. 新增 `/update install`，实现下载、校验和解压。
-6. 修改 Linux `deploy.sh` 支持 `--update`。
-7. 修改 Windows 部署脚本支持同样参数。
-8. 修改 Linux launcher，在启动前调用 updater。
-9. 修改 Windows launcher，在启动前调用 updater。
-10. 修改安装后的 `~/.tg_agent/bin/crab` shim，在启动前调用 updater。
-
 ## 验收标准
 
 - `stable.json` 中版本高于当前版本时，启动前能提示更新。
 - 用户跳过时，Crab 正常启动。
-- 用户确认更新时，安装包会下载到 `~/.tg_agent/updates/downloads/`。
+- 用户在启动前确认更新时，安装包会下载到 `~/.tg_agent/updates/downloads/`。
 - `sha256` 不一致时拒绝安装。
 - 更新成功后 `crab --help` 可用。
 - 更新失败后旧版本仍可启动。
 - `CRAB_SKIP_UPDATE_CHECK=1` 时不检查更新。
+- 运行中 `/update check` 发现新版本时，只提示关闭所有 Crab 后重新启动，不执行安装。

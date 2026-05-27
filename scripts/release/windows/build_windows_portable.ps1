@@ -681,6 +681,7 @@ function Write-WinDeployScript {
 
     $content = @'
 param(
+    [switch]$Update,
     [switch]$ForceRecreateVenv,
     [switch]$SkipDesktopShortcut
 )
@@ -719,6 +720,8 @@ $EnvFile = Join-Path $InstallRoot ".env"
 $WorkerConfig = Join-Path $InstallRoot "tg_crab_worker.json"
 $PackagedEnvFile = Join-Path $AppDir ".env"
 $PackagedWorkerConfig = Join-Path $AppDir "tg_crab_worker.json"
+$UpdatesDir = Join-Path $InstallRoot "updates"
+$BackupsDir = Join-Path $UpdatesDir "backups"
 
 function Install-BundledRuntime {
     param(
@@ -932,7 +935,21 @@ if (-not $browserHarnessWheel) {
 }
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-foreach ($installManagedPath in @($VenvDir, $BinDir, $InstalledRuntimeDir)) {
+if ($Update) {
+    if (Test-Path -LiteralPath $BackupsDir) {
+        Remove-Item -LiteralPath $BackupsDir -Recurse -Force
+    }
+    $backupDir = Join-Path $BackupsDir (Get-Date -Format "yyyyMMdd-HHmmss")
+    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
+    foreach ($installManagedPath in @($VenvDir, $BinDir, $InstalledRuntimeDir)) {
+        if (Test-Path -LiteralPath $installManagedPath) {
+            Copy-Item -LiteralPath $installManagedPath -Destination $backupDir -Recurse -Force
+        }
+    }
+    Write-Host "[portable] backup created: $backupDir"
+}
+$installManagedPaths = if ($Update) { @($VenvDir, $InstalledRuntimeDir) } else { @($VenvDir, $BinDir, $InstalledRuntimeDir) }
+foreach ($installManagedPath in $installManagedPaths) {
     if (Test-Path -LiteralPath $installManagedPath) {
         Remove-Item -LiteralPath $installManagedPath -Recurse -Force
     }
@@ -974,7 +991,7 @@ Set-Content -LiteralPath $EntryShim -Value $entryShimContent -Encoding UTF8
 
 $commandShimContent = @(
     '@echo off',
-    'setlocal',
+    'setlocal EnableExtensions EnableDelayedExpansion',
     'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
     'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
     'set "ENTRY_SHIM=%INSTALL_ROOT%\bin\crab-entry.py"',
@@ -990,10 +1007,23 @@ $commandShimContent = @(
     '    exit /b 1',
     ')',
     '',
+    'if not "%CRAB_SKIP_UPDATE_CHECK%"=="1" (',
+    '    "%VENV_PYTHON%" -m agent_core.updater check-before-launch',
+    '    set "UPDATE_EXIT=!ERRORLEVEL!"',
+    '    if "!UPDATE_EXIT!"=="20" (',
+    '        powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_ROOT%\updates\pending_update.ps1"',
+    '        if errorlevel 1 exit /b !ERRORLEVEL!',
+    '    ) else if not "!UPDATE_EXIT!"=="0" (',
+    '        exit /b !UPDATE_EXIT!',
+    '    )',
+    ')',
+    '',
     '"%VENV_PYTHON%" -u "%ENTRY_SHIM%" %*',
     'exit /b %ERRORLEVEL%'
 ) -join "`r`n"
-Set-Content -LiteralPath $CommandShim -Value $commandShimContent -Encoding ASCII
+if (-not ($Update -and (Test-Path -LiteralPath $CommandShim))) {
+    Set-Content -LiteralPath $CommandShim -Value $commandShimContent -Encoding ASCII
+}
 
 $bashCommandShimContent = @(
     '#!/usr/bin/env bash',
@@ -1018,9 +1048,23 @@ $bashCommandShimContent = @(
     '  exit 1',
     'fi',
     '',
+    'if [ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]; then',
+    '  set +e',
+    '  "$venv_python" -m agent_core.updater check-before-launch',
+    '  update_status=$?',
+    '  set -e',
+    '  if [ "$update_status" -eq 20 ]; then',
+    '    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${install_root}/updates/pending_update.ps1"',
+    '  elif [ "$update_status" -ne 0 ]; then',
+    '    exit "$update_status"',
+    '  fi',
+    'fi',
+    '',
     'exec "$venv_python" -u "$entry_shim" "$@"'
 ) -join "`n"
-Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
+if (-not ($Update -and (Test-Path -LiteralPath $BashCommandShim))) {
+    Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
+}
 
 $browserHarnessCommandShimContent = @(
     '@echo off',
@@ -1267,11 +1311,14 @@ $existingCrabCommands = @(
         Where-Object { $_ -ine $CommandShim -and $_ -ine $BashCommandShim }
 )
 
-$pathUpdated = Add-UserPathEntry -Entry $BinDir
-Notify-EnvironmentChange
+$pathUpdated = $false
+if (-not $Update) {
+    $pathUpdated = Add-UserPathEntry -Entry $BinDir
+    Notify-EnvironmentChange
+}
 Register-CrabProtocol -ProtocolLauncherPath $ProtocolLauncher
 
-if (-not $SkipDesktopShortcut) {
+if (-not $SkipDesktopShortcut -and -not $Update) {
     $desktopDir = Join-Path $UserProfileDir "Desktop"
     if (Test-Path -LiteralPath $desktopDir) {
         $shortcutPath = Join-Path $desktopDir "Crab Portable.lnk"
@@ -1435,6 +1482,16 @@ if (-not $SkipZip) {
 
     Write-Host "[portable] creating zip archive..."
     Compress-Archive -Path $bundleDir -DestinationPath $zipPath -Force
+    $manifestGenerator = Join-Path $repoRoot "scripts\release\generate_update_manifest.py"
+    & $resolvedPythonExe $manifestGenerator `
+        --repo-root $repoRoot `
+        --output-root $resolvedOutputRoot `
+        --version $resolvedVersion `
+        --platform windows-x64 `
+        --artifact $zipPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to generate update manifest"
+    }
 }
 
 Write-Host "[portable] build complete"

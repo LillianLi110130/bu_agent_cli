@@ -158,7 +158,9 @@ class ChatGateway(BaseChatModel):
         return payload
 
     def _handle_session_event(self, event_data: dict[str, Any], **kwargs: Any) -> None:
-        session_id = str(event_data.get("session_id") or "").strip()
+        session_id = str(
+            event_data.get("session_id") or event_data.get("session_no") or ""
+        ).strip()
         if not session_id:
             return
         is_new = bool(event_data.get("is_new", False))
@@ -259,7 +261,7 @@ class ChatGateway(BaseChatModel):
                             yield ChatInvokeCompletionChunk(
                                 usage=ChatInvokeUsage(**usage_payload)
                             )
-                        elif event_type == "session":
+                        elif event_type in {"session", "session_created"}:
                             self._handle_session_event(event_data, **kwargs)
                         elif event_type == "done":
                             yield ChatInvokeCompletionChunk(
