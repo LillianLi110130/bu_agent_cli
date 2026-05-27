@@ -14,7 +14,9 @@ from tools.shell_tasks import terminate_process_tree
 
 @tool(
     "Run Python code in browser-harness by passing it directly to stdin. "
-    "Use this for browser automation instead of shell pipes, especially on Windows.",
+    'Before calling this tool for browser work, load the browser skill with '
+    'skill_view(name="browser") unless its SKILL.md is already in context. '
+    "Use this as the repository browser automation entrypoint across platforms.",
     name="browser_harness",
     context_policy="trim",
     context_max_inline_chars=12800,
