@@ -12,7 +12,13 @@ from cron.service import CronService, job_to_json
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 
-@tool("Create, inspect, update, pause, resume, run, or remove scheduled cron jobs")
+@tool(
+    "Create and manage Agent-native scheduled cron jobs. For create/update, the prompt is "
+    "the short instruction the future agent should run. Do not paste long scripts, source "
+    "files, or generated code into prompt. If scheduled work needs a script, first create "
+    "or edit that script as a workspace file, then set prompt to reference the file path "
+    "and the intended command or task."
+)
 async def cronjob(
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
     action: str,
@@ -20,28 +26,29 @@ async def cronjob(
     name: str | None = None,
     prompt: str | None = None,
     schedule: str | None = None,
-    delivery: str | None = None,
-    execution_mode: str | None = None,
     repeat_times: int | None = None,
 ) -> str:
     """
     Manage Agent-native scheduled jobs.
 
     Args:
-        ctx: Sandbox context for resolving the current workspace.
-        action: One of create, list, get, update, pause, resume, run, remove.
-        job_id: Existing job id for get/update/pause/resume/run/remove.
+        action: One of create, list, get, update, run, remove.
+        job_id: Existing job id for get/update/run/remove.
         name: Optional display name.
-        prompt: Prompt to run for create/update.
+        prompt: Jobs run in a fresh session with no current-chat context, so prompts
+            must be self-contained. Do not inline long scripts or source code. For
+            script-based jobs, write the script to a file first, then reference that
+            file path and command here.
         schedule: Schedule text, such as 30m, every 2h, cron, or ISO timestamp.
-        delivery: local or remote.
-        execution_mode: enqueue_current_session or fresh_agent_background.
         repeat_times: Optional repeat limit.
     """
     service = CronService(CronJobStore())
     normalized_action = action.strip().lower()
     workspace_root = Path(ctx.working_dir).resolve()
-    session_binding_id = resolve_session_binding_id(getattr(ctx, "session_id", None))
+    bridge_store = getattr(ctx, "bridge_store", None)
+    session_binding_id = getattr(bridge_store, "session_binding_id", None)
+    if not session_binding_id:
+        session_binding_id = resolve_session_binding_id(getattr(ctx, "session_id", None))
 
     if normalized_action == "create":
         if prompt is None or schedule is None:
@@ -52,8 +59,8 @@ async def cronjob(
             schedule=schedule,
             workspace_root=workspace_root,
             session_binding_id=session_binding_id,
-            delivery=delivery or "local",
-            execution_mode=execution_mode or "enqueue_current_session",
+            delivery= "remote",
+            execution_mode="fresh_agent_background",
             repeat_times=repeat_times,
         )
         return job_to_json(job)
@@ -91,8 +98,7 @@ async def cronjob(
                 name=name,
                 prompt=prompt,
                 schedule=schedule,
-                delivery=delivery,
-                execution_mode=execution_mode,
+                delivery="remote",
                 repeat_times=repeat_times,
             )
         )
