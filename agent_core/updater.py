@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from packaging.version import InvalidVersion, Version
+from dotenv import dotenv_values
 
 from agent_core.runtime_paths import tg_agent_home
 from agent_core.version import get_cli_version
@@ -29,6 +30,21 @@ OSS_ACCESS_KEY_ID_ENV = "CRAB_OSS_ACCESS_KEY_ID"
 OSS_SECRET_ACCESS_KEY_ENV = "CRAB_OSS_SECRET_ACCESS_KEY"
 OSS_REGION_ENV = "CRAB_OSS_REGION"
 OSS_VERIFY_SSL_ENV = "CRAB_OSS_VERIFY_SSL"
+_UPDATE_ENV_NAMES = (
+    MANIFEST_URL_ENV,
+    SKIP_UPDATE_CHECK_ENV,
+    OSS_ENDPOINT_URL_ENV,
+    OSS_BUCKET_ENV,
+    OSS_ACCESS_KEY_ID_ENV,
+    OSS_SECRET_ACCESS_KEY_ENV,
+    OSS_REGION_ENV,
+    OSS_VERIFY_SSL_ENV,
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_DEFAULT_REGION",
+    "AWS_ENDPOINT_URL",
+    "AWS_ENDPOINT_URL_S3",
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +71,21 @@ def update_lock_path() -> Path:
 
 def updates_root() -> Path:
     return tg_agent_home() / "updates"
+
+
+def _load_update_env() -> None:
+    """Load updater-related env vars before the main CLI runtime starts."""
+    for env_path in (Path.cwd() / ".env", tg_agent_home() / ".env"):
+        if not env_path.exists():
+            continue
+        try:
+            values = dotenv_values(env_path)
+        except Exception:
+            continue
+        for name in _UPDATE_ENV_NAMES:
+            value = values.get(name)
+            if value is not None and name not in os.environ:
+                os.environ[name] = value
 
 
 def _read_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -175,6 +206,7 @@ def _notes_from_manifest(manifest: dict[str, Any]) -> list[str]:
 
 
 def check_for_update(*, force_message: bool = False) -> UpdateInfo | None:
+    _load_update_env()
     manifest_url = _manifest_url()
     current_version = get_cli_version()
     if manifest_url is None:
@@ -418,6 +450,7 @@ def prepare_update_before_launch(info: UpdateInfo) -> Path:
 
 
 def check_before_launch() -> int:
+    _load_update_env()
     if os.environ.get(SKIP_UPDATE_CHECK_ENV) == "1":
         return 0
     if load_update_state().get("auto_check_enabled") is False:
