@@ -13,15 +13,16 @@ type ComposerPanelProps = {
   status: SubmitStatus;
   disabled: boolean;
   loading: boolean;
-  canStopStream: boolean;
   onChange: (value: string) => void;
   onSubmit: () => void;
-  onStopStream: () => void;
 };
 
 function buildHelperCopy(status: SubmitStatus) {
   if (status === 'submitted' || status === 'processing') {
     return '本地终端正在处理中，请稍候。';
+  }
+  if (status === 'reconnecting') {
+    return '连接已断开，正在重新连接，请稍候。';
   }
   if (status === 'failed') {
     return '发送失败，请调整后重试。';
@@ -34,10 +35,8 @@ export function ComposerPanel({
   status,
   disabled,
   loading,
-  canStopStream,
   onChange,
-  onSubmit,
-  onStopStream
+  onSubmit
 }: ComposerPanelProps) {
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -65,11 +64,6 @@ export function ComposerPanel({
             <Text className={styles.helperText}>{buildHelperCopy(status)}</Text>
             <div className={styles.actions}>
               <Text className={styles.statusText}>{SUBMIT_STATUS_LABEL[status]}</Text>
-              {canStopStream ? (
-                <Button className={styles.stopButton} onClick={onStopStream}>
-                  停止接收
-                </Button>
-              ) : null}
               <Button
                 className={styles.sendButton}
                 disabled={disabled || !value.trim()}

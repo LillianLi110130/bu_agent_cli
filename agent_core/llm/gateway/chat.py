@@ -4,7 +4,7 @@ import json
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -28,6 +28,10 @@ class ChatGateway(BaseChatModel):
     http_client: httpx.AsyncClient | None = None
     base_dir: str | Path | None = None
     stream_line_log_file: str | Path | None = "llm.log"
+    worker_no: str | None = None
+    session_id: str | None = None
+    user_id: str | None = None
+    session_callback: Callable[[str, bool], None] | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
     _owns_client: bool = field(default=False, init=False, repr=False)
     _authorization: str | None = field(default=None, init=False, repr=False)
@@ -64,10 +68,7 @@ class ChatGateway(BaseChatModel):
         normalized = value.strip()
         if not normalized:
             return None
-        lowered = normalized.lower()
-        if lowered.startswith("bearer ") or lowered.startswith("basic "):
-            return normalized
-        return f"Bearer {normalized}"
+        return normalized
 
     def _resolve_authorization(self) -> str | None:
         if self._authorization:
@@ -145,7 +146,29 @@ class ChatGateway(BaseChatModel):
             "tool_choice": tool_choice,
             "metadata": kwargs.get("metadata"),
         }
+        worker_no = kwargs.get("worker_no", self.worker_no)
+        session_id = kwargs.get("session_id", self.session_id)
+        user_id = kwargs.get("user_id", self.user_id)
+        if worker_no:
+            payload["worker_no"] = str(worker_no)
+        if session_id:
+            payload["session_id"] = str(session_id)
+        if user_id:
+            payload["user_id"] = str(user_id)
         return payload
+
+    def _handle_session_event(self, event_data: dict[str, Any], **kwargs: Any) -> None:
+        session_id = str(
+            event_data.get("session_id") or event_data.get("session_no") or ""
+        ).strip()
+        if not session_id:
+            return
+        is_new = bool(event_data.get("is_new", False))
+        self.session_id = session_id
+        callback = kwargs.get("session_callback") or self.session_callback
+        if callback is None:
+            return
+        callback(session_id, is_new)
 
     @staticmethod
     def _parse_tool_call(event_data: dict[str, Any]) -> ToolCall:
@@ -238,6 +261,8 @@ class ChatGateway(BaseChatModel):
                             yield ChatInvokeCompletionChunk(
                                 usage=ChatInvokeUsage(**usage_payload)
                             )
+                        elif event_type in {"session", "session_created"}:
+                            self._handle_session_event(event_data, **kwargs)
                         elif event_type == "done":
                             yield ChatInvokeCompletionChunk(
                                 stop_reason=event_data.get("stop_reason")
@@ -250,7 +275,7 @@ class ChatGateway(BaseChatModel):
                     return
         except httpx.HTTPStatusError as exc:
             raise ModelProviderError(
-                message=exc.response.text or str(exc),
+                message=await self._read_stream_error_message(exc.response),
                 status_code=exc.response.status_code,
                 model=self.name,
             ) from exc

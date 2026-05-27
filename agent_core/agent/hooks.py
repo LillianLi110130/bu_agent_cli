@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
+from agent_core.agent.command_safety import (
+    check_dangerous_command,
+    command_preview,
+    format_findings,
+)
 from agent_core.agent.events import HiddenUserMessageEvent
 from agent_core.agent.hitl import HumanApprovalRequest
 from agent_core.agent.runtime_events import (
@@ -424,11 +429,66 @@ class BashFileTaskGuardHook(BaseAgentHook):
 
 
 @dataclass
+class DangerousBashCommandGuardHook(BaseAgentHook):
+    """Hard-block bash commands classified as destructive by command safety rules."""
+
+    priority: int = 12
+
+    async def before_event(
+        self,
+        event: RuntimeEvent,
+        ctx: HookContext,
+    ) -> HookDecision | None:
+        del ctx
+        if not isinstance(event, ToolCallRequested):
+            return None
+
+        if event.tool_call.function.name != "bash":
+            return None
+
+        try:
+            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
+        except ToolArgumentsError:
+            return None
+
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+
+        result = check_dangerous_command(command)
+        if result.action != "block":
+            return None
+
+        findings = result.blocked_findings or result.findings
+        content = (
+            "Error: Dangerous bash command blocked.\n\n"
+            "Command was not executed.\n\n"
+            f"Command preview: {command_preview(command)}\n\n"
+            f"Matched safety rule(s):\n{format_findings(findings)}\n\n"
+            "This command is classified as a hard-blocked destructive operation. "
+            "Do not retry it or rephrase it through another shell/interpreter. "
+            "Ask the user for a safer, narrower operation instead."
+        )
+        return HookDecision(
+            action=HookAction.OVERRIDE_RESULT,
+            override_result=ToolMessage(
+                tool_call_id=event.tool_call.id,
+                tool_name="bash",
+                content=content,
+                is_error=True,
+            ),
+            reason="dangerous bash command blocked",
+        )
+
+
+@dataclass
 class HumanApprovalHook(BaseAgentHook):
     """Request human approval before executing selected tool calls."""
 
     policy: Any = None
+    mandatory_policy: Any = None
     priority: int = 18
+    _session_approval_keys: set[str] = field(default_factory=set)
 
     async def before_event(
         self,
@@ -441,10 +501,24 @@ class HumanApprovalHook(BaseAgentHook):
         if not ctx.agent.human_in_loop_config.enabled:
             return None
 
+        mandatory_request = self._build_mandatory_request(event, ctx)
+        if mandatory_request is not None:
+            if self._is_session_approved(mandatory_request):
+                return None
+            return await self._request_or_terminate(event, ctx, mandatory_request)
+
         request = self._build_request(event, ctx)
         if request is None:
             return None
 
+        return await self._request_or_terminate(event, ctx, request)
+
+    async def _request_or_terminate(
+        self,
+        event: ToolCallRequested,
+        ctx: HookContext,
+        request: HumanApprovalRequest,
+    ) -> HookDecision | None:
         handler = ctx.agent.human_in_loop_handler
         if handler is None:
             return self._terminate_current_turn(
@@ -454,6 +528,8 @@ class HumanApprovalHook(BaseAgentHook):
 
         decision = await handler.request_approval(request)
         if decision.approved:
+            if decision.scope == "session":
+                self._session_approval_keys.update(request.approval_keys)
             return None
 
         return self._terminate_current_turn(
@@ -469,6 +545,22 @@ class HumanApprovalHook(BaseAgentHook):
         if self.policy is None:
             return None
         return self.policy(event, ctx)
+
+    def _build_mandatory_request(
+        self,
+        event: ToolCallRequested,
+        ctx: HookContext,
+    ) -> HumanApprovalRequest | None:
+        if self.mandatory_policy is None:
+            return None
+        return self.mandatory_policy(event, ctx)
+
+    def _is_session_approved(self, request: HumanApprovalRequest) -> bool:
+        if request.approval_kind != "safety":
+            return False
+        if not request.approval_keys:
+            return False
+        return all(key in self._session_approval_keys for key in request.approval_keys)
 
     @staticmethod
     def _terminate_current_turn(

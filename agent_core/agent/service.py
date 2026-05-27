@@ -71,6 +71,7 @@ from agent_core.agent.config import AgentConfig
 from agent_core.agent.hooks import AgentHook, FinishGuardHook, HookManager
 from agent_core.agent.runtime_loop import AgentRuntimeLoop
 from agent_core.agent.runtime_state import AgentRunState
+from agent_core.agent.thinking_parser import ThinkTagParser
 from agent_core.agent.tool_args import (
     ToolArgumentsError,
     parse_tool_arguments_for_display,
@@ -91,10 +92,8 @@ from agent_core.agent.events import (
     HiddenUserMessageEvent,
     StepCompleteEvent,
     StepStartEvent,
-    TextEvent,
     ThinkingDeltaEvent,
     ThinkingEndEvent,
-    ThinkingEvent,
     ThinkingStartEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -119,97 +118,6 @@ from agent_core.tools.decorator import Tool
 
 if TYPE_CHECKING:
     from cli.session_runtime import CLISessionRuntime
-
-# think 标签常量
-_THINK_OPEN_TAG = "<think>"
-_THINK_CLOSE_TAG = "</think>"
-
-
-class ThinkTagParser:
-    """解析流式文本中的 think 标签，支持流式输出思考内容."""
-
-    def __init__(self) -> None:
-        self.in_think = False  # 当前是否在think中
-        self.think_end = False  # think是否已经结束
-        self.tag_buffer = ""
-        self.filtered_content = ""
-        self.think_id = "think_0"
-        self._open_len = len(_THINK_OPEN_TAG)
-        self._close_len = len(_THINK_CLOSE_TAG)
-
-    def feed(self, delta: str) -> tuple[str | None, str | None, str | None, bool]:
-        """返回 (正常文本或None, think内容或None, 事件类型或None, 是否刚结束).
-
-        事件类型: "start", "end", 或 None
-        一个 delta 要么是 normal，要么是 think，不会同时存在
-        """
-
-        # 当前llm调用如果已经结束了think，则不需要再积累了，后面的都认为是text输出
-        if not self.think_end:
-            self.tag_buffer += delta
-
-        if not self.in_think:  # 当前不在think中
-            # 查找开始标签
-            idx = self.tag_buffer.find(_THINK_OPEN_TAG)
-            if idx != -1:
-                # 找到了开始标签
-                normal_text = self.tag_buffer[:idx]
-                # 裁掉<think>, 从think标签之后的内容开始
-                self.tag_buffer = self.tag_buffer[idx + self._open_len :]
-                self.in_think = True
-                if normal_text:
-                    self.filtered_content += normal_text
-                return normal_text or None, None, "start", False
-            # 没找到开标签
-            # 如果think阶段已经结束了，当前内容都是安全的，可以直接输出
-            if self.think_end:
-                self.filtered_content += delta
-                return delta or None, None, None, False
-            # 输出安全部分（保留末尾可能构成标签的部分）
-            if len(self.tag_buffer) > self._open_len:
-                safe = self.tag_buffer[: -self._open_len]
-                self.tag_buffer = self.tag_buffer[-self._open_len :]
-                if safe:
-                    self.filtered_content += safe
-                return safe or None, None, None, False
-        else:  # 当前在think中
-            # 查找闭标签
-            idx = self.tag_buffer.find(_THINK_CLOSE_TAG)
-            if idx != -1:
-                # 找到了闭标签
-                think_content = self.tag_buffer[:idx]
-                # # 裁掉</think>，从think闭标签之后的内容开始(后面不需要了，一次llm调用只会有一次think事件)
-                # self.tag_buffer = self.tag_buffer[idx + self._close_len:]
-                self.tag_buffer = ""
-                self.in_think = False
-                self.think_end = True
-                return None, think_content or None, "end", True
-            # 没找到闭标签，输出安全部分
-            if len(self.tag_buffer) > self._close_len:
-                safe = self.tag_buffer[: -self._close_len]  # 取前面减去闭标签的部分
-                self.tag_buffer = self.tag_buffer[-self._close_len :]  # 取后面闭标签长度之后的部分
-                if safe:
-                    return None, safe, None, False
-
-        return None, None, None, False
-
-    def flush(self) -> tuple[str, bool]:
-        """返回 (剩余内容, 是否在 think 中)."""
-        if self.in_think:
-            result = _THINK_OPEN_TAG + self.tag_buffer
-            self.filtered_content += result
-            self.in_think = False
-            self.tag_buffer = ""
-            return result, True
-        elif not self.in_think and self.tag_buffer:
-            self.filtered_content += self.tag_buffer
-            result = self.tag_buffer
-            self.tag_buffer = ""
-            return result, False
-        return "", False
-
-    def get_filtered_content(self) -> str:
-        return self.filtered_content
 
 
 @dataclass
@@ -1717,7 +1625,7 @@ Keep the summary brief but informative."""
         return f"[Max iterations reached]\n\n{summary}"
 
     async def _get_incomplete_todos_prompt(self) -> str | None:
-        """Hook for subclasses to check for incomplete todos before finishing.
+        """Check for incomplete todos before finishing.
 
         This method is called when the LLM is about to stop (no more tool calls in CLI mode,
         or done tool called in autonomous mode).
@@ -1727,7 +1635,12 @@ Keep the summary brief but informative."""
         2. Mark completed tasks as done
         3. Revise the todo list if tasks are no longer relevant
         """
-        return None
+        session_id = self._todo_session_id()
+        if session_id is None:
+            return None
+        from tools.todos import get_incomplete_todos_prompt
+
+        return get_incomplete_todos_prompt(session_id)
 
     async def _maintain_context(self, response: ChatInvokeCompletion) -> None:
         """Run unified context maintenance after one model response."""
@@ -1735,7 +1648,24 @@ Keep the summary brief but informative."""
 
     async def _maintain_context_from_budget(self, *, trigger: str | None = None) -> None:
         """Run sliding-window cleanup and compaction from the shared budget engine."""
-        await self._context.maintain_budget(self.llm, trigger=trigger)
+        assessment = await self._context.maintain_budget(self.llm, trigger=trigger)
+        if assessment.trigger == "post_compaction":
+            self._inject_active_todos_after_compaction()
+
+    def _todo_session_id(self) -> str | None:
+        ctx = getattr(self, "_sandbox_context", None)
+        session_id = getattr(ctx, "session_id", None)
+        return session_id if isinstance(session_id, str) and session_id else None
+
+    def _inject_active_todos_after_compaction(self) -> None:
+        session_id = self._todo_session_id()
+        if session_id is None:
+            return
+        from tools.todos import format_active_todos_for_injection
+
+        snapshot = format_active_todos_for_injection(session_id)
+        if snapshot:
+            self._context.add_message(UserMessage(content=snapshot))
 
     def _split_persistent_instruction_prefix(
         self,
@@ -1806,6 +1736,7 @@ Keep the summary brief but informative."""
             return False
 
         self._context.apply_compaction_result(result, recent_messages=recent_messages)
+        self._inject_active_todos_after_compaction()
         if self._context._budget_engine is not None:
             self._context._budget_engine.note_trigger("overflow_recovery")
         return True
@@ -2064,23 +1995,23 @@ Keep the summary brief but informative."""
                 async for chunk in stream_iter:
                     # 累积增量内容
                     if chunk.delta:
-                        normal_text, think_content, event_type, _ = think_parser.feed(chunk.delta)
-                        if normal_text is not None:
-                            if last_is_thinking and normal_text.strip() == "":
-                                continue
-                            else:
+                        for parse_event in think_parser.feed_events(chunk.delta):
+                            if parse_event.kind == "text":
+                                if last_is_thinking and parse_event.content.strip() == "":
+                                    continue
                                 last_is_thinking = False
-                                yield TextDeltaEvent(delta=normal_text)
-                        if event_type == "start":
-                            yield ThinkingStartEvent(think_id=think_parser.think_id)
-                        elif think_content is not None:
-                            yield ThinkingDeltaEvent(
-                                delta=think_content, think_id=think_parser.think_id
-                            )
-                        if event_type == "end":
-                            # 思考结束时，将上一个是思考消息的标识符设置为True
-                            last_is_thinking = True
-                            yield ThinkingEndEvent(think_id=think_parser.think_id)
+                                yield TextDeltaEvent(delta=parse_event.content)
+                            elif parse_event.kind == "thinking_start":
+                                yield ThinkingStartEvent(think_id=think_parser.think_id)
+                            elif parse_event.kind == "thinking_delta":
+                                yield ThinkingDeltaEvent(
+                                    delta=parse_event.content,
+                                    think_id=think_parser.think_id,
+                                )
+                            elif parse_event.kind == "thinking_end":
+                                # 思考结束时，将上一个是思考消息的标识符设置为True
+                                last_is_thinking = True
+                                yield ThinkingEndEvent(think_id=think_parser.think_id)
 
                     # 累积工具调用（只在流结束时返回完整信息）
                     if chunk.tool_calls:
@@ -2092,9 +2023,20 @@ Keep the summary brief but informative."""
                         response_usage = chunk.usage
 
                 # 流结束后，刷新解析器缓冲区
-                remaining, _ = think_parser.flush()
-                if remaining:
-                    yield TextDeltaEvent(delta=remaining)
+                for parse_event in think_parser.flush_events():
+                    if parse_event.kind == "text":
+                        if last_is_thinking and parse_event.content.strip() == "":
+                            continue
+                        yield TextDeltaEvent(delta=parse_event.content)
+                    elif parse_event.kind == "thinking_start":
+                        yield ThinkingStartEvent(think_id=think_parser.think_id)
+                    elif parse_event.kind == "thinking_delta":
+                        yield ThinkingDeltaEvent(
+                            delta=parse_event.content,
+                            think_id=think_parser.think_id,
+                        )
+                    elif parse_event.kind == "thinking_end":
+                        yield ThinkingEndEvent(think_id=think_parser.think_id)
 
                 # 获取过滤后的内容（不含 think 标签）
                 final_content = think_parser.get_filtered_content()

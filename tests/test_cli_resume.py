@@ -23,6 +23,7 @@ from cli.resume_handler import ResumeSlashHandler
 from cli.session_store import CLISessionStore, workspace_identity
 from cli.slash_commands import SlashCommandRegistry
 from tools import SandboxContext
+from tools.todos import get_todo_store
 
 
 class _DummyPrompter:
@@ -225,6 +226,53 @@ async def test_resume_uncompressed_session_loads_snapshot_and_prints_recent_10_r
 
 
 @pytest.mark.asyncio
+async def test_resume_hydrates_todo_store_from_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    cli = _make_cli(tmp_path, monkeypatch, workspace=workspace)
+    assert cli._session_store is not None
+    get_todo_store(cli._ctx.session_id).write(
+        [{"id": "stale", "content": "Stale", "status": "pending"}],
+        merge=False,
+    )
+    snapshot: list[BaseMessage] = [
+        AssistantMessage(
+            content=None,
+            tool_calls=[
+                ToolCall(
+                    id="call-todo",
+                    function=Function(name="todo", arguments="{}"),
+                )
+            ],
+        ),
+        ToolMessage(
+            tool_call_id="call-todo",
+            tool_name="todo",
+            content=(
+                '{"todos":[{"id":"1","content":"Resume task","status":"in_progress"}],'
+                '"summary":{},"warnings":[]}'
+            ),
+        ),
+    ]
+    _seed_session(
+        cli._session_store,
+        session_id="todo-session",
+        workspace=workspace,
+        messages=snapshot,
+        snapshot=snapshot,
+    )
+
+    switched = await cli._switch_resume_session("todo-session")
+
+    assert switched is True
+    assert get_todo_store(cli._ctx.session_id).read() == [
+        {"id": "1", "content": "Resume task", "status": "in_progress"}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_resume_compacted_session_only_prints_compaction_hint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -325,6 +373,10 @@ async def test_new_command_does_not_create_empty_session_row(
     assert cli._session_store is not None
     old_conversation_id = cli._conversation_session_id
     sandbox_session_id = cli._ctx.session_id
+    get_todo_store(sandbox_session_id).write(
+        [{"id": "1", "content": "Will be cleared", "status": "pending"}],
+        merge=False,
+    )
     monkeypatch.setattr(app_module.os, "system", lambda command: 0)
 
     handled = await cli._handle_slash_command("/new")
@@ -335,7 +387,28 @@ async def test_new_command_does_not_create_empty_session_row(
     assert cli._conversation_session_created is False
     assert cli._ctx.session_id == sandbox_session_id
     assert cli._agent.messages == []
+    assert get_todo_store(sandbox_session_id).read() == []
     assert cli._session_store.list_sessions(workspace_key=workspace_key) == []
+
+
+@pytest.mark.asyncio
+async def test_new_command_clears_session_until_gateway_session_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    cli = _make_cli(tmp_path, monkeypatch, workspace=workspace)
+    cli._im_worker_id = "user@example.com"
+    monkeypatch.setattr(app_module.os, "system", lambda command: 0)
+
+    await cli._handle_slash_command("/new")
+
+    assert cli._conversation_session_id is None
+    assert cli._conversation_session_created is False
+
+    cli._handle_gateway_session_event("server-session-1", is_new=True)
+
+    assert cli._conversation_session_id == "server-session-1"
 
 
 @pytest.mark.asyncio
@@ -359,7 +432,7 @@ async def test_new_command_keeps_previous_persisted_session_resumable(
         exclude_session_id=cli._conversation_session_id,
     )
     assert [session.id for session in sessions] == [old_conversation_id]
-    assert cli._session_store.get_session(cli._conversation_session_id) is None
+    assert cli._conversation_session_id is None
     assert cli._agent.messages == []
 
 
@@ -378,12 +451,14 @@ async def test_new_command_followup_messages_write_to_new_session_only(
     monkeypatch.setattr(app_module.os, "system", lambda command: 0)
 
     await cli._handle_slash_command("/new")
+    cli._handle_gateway_session_event("server-session-new", is_new=True)
     new_conversation_id = cli._conversation_session_id
     cli._agent._context.add_message(UserMessage(content="new user"))
     cli._agent._context.add_message(AssistantMessage(content="new assistant"))
     cli._persist_current_session_state()
 
     assert new_conversation_id != old_conversation_id
+    assert new_conversation_id == "server-session-new"
     assert cli._session_store.count_messages(old_conversation_id) == 2
     assert cli._session_store.count_messages(new_conversation_id) == 2
     old_rounds = cli._session_store.recent_user_assistant_rounds(

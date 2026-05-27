@@ -74,6 +74,7 @@ class AgentCallRunner:
             llm_session_role=runtime_role,
         )
         child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)
+        self._inherit_runtime_context(parent_agent, child)
         return child
 
     def _build_fork_agent(
@@ -96,6 +97,7 @@ class AgentCallRunner:
             is_fork_child=True,
         )
         child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)
+        self._inherit_runtime_context(parent_agent, child)
         child.load_history(self._build_fork_messages(parent_agent))
         return child, self._build_fork_child_message(request)
 
@@ -108,6 +110,12 @@ class AgentCallRunner:
         resolved = dict(overrides or {})
         resolved[get_current_agent] = lambda: child
         return resolved
+
+    @staticmethod
+    def _inherit_runtime_context(parent_agent: Agent, child: Agent) -> None:
+        sandbox_context = getattr(parent_agent, "_sandbox_context", None)
+        if sandbox_context is not None:
+            setattr(child, "_sandbox_context", sandbox_context)
 
     def _resolve_named_llm(
         self,

@@ -8,10 +8,9 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class PollRequest {
-    @JsonProperty("session_key")
-    private String sessionKey;
-
-    @JsonProperty("worker_id")
+public class SubmitWebMessageRequest {
+    @JsonProperty("workerId")
     private String workerId;
+
+    private String content;
 }

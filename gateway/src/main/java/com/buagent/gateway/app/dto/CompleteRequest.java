@@ -20,4 +20,15 @@ public class CompleteRequest {
 
     @JsonProperty("final_content")
     private String finalContent;
+
+    @JsonProperty("final_status")
+    private String finalStatus;
+
+    @JsonProperty("error_code")
+    private String errorCode;
+
+    @JsonProperty("error_message")
+    private String errorMessage;
+
+    private String source;
 }

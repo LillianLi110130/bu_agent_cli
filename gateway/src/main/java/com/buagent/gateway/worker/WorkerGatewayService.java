@@ -2,6 +2,7 @@ package com.buagent.gateway.worker;
 
 import com.buagent.gateway.app.dto.CompleteRequest;
 import com.buagent.gateway.app.dto.MessageRequest;
+import com.buagent.gateway.app.dto.ProgressRequest;
 import com.buagent.gateway.app.dto.SendTextRequest;
 import com.buagent.gateway.app.dto.SimpleOkResponse;
 import com.buagent.gateway.app.dto.WorkerRequest;
@@ -47,6 +48,11 @@ public class WorkerGatewayService implements DisposableBean {
     private static final String STATUS_OFFLINE = "offline";
     private static final String STATUS_RECEIVED = "RECEIVED";
     private static final String STATUS_CONSUMED = "CONSUMED";
+    private static final String SOURCE_IM = "im";
+    private static final String SOURCE_WEB = "web";
+    private static final String STATUS_PROGRESS = "PROGRESS";
+    private static final String STATUS_COMPLETED = "COMPLETED";
+    private static final String STATUS_FAILED = "FAILED";
     private static final String EVENT_READY = "ready";
     private static final String EVENT_MESSAGE = "message";
     private static final String EVENT_HEARTBEAT = "heartbeat";
@@ -55,12 +61,13 @@ public class WorkerGatewayService implements DisposableBean {
     private final InboundMessageMapper inboundMessageMapper;
     private final OutboundMessageMapper outboundMessageMapper;
     private final OnlineWorkerMapper onlineWorkerMapper;
-    private final ScheduledExecutorService heartbeatExecutorService = Executors.newScheduledThreadPool(1);
+//    private final WebConsoleService webConsoleService;
+    private final ScheduledExecutorService heartbeatExecutorService;
     private final ConcurrentMap<String, StreamSession> streamSessions = new ConcurrentHashMap<String, StreamSession>();
 
     @Value("${gateway.stream-heartbeat-interval-ms:10000}")
     private long streamHeartbeatIntervalMillis;
-    @Value("${gateway.stream-emitter-timeout-ms:0}")
+    @Value("${gateway.stream-emitter-timeout-ms:1500000}")
     private long streamEmitterTimeoutMillis;
 
     public SimpleOkResponse online(WorkerRequest request) {
@@ -71,7 +78,12 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SimpleOkResponse offline(WorkerRequest request) {
         upsertWorkerStatus(request.getWorkerId(), STATUS_OFFLINE);
-        removeStreamSession(request.getWorkerId(), streamSessions.get(request.getWorkerId()));
+        StreamSession streamSession = streamSessions.get(request.getWorkerId());
+        if (removeStreamSession(request.getWorkerId(), streamSession)) {
+            // Offline is an application-level close signal. Complete the emitter here instead
+            // of relying on the next heartbeat to discover a dead client socket.
+            streamSession.complete();
+        }
         logger.info("Worker marked offline. workerId={}", request.getWorkerId());
         return new SimpleOkResponse(true);
     }
@@ -80,6 +92,7 @@ public class WorkerGatewayService implements DisposableBean {
         validateWorkerIsOnline(request.getWorkerId());
         InboundMessageEntity inboundMessageEntity = new InboundMessageEntity();
         inboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        inboundMessageEntity.setSource(SOURCE_IM);
         inboundMessageEntity.setContent(request.getContent());
         inboundMessageEntity.setStatus(STATUS_RECEIVED);
         inboundMessageEntity.setCreateTime(LocalDateTime.now());
@@ -152,18 +165,67 @@ public class WorkerGatewayService implements DisposableBean {
     }
 
     public SimpleOkResponse complete(CompleteRequest request) {
+        if ("web".equalsIgnoreCase(request.getSource())) {
+            String sessionKey = buildSessionKey(request.getWorkerId());
+            OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+            outboundMessageEntity.setSessionKey(sessionKey);
+            if ("failed".equalsIgnoreCase(request.getFinalStatus())) {
+                outboundMessageEntity.setContent(
+                    request.getErrorMessage() == null ? request.getFinalContent() : request.getErrorMessage()
+                );
+                outboundMessageEntity.setStatus(STATUS_FAILED);
+            } else {
+                outboundMessageEntity.setContent(request.getFinalContent());
+                outboundMessageEntity.setStatus(STATUS_COMPLETED);
+            }
+            outboundMessageEntity.setCreateTime(LocalDateTime.now());
+            outboundMessageMapper.insert(outboundMessageEntity);
+//            webConsoleService.dispatchPendingWebEvents(sessionKey, false);
+            return new SimpleOkResponse(true);
+        }
+
         OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
         outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
         outboundMessageEntity.setContent(request.getFinalContent());
         outboundMessageEntity.setStatus("SENT");
         outboundMessageEntity.setCreateTime(LocalDateTime.now());
-        outboundMessageEntity.setUpdateTime(LocalDateTime.now());
         outboundMessageMapper.insert(outboundMessageEntity);
         logger.info(
-            "Accepted outbound completion. workerId={}, outboundMessageId={}, finalContentLength={}",
+            "Accepted outbound completion. workerId={}, outboundMessageId={}, finalStatus={}, "
+                + "errorCode={}, finalContentLength={}",
             request.getWorkerId(),
             outboundMessageEntity.getId(),
+            request.getFinalStatus(),
+            request.getErrorCode(),
             request.getFinalContent() == null ? 0 : request.getFinalContent().length()
+        );
+        return new SimpleOkResponse(true);
+    }
+
+    public SimpleOkResponse progress(ProgressRequest request) {
+        if ("web".equalsIgnoreCase(request.getSource())) {
+            String sessionKey = buildSessionKey(request.getWorkerId());
+            OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+            outboundMessageEntity.setSessionKey(sessionKey);
+            outboundMessageEntity.setContent(request.getContent());
+            outboundMessageEntity.setStatus(STATUS_PROGRESS);
+            outboundMessageEntity.setCreateTime(LocalDateTime.now());
+            outboundMessageMapper.insert(outboundMessageEntity);
+//            webConsoleService.dispatchPendingWebEvents(sessionKey, false);
+            return new SimpleOkResponse(true);
+        }
+
+        OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
+        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        outboundMessageEntity.setContent(request.getContent());
+        outboundMessageEntity.setStatus("SENT");
+        outboundMessageEntity.setCreateTime(LocalDateTime.now());
+        outboundMessageMapper.insert(outboundMessageEntity);
+        logger.info(
+            "Accepted outbound progress. workerId={}, outboundMessageId={}, finalContentLength={}",
+            request.getWorkerId(),
+            outboundMessageEntity.getId(),
+            request.getContent() == null ? 0 : request.getContent().length()
         );
         return new SimpleOkResponse(true);
     }
@@ -293,7 +355,7 @@ public class WorkerGatewayService implements DisposableBean {
             sendEventSafely(
                 streamSession,
                 EVENT_MESSAGE,
-                Collections.<String, Object>singletonMap("content", inboundMessageEntity.getContent())
+                buildWorkerMessagePayload(inboundMessageEntity)
             );
         }
 
@@ -334,16 +396,26 @@ public class WorkerGatewayService implements DisposableBean {
         }
     }
 
-    private void removeStreamSession(String workerId, StreamSession expectedSession) {
+    private Map<String, Object> buildWorkerMessagePayload(InboundMessageEntity inboundMessageEntity) {
+        Map<String, Object> payload = new ConcurrentHashMap<String, Object>();
+        payload.put("content", inboundMessageEntity.getContent());
+        payload.put("source", inboundMessageEntity.getSource());
+        return payload;
+    }
+
+    private boolean removeStreamSession(String workerId, StreamSession expectedSession) {
         if (expectedSession == null) {
-            return;
+            return false;
         }
+        // Only the current session owner should cancel its heartbeat or close its emitter.
+        // A stale callback from a replaced connection must not affect the newer stream.
         boolean removed = streamSessions.remove(workerId, expectedSession);
         if (!removed) {
-            return;
+            return false;
         }
         expectedSession.cancelHeartbeat();
         logger.info("Removed local SSE stream session. workerId={}, sessionId={}", workerId, expectedSession.getSessionId());
+        return true;
     }
 
     private void validateWorkerIsOnline(String workerId) {

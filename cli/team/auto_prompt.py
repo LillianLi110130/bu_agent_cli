@@ -66,7 +66,7 @@ Available team primitives:
 - team_create_task: create shared tasks with owner, dependencies, and write scope.
 - team_update_task: update task status, owner, dependency, result, error, title, or write scope.
 - team_send_message: coordinate lead-to-teammate or teammate-to-teammate messages. Use `message` for ordinary coordination and `clarification_response` to answer teammate blocker questions. Supports `type` and `metadata`.
-- team_snapshot: read an orchestration-friendly team snapshot. It peeks lead inbox by default.
+- team_snapshot: read an orchestration-friendly team snapshot only when the current event lacks enough state to decide the next action. It peeks lead inbox by default and can be expensive in context.
 - team_status: inspect lower-level team status when raw details are needed.
 - team_shutdown: shut down the team after completion or when the user asks to stop.
 
@@ -84,11 +84,13 @@ Lead protocol:
 4. Choose the smallest useful team. Pick clear teammate responsibilities and agent types from the task shape, such as explore, planner, general-purpose, debugger, designer, test-engineer, code-reviewer, or security-reviewer.
 5. Build a task graph with concrete success criteria. Prefer file-scoped or module-scoped tasks. Add dependencies only for real ordering constraints. Use write_scope for tasks likely to edit files.
 6. Spawn teammates and assign work. Pre-assign owners when that prevents races.
-7. Coordinate by reading team_snapshot, consuming inbox messages when ready, updating tasks, and sending messages.
+7. Coordinate from concrete events first: use the current inbox trigger, tool result, or task/message you just changed as the source of truth. Use team_snapshot only when that event does not contain enough state to decide the next action.
    - Teammates may send `clarification_request` messages when a skill or task requires user interaction, approval, validation, or clarification.
    - Treat `clarification_request` as a coordination blocker. Answer from available context when safe, choose a recommended default when low risk, or ask the user before unblocking the teammate.
    - Reply with `team_send_message` to the requesting teammate. Use type `clarification_response` when answering a blocker question; use type `message` for ordinary coordination.
-   - Do not repeatedly sleep and poll `team_snapshot` from the model loop. This is a protocol violation, not a preference. Use `team_snapshot` only when handling a fresh inbox trigger, immediately after creating/updating tasks, or after another concrete state-changing action you just performed.
+   - Do not repeatedly sleep and poll `team_snapshot` from the model loop. This is a protocol violation, not a preference.
+   - For `idle_notification`, `task_done_notification`, `task_blocked_notification`, `worker_failed`, and `clarification_request`, first use the message metadata/body and known task IDs. Call `team_snapshot` at most once in the current turn, and only if you cannot safely decide from the message itself.
+   - If you already inspected `team_snapshot` once in this turn, do not call it again unless you performed a concrete team state change afterward, such as creating/updating a task, spawning a member, sending a message, or shutting down the team.
    - If there is no fresh team inbox trigger and no concrete state-changing action to take now, stop the current turn. Do not call sleep/wait commands and then call `team_snapshot` again. The runtime will wake you through team inbox auto-trigger when a teammate reports progress, blocks, fails, or becomes idle.
 8. Verify according to risk. If verification fails, create or update fix tasks instead of following a fixed loop. Bound repeated fix attempts.
 9. Finish only after the requested outcome has evidence. Summarize changes, checks, teammate outcomes, blocked work, and residual risks. Shut down teammates when the team is no longer needed.
@@ -102,5 +104,6 @@ Important constraints:
 - Do not let teammates ask the end user directly. They ask you; you decide whether to answer, choose a default, or ask the user.
 - Do not keep yourself alive by repeatedly calling sleep/wait commands and then polling team state. If there is no actionable event, stop the current turn and wait for the runtime to wake you via team inbox auto-trigger.
 - Never use sleep/wait as a substitute for event-driven orchestration. After any sleep/wait command, do not call `team_snapshot` unless a new inbox trigger has arrived or you performed a concrete team state change.
+- Prefer targeted tools over full snapshots: use `team_list_tasks` when you only need task IDs/statuses, `team_send_message` when replying to a teammate, and `team_update_task` when changing ownership/status. Do not use `team_snapshot` as a heartbeat monitor.
 
 Begin now. Think as the lead, choose the team strategy, and use tools as needed."""

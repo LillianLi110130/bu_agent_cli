@@ -8,13 +8,14 @@ import lombok.NoArgsConstructor;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class PollMessageDto {
-    @JsonProperty("message_id")
-    private Long messageId;
+public class ProgressRequest {
+    @JsonProperty("session_key")
+    private String sessionKey;
 
-    @JsonProperty("delivery_id")
-    private String deliveryId;
+    @JsonProperty("worker_id")
+    private String workerId;
 
-    private Long epoch;
     private String content;
+
+    private String source;
 }

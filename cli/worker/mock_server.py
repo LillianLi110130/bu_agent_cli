@@ -7,13 +7,28 @@ import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 import json
+import logging
+from pathlib import Path
+import sys
 import time
 from typing import Any
+from uuid import uuid4
+
+# Allow direct script startup: python cli/worker/mock_server.py
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
+
+from agent_core.runtime_paths import load_runtime_env
+from agent_core.server.llm_gateway import LLMGatewayService
+from agent_core.server.models import LLMQueryRequest
+
+logger = logging.getLogger("cli.worker.mock_server")
 
 
 def _utc_now_iso() -> str:
@@ -26,8 +41,25 @@ def _encode_sse(event: str, payload: dict[str, Any]) -> bytes:
 
 
 def _encode_web_sse(payload: dict[str, Any]) -> bytes:
-    data = json.dumps(payload, ensure_ascii=False)
+    data = json.dumps(payload, ensure_ascii=False, default=str)
     return f"data: {data}\n\n".encode("utf-8")
+
+
+def _encode_model_sse_event(event: Any) -> bytes:
+    if hasattr(event, "model_dump"):
+        payload = event.model_dump()
+    elif isinstance(event, dict):
+        payload = event
+    else:
+        payload = {"type": "text", "content": str(event)}
+    return _encode_web_sse(payload)
+
+
+def _resolve_worker_no(worker_id: str | None, worker_no: str | None = None) -> str:
+    resolved = (worker_no or worker_id or "").strip()
+    if not resolved:
+        raise ValueError("worker_no or worker_id is required")
+    return resolved
 
 
 @dataclass
@@ -36,6 +68,7 @@ class MockWorkerMessage:
 
     content: str
     worker_id: str
+    worker_no: str | None = None
     source: str = "im"
 
 
@@ -79,6 +112,7 @@ class _WebConsoleSession:
 class _RequestRecord:
     request_id: str
     worker_id: str
+    worker_no: str
     session_id: str
     content: str
     accepted_at: str
@@ -98,6 +132,7 @@ class _RequestRecord:
         return {
             "requestId": self.request_id,
             "workerId": self.worker_id,
+            "workerNo": self.worker_no,
             "status": self.status,
             "finalContent": self.final_content,
             "errorMessage": self.error_message,
@@ -164,6 +199,22 @@ class MockGatewayState:
         self._request_seq += 1
         return f"webreq-{self._request_seq:06d}"
 
+    def create_session(self, *, worker_id: str | None = None, worker_no: str | None = None) -> str:
+        """Create a gateway-side session id for /new or first LLM stream."""
+        route_worker_no = _resolve_worker_no(worker_id, worker_no) if (worker_id or worker_no) else "unknown-worker"
+        session_id = f"session-{uuid4().hex[:12]}"
+        now = _utc_now_iso()
+        self._sessions_by_worker.setdefault(route_worker_no, []).insert(
+            0,
+            _WebConsoleSession(
+                id=session_id,
+                title="Current Conversation",
+                worker_id=route_worker_no,
+                updated_at=now,
+            ),
+        )
+        return session_id
+
     @staticmethod
     def _normalize_source(source: str | None) -> str:
         normalized = (source or "").strip().lower()
@@ -176,11 +227,18 @@ class MockGatewayState:
         *,
         worker_id: str,
         content: str,
+        worker_no: str | None = None,
         source: str = "im",
     ) -> MockWorkerMessage:
-        message = MockWorkerMessage(worker_id=worker_id, content=content, source=source)
+        route_worker_no = _resolve_worker_no(worker_id, worker_no)
+        message = MockWorkerMessage(
+            worker_id=worker_id,
+            worker_no=route_worker_no,
+            content=content,
+            source=source,
+        )
         self.queued_messages.append(message)
-        self.notify_stream(worker_id)
+        self.notify_stream(route_worker_no)
         return message
 
     def mark_online(self, *, worker_id: str) -> None:
@@ -238,7 +296,7 @@ class MockGatewayState:
 
     def dequeue_message(self, *, worker_id: str) -> MockWorkerMessage | None:
         for index, message in enumerate(list(self.queued_messages)):
-            if message.worker_id != worker_id:
+            if (message.worker_no or message.worker_id) != worker_id:
                 continue
             return self.queued_messages.pop(index)
         return None
@@ -296,8 +354,16 @@ class MockGatewayState:
                     return [message.to_dict() for message in session.messages]
         raise KeyError(session_id)
 
-    async def register_submit(self, *, worker_id: str, session_id: str, content: str) -> _RequestRecord:
-        active_request_id = self._active_web_request_id_by_worker.get(worker_id)
+    async def register_submit(
+        self,
+        *,
+        worker_id: str,
+        session_id: str,
+        content: str,
+        worker_no: str | None = None,
+    ) -> _RequestRecord:
+        route_worker_no = _resolve_worker_no(worker_id, worker_no)
+        active_request_id = self._active_web_request_id_by_worker.get(route_worker_no)
         if active_request_id is not None:
             existing = self._requests.get(active_request_id)
             if existing is not None and not existing.is_terminal:
@@ -308,6 +374,7 @@ class MockGatewayState:
         record = _RequestRecord(
             request_id=request_id,
             worker_id=worker_id,
+            worker_no=route_worker_no,
             session_id=session_id,
             content=content,
             accepted_at=accepted_at,
@@ -317,20 +384,26 @@ class MockGatewayState:
                 "type": "submitted",
                 "requestId": request_id,
                 "workerId": worker_id,
+                "workerNo": route_worker_no,
                 "ts": accepted_at,
             }
         )
         self._requests[request_id] = record
-        self._active_web_request_id_by_worker[worker_id] = request_id
-        self._last_web_request_id_by_worker[worker_id] = request_id
+        self._active_web_request_id_by_worker[route_worker_no] = request_id
+        self._last_web_request_id_by_worker[route_worker_no] = request_id
         self._record_session_message(
-            worker_id=worker_id,
+            worker_id=route_worker_no,
             session_id=session_id,
             role="user",
             content=content,
             created_at=accepted_at,
         )
-        self.enqueue_message(worker_id=worker_id, content=content, source="web")
+        self.enqueue_message(
+            worker_id=worker_id,
+            worker_no=route_worker_no,
+            content=content,
+            source="web",
+        )
         return record
 
     def _record_session_message(
@@ -417,29 +490,6 @@ class MockGatewayState:
         if queue in record.subscribers:
             record.subscribers.remove(queue)
 
-    async def stop_request_if_current_worker_stream_closed(self, *, worker_id: str, request_id: str) -> None:
-        current_request_id = self._active_web_request_id_by_worker.get(worker_id)
-        if current_request_id != request_id:
-            return
-        record = self._requests.get(request_id)
-        if record is None or record.is_terminal:
-            return
-        record.status = "stopped"
-        record.error_message = "stopped_by_web_disconnect"
-        record.finished_at = _utc_now_iso()
-        self._append_request_event(
-            record,
-            {
-                "type": "failed",
-                "requestId": request_id,
-                "workerId": worker_id,
-                "errorMessage": record.error_message,
-                "finishedAt": record.finished_at,
-            },
-        )
-        self._finish_request(record)
-        self._active_web_request_id_by_worker.pop(worker_id, None)
-
     async def get_request_result(self, request_id: str) -> dict[str, Any]:
         record = self._requests.get(request_id)
         if record is None:
@@ -474,7 +524,8 @@ class MockGatewayState:
                 {
                     "type": "processing",
                     "requestId": record.request_id,
-                    "workerId": worker_id,
+                    "workerId": record.worker_id,
+                    "workerNo": record.worker_no,
                     "ts": _utc_now_iso(),
                 },
             )
@@ -484,7 +535,8 @@ class MockGatewayState:
             {
                 "type": "progress",
                 "requestId": record.request_id,
-                "workerId": worker_id,
+                "workerId": record.worker_id,
+                "workerNo": record.worker_no,
                 "content": content,
                 "ts": _utc_now_iso(),
             },
@@ -536,7 +588,8 @@ class MockGatewayState:
                 {
                     "type": "failed",
                     "requestId": request_id,
-                    "workerId": worker_id,
+                    "workerId": record.worker_id,
+                    "workerNo": record.worker_no,
                     "errorMessage": record.error_message,
                     "finishedAt": finished_at,
                 },
@@ -549,7 +602,8 @@ class MockGatewayState:
                 {
                     "type": "completed",
                     "requestId": request_id,
-                    "workerId": worker_id,
+                    "workerId": record.worker_id,
+                    "workerNo": record.worker_no,
                     "finalContent": final_content,
                     "finishedAt": finished_at,
                 },
@@ -570,32 +624,59 @@ class MockGatewayState:
 
 class WorkerRequest(BaseModel):
     worker_id: str
+    worker_no: str | None = None
+
+    @property
+    def route_worker_no(self) -> str:
+        return _resolve_worker_no(self.worker_id, self.worker_no)
 
 
 class CompleteRequest(BaseModel):
     worker_id: str
+    worker_no: str | None = None
     final_content: str
     source: str | None = None
     final_status: str = "completed"
     error_code: str | None = None
     error_message: str | None = None
 
+    @property
+    def route_worker_no(self) -> str:
+        return _resolve_worker_no(self.worker_id, self.worker_no)
+
 
 class ProgressRequest(BaseModel):
     worker_id: str
+    worker_no: str | None = None
     content: str
     source: str | None = None
+
+    @property
+    def route_worker_no(self) -> str:
+        return _resolve_worker_no(self.worker_id, self.worker_no)
 
 
 class EnqueueRequest(BaseModel):
     worker_id: str
+    worker_no: str | None = None
     content: str
     source: str = "im"
 
 
 class SendTextRequest(BaseModel):
     worker_id: str
+    worker_no: str | None = None
     text: str
+
+
+class NewSessionRequest(BaseModel):
+    worker_id: str | None = None
+    worker_no: str | None = None
+
+
+class NewSessionResponse(BaseModel):
+    session_id: str
+    created_at: str
 
 
 class WorkerSummaryResponse(BaseModel):
@@ -646,6 +727,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     app = FastAPI(title="Mock Worker Relay Gateway")
     app.state.mock_gateway = state
     app.state.web_console_state = state
+    app.state.llm_gateway = LLMGatewayService()
 
     @app.get("/web-console/workers/{worker_id}", response_model=WorkerSummaryResponse, tags=["WebConsole"])
     async def get_worker_summary(worker_id: str):
@@ -675,6 +757,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
         try:
             record = await state.register_submit(
                 worker_id=request.workerId,
+                worker_no=request.workerId,
                 session_id=request.sessionId,
                 content=request.content,
             )
@@ -682,42 +765,108 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return SubmitMessageResponse(ok=True, acceptedAt=record.accepted_at, requestId=record.request_id)
 
+    @app.post("/new", response_model=NewSessionResponse, tags=["Session"])
+    async def create_new_session(request: NewSessionRequest):
+        session_id = state.create_session(
+            worker_id=request.worker_id,
+            worker_no=request.worker_no,
+        )
+        return NewSessionResponse(session_id=session_id, created_at=_utc_now_iso())
+
+    @app.post("/llm/query-stream", tags=["LLM"])
+    async def llm_query_stream(request: LLMQueryRequest):
+        requested_session_id = (request.session_id or "").strip()
+        session_id = requested_session_id or state.create_session(
+            worker_id=request.user_id,
+            worker_no=request.worker_no,
+        )
+        is_new = not requested_session_id
+        logger.info(
+            "LLM stream accepted: model=%s user_id=%s worker_no=%s session_id=%s is_new=%s",
+            request.model,
+            request.user_id,
+            request.worker_no,
+            session_id,
+            is_new,
+        )
+
+        async def event_stream():
+            try:
+                yield _encode_web_sse(
+                    {
+                        "type": "session_created" if is_new else "session",
+                        "session_no": session_id,
+                        "session_id": session_id,
+                        "is_new": is_new,
+                    }
+                )
+                gateway: LLMGatewayService = app.state.llm_gateway
+                effective_request = request.model_copy(update={"session_id": session_id})
+                async for event in gateway.query_stream(effective_request):
+                    yield _encode_model_sse_event(event)
+                yield b": done\n\n"
+            except Exception as exc:
+                logger.exception(
+                    "LLM stream failed: model=%s user_id=%s worker_no=%s session_id=%s",
+                    request.model,
+                    request.user_id,
+                    request.worker_no,
+                    session_id,
+                )
+                yield _encode_web_sse({"type": "error", "error": str(exc)})
+                yield b": done\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
+
     @app.get("/web-console/workers/{worker_id}/events", tags=["WebConsole"])
     async def get_worker_events(worker_id: str):
         async def event_stream():
-            try:
-                request_id, history, is_terminal = await state.get_active_request_for_worker(worker_id)
-            except KeyError as exc:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No active web request for worker {worker_id}",
-                ) from exc
+            last_streamed_request_id: str | None = None
 
-            for payload in history:
-                yield _encode_web_sse(payload)
-            if is_terminal:
-                yield b": done\n\n"
-                return
-
-            queue = await state.add_subscriber(request_id)
-            try:
-                while True:
-                    try:
-                        payload = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    except TimeoutError:
+            while True:
+                try:
+                    request_id, history, is_terminal = await state.get_active_request_for_worker(worker_id)
+                except KeyError:
+                    has_activity = await state.wait_for_stream_activity(
+                        worker_id=worker_id,
+                        timeout=15.0,
+                    )
+                    if not has_activity:
                         yield b": heartbeat\n\n"
-                        continue
+                    continue
 
-                    if payload is None:
-                        yield b": done\n\n"
-                        return
-                    yield _encode_web_sse(payload)
-            finally:
-                await state.remove_subscriber(request_id, queue)
-                await state.stop_request_if_current_worker_stream_closed(
-                    worker_id=worker_id,
-                    request_id=request_id,
-                )
+                if request_id != last_streamed_request_id:
+                    for payload in history:
+                        yield _encode_web_sse(payload)
+                    last_streamed_request_id = request_id
+
+                if is_terminal:
+                    has_activity = await state.wait_for_stream_activity(
+                        worker_id=worker_id,
+                        timeout=15.0,
+                    )
+                    if not has_activity:
+                        yield b": heartbeat\n\n"
+                    continue
+
+                queue = await state.add_subscriber(request_id)
+                try:
+                    while True:
+                        try:
+                            payload = await asyncio.wait_for(queue.get(), timeout=15.0)
+                        except TimeoutError:
+                            yield b": heartbeat\n\n"
+                            continue
+
+                        if payload is None:
+                            break
+                        yield _encode_web_sse(payload)
+                finally:
+                    await state.remove_subscriber(request_id, queue)
 
         return StreamingResponse(
             event_stream(),
@@ -738,8 +887,9 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/api/worker/poll", tags=["Worker"])
     async def poll(request: WorkerRequest) -> dict[str, Any]:
-        state.mark_worker_seen(worker_id=request.worker_id)
-        queued = await state.worker_dequeue_next(request.worker_id)
+        route_worker_no = request.route_worker_no
+        state.mark_worker_seen(worker_id=route_worker_no)
+        queued = await state.worker_dequeue_next(route_worker_no)
         if queued is None:
             return {"messages": []}
         if isinstance(queued, _RequestRecord):
@@ -748,6 +898,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
                     {
                         "content": queued.content,
                         "worker_id": request.worker_id,
+                        "worker_no": route_worker_no,
                         "source": queued.source,
                     }
                 ]
@@ -755,39 +906,48 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
         return {"messages": [asdict(queued)]}
 
     @app.get("/api/worker/stream", tags=["Worker"])
-    async def stream(worker_id: str) -> StreamingResponse:
-        stream_version = state.register_stream(worker_id=worker_id)
+    async def stream(worker_id: str, worker_no: str | None = None) -> StreamingResponse:
+        route_worker_no = _resolve_worker_no(worker_id, worker_no)
+        stream_version = state.register_stream(worker_id=route_worker_no)
 
         async def event_stream():
-            yield _encode_sse("ready", {"worker_id": worker_id})
-            while state.is_online(worker_id) and state.is_current_stream(
-                worker_id=worker_id,
+            yield _encode_sse("ready", {"worker_id": worker_id, "worker_no": route_worker_no})
+            while state.is_online(route_worker_no) and state.is_current_stream(
+                worker_id=route_worker_no,
                 version=stream_version,
             ):
-                queued = await state.worker_dequeue_next(worker_id)
+                queued = await state.worker_dequeue_next(route_worker_no)
                 if queued is not None:
-                    state.mark_seen(worker_id=worker_id)
+                    state.mark_seen(worker_id=route_worker_no)
                     if isinstance(queued, _RequestRecord):
-                        payload = {"content": queued.content, "source": queued.source}
+                        payload = {
+                            "content": queued.content,
+                            "source": queued.source,
+                            "worker_no": route_worker_no,
+                        }
                     else:
-                        payload = {"content": queued.content, "source": queued.source}
+                        payload = {
+                            "content": queued.content,
+                            "source": queued.source,
+                            "worker_no": route_worker_no,
+                        }
                     yield _encode_sse("message", payload)
                     continue
 
                 has_activity = await state.wait_for_stream_activity(
-                    worker_id=worker_id,
+                    worker_id=route_worker_no,
                     timeout=state.stream_heartbeat_interval_seconds,
                 )
-                if not state.is_current_stream(worker_id=worker_id, version=stream_version):
+                if not state.is_current_stream(worker_id=route_worker_no, version=stream_version):
                     yield _encode_sse(
                         "error",
                         {"code": "replaced", "message": "connection replaced by newer stream"},
                     )
                     break
-                if not state.is_online(worker_id):
+                if not state.is_online(route_worker_no):
                     break
 
-                state.mark_seen(worker_id=worker_id)
+                state.mark_seen(worker_id=route_worker_no)
                 if not has_activity:
                     yield _encode_sse("heartbeat", {"ts": time.time()})
 
@@ -799,18 +959,18 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/api/worker/online", tags=["Worker"])
     async def online(request: WorkerRequest) -> dict[str, bool]:
-        state.mark_online(worker_id=request.worker_id)
+        state.mark_online(worker_id=request.route_worker_no)
         return {"ok": True}
 
     @app.post("/api/worker/offline", tags=["Worker"])
     async def offline(request: WorkerRequest) -> dict[str, bool]:
-        state.mark_offline(worker_id=request.worker_id)
+        state.mark_offline(worker_id=request.route_worker_no)
         return {"ok": True}
 
     @app.post("/api/worker/complete", tags=["Worker"])
     async def complete(request: CompleteRequest) -> dict[str, bool]:
         ok = await state.worker_complete_next(
-            worker_id=request.worker_id,
+            worker_id=request.route_worker_no,
             final_content=request.final_content,
             source=request.source,
             final_status=request.final_status,
@@ -822,7 +982,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
     @app.post("/api/worker/progress", tags=["Worker"])
     async def progress(request: ProgressRequest) -> dict[str, bool]:
         ok = await state.worker_append_progress(
-            worker_id=request.worker_id,
+            worker_id=request.route_worker_no,
             content=request.content,
             source=request.source,
         )
@@ -833,6 +993,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
         state.sent_texts.append(
             {
                 "worker_id": request.worker_id,
+                "worker_no": request.worker_no,
                 "text": request.text,
             }
         )
@@ -852,21 +1013,24 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/mock/messages", tags=["WorkerDebug"])
     async def enqueue(request: EnqueueRequest):
-        if not state.is_online(request.worker_id):
+        route_worker_no = _resolve_worker_no(request.worker_id, request.worker_no)
+        if not state.is_online(route_worker_no):
             return JSONResponse(
                 status_code=409,
                 content={
                     "ok": False,
                     "error": "no_online_worker",
                     "worker_id": request.worker_id,
+                    "worker_no": route_worker_no,
                 },
             )
         message = state.enqueue_message(
             worker_id=request.worker_id,
+            worker_no=route_worker_no,
             content=request.content,
             source=request.source,
         )
-        return {"ok": True, "worker_id": message.worker_id}
+        return {"ok": True, "worker_id": message.worker_id, "worker_no": message.worker_no}
 
     @app.get("/mock/messages", tags=["WorkerDebug"])
     async def list_pending_messages() -> dict[str, Any]:
@@ -901,6 +1065,11 @@ def parse_args() -> argparse.Namespace:
 
 def cli_main() -> None:
     args = parse_args()
+    load_runtime_env()
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
     uvicorn.run(create_mock_gateway_app(), host=args.host, port=args.port, log_level="info")
 
 

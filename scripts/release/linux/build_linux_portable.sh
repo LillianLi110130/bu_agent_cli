@@ -188,6 +188,14 @@ assert_build_backend_available() {
     fi
 }
 
+assert_python_311_plus() {
+    local python_exe="$1"
+    if ! "${python_exe}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+        echo "browser-harness requires Python >= 3.11. Current Python is: $("${python_exe}" -c 'import sys; print(sys.version)')" >&2
+        exit 1
+    fi
+}
+
 find_runtime_python() {
     local runtime_root="$1"
     local candidate
@@ -315,6 +323,28 @@ build_full_wheelhouse() {
     fi
 }
 
+build_browser_harness_wheel() {
+    local python_exe="$1"
+    local repo_root_path="$2"
+    local target_wheelhouse_dir="$3"
+    local temp_root="$4"
+
+    find "${target_wheelhouse_dir}" -maxdepth 1 -type f -name 'browser_harness-*.whl' -delete
+
+    mkdir -p "${temp_root}"
+    pushd "${repo_root_path}/skills/browser-harness" >/dev/null
+    local previous_tmpdir="${TMPDIR:-}"
+    export TMPDIR="${temp_root}"
+    "${python_exe}" -m pip wheel . --wheel-dir "${target_wheelhouse_dir}" --find-links "${target_wheelhouse_dir}"
+    popd >/dev/null
+
+    if [[ -n "${previous_tmpdir}" ]]; then
+        export TMPDIR="${previous_tmpdir}"
+    else
+        unset TMPDIR || true
+    fi
+}
+
 write_bundle_readme() {
     local output_path="$1"
     local version_text="$2"
@@ -343,13 +373,19 @@ Workspace behavior:
 - Global config stays in \$HOME/.tg_agent.
 
 Notes:
-- deploy.sh creates \$HOME/.tg_agent/.venv using the bundled Python runtime.
+- deploy.sh recreates \$HOME/.tg_agent/.venv using the bundled Python runtime.
+- deploy.sh removes old install-managed \$HOME/.tg_agent/bin and legacy \$HOME/.tg_agent/python-runtime.
 - crab and dependencies are installed offline from wheelhouse/.
-- deploy.sh also installs a crab command shim into \$HOME/.tg_agent/bin and updates shell profile files.
+- deploy.sh also installs crab and browser-harness command shims into \$HOME/.tg_agent/bin and updates shell profile files.
 - deploy.sh registers the crab://open protocol for launching the local CLI from a browser.
 - If crab already exists from an older pip install, uninstall the older copy to avoid command precedence conflicts.
 - Existing \$HOME/.tg_agent/.env and tg_crab_worker.json are preserved.
 - For the most portable Linux bundles, provide a python-build-standalone runtime with --python-runtime-dir.
+
+Browser harness:
+- deploy.sh installs browser-harness into \$HOME/.tg_agent/.venv.
+- Enable Chrome remote debugging at chrome://inspect/#remote-debugging.
+- Open a new shell and run browser-harness --doctor.
 EOF
 }
 
@@ -360,13 +396,17 @@ write_deploy_script() {
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-force_recreate_venv=0
 skip_profile_update=0
+update_mode=0
 
 while (($# > 0)); do
     case "$1" in
+        --update)
+            update_mode=1
+            skip_profile_update=1
+            shift
+            ;;
         --force-recreate-venv)
-            force_recreate_venv=1
             shift
             ;;
         --skip-profile-update)
@@ -375,7 +415,13 @@ while (($# > 0)); do
             ;;
         -h|--help)
             cat <<'USAGE'
-Usage: deploy.sh [--force-recreate-venv] [--skip-profile-update]
+Usage: deploy.sh [--update] [--force-recreate-venv] [--skip-profile-update]
+
+Options:
+  --update                Update an existing install without modifying shell profiles
+  --force-recreate-venv   Compatibility option; deploy always recreates ~/.tg_agent/.venv
+  --skip-profile-update   Do not update shell profile files
+  -h, --help              Show this help
 USAGE
             exit 0
             ;;
@@ -395,8 +441,10 @@ user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 venv_dir="${install_root}/.venv"
 bin_dir="${install_root}/bin"
+legacy_runtime_dir="${install_root}/python-runtime"
 entry_shim="${bin_dir}/crab-entry.py"
 command_shim="${bin_dir}/crab"
+browser_harness_shim="${bin_dir}/browser-harness"
 protocol_launcher="${bin_dir}/crab-protocol-launcher.sh"
 env_file="${install_root}/.env"
 worker_config="${install_root}/tg_crab_worker.json"
@@ -405,6 +453,8 @@ packaged_worker_config="${app_dir}/tg_crab_worker.json"
 desktop_dir="${user_home}/.local/share/applications"
 protocol_desktop="${desktop_dir}/crab-protocol.desktop"
 profile_line='export PATH="$HOME/.tg_agent/bin:$PATH"'
+updates_dir="${install_root}/updates"
+backups_dir="${updates_dir}/backups"
 
 find_runtime_python() {
     local runtime_root="$1"
@@ -480,19 +530,33 @@ if [[ -z "${project_wheel}" ]]; then
     exit 1
 fi
 
-mkdir -p "${install_root}" "${bin_dir}"
-
-if ((force_recreate_venv)) && [[ -d "${venv_dir}" ]]; then
-    rm -rf "${venv_dir}"
+browser_harness_wheel="$(find "${wheelhouse_dir}" -maxdepth 1 -type f -name 'browser_harness-*.whl' | sort | tail -n 1)"
+if [[ -z "${browser_harness_wheel}" ]]; then
+    echo "browser-harness wheel not found in wheelhouse: ${wheelhouse_dir}" >&2
+    exit 1
 fi
+
+mkdir -p "${install_root}"
+if ((update_mode)); then
+    rm -rf "${backups_dir}"
+    backup_dir="${backups_dir}/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "${backup_dir}"
+    for managed_path in "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"; do
+        if [[ -e "${managed_path}" ]]; then
+            cp -a "${managed_path}" "${backup_dir}/"
+        fi
+    done
+    echo "[portable] backup created: ${backup_dir}"
+fi
+rm -rf "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"
+mkdir -p "${bin_dir}"
 
 venv_python="${venv_dir}/bin/python"
-if [[ ! -x "${venv_python}" ]]; then
-    "${runtime_python}" -m venv "${venv_dir}"
-fi
+"${runtime_python}" -m venv "${venv_dir}"
 
 "${venv_python}" -m ensurepip --upgrade
-"${venv_python}" -m pip install --no-index --find-links "${wheelhouse_dir}" --upgrade "${project_wheel}"
+"${venv_python}" -m pip install --no-index --find-links "${wheelhouse_dir}" --force-reinstall "${project_wheel}"
+"${venv_python}" -m pip install --no-index --find-links "${wheelhouse_dir}" --force-reinstall "${browser_harness_wheel}"
 
 cat > "${entry_shim}" <<'PY'
 from tg_crab_main import cli_main
@@ -522,9 +586,39 @@ if [[ ! -f "${entry_shim}" ]]; then
     exit 1
 fi
 
+if [[ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]]; then
+    set +e
+    "${venv_python}" -m agent_core.updater check-before-launch
+    update_status=$?
+    set -e
+    if [[ "${update_status}" -eq 20 ]]; then
+        "${install_root}/updates/pending_update.sh"
+    elif [[ "${update_status}" -ne 0 ]]; then
+        exit "${update_status}"
+    fi
+fi
+
 exec "${venv_python}" -u "${entry_shim}" "$@"
 SH
 chmod +x "${command_shim}"
+
+cat > "${browser_harness_shim}" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
+venv_python="${install_root}/.venv/bin/python"
+
+if [[ ! -x "${venv_python}" ]]; then
+    echo "browser-harness is not installed because crab's Python venv is missing." >&2
+    echo "Run ./deploy.sh from the portable bundle first." >&2
+    exit 1
+fi
+
+exec "${venv_python}" -m browser_harness.run "$@"
+SH
+chmod +x "${browser_harness_shim}"
 
 cat > "${protocol_launcher}" <<'SH'
 #!/usr/bin/env bash
@@ -539,6 +633,8 @@ fi
 user_home="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
 install_root="${TG_AGENT_HOME:-${user_home}/.tg_agent}"
 command_shim="${install_root}/bin/crab"
+settings_file="${install_root}/settings.json"
+settings_python="${install_root}/.venv/bin/python"
 
 if [[ ! -x "${command_shim}" ]]; then
   echo "crab is not installed." >&2
@@ -546,13 +642,116 @@ if [[ ! -x "${command_shim}" ]]; then
   exit 1
 fi
 
-if [[ -d "${user_home}/Desktop" ]]; then
-  cd "${user_home}/Desktop"
-else
-  cd "${user_home}"
+read_default_workspace() {
+  if [[ ! -x "${settings_python}" || ! -f "${settings_file}" ]]; then
+    return 0
+  fi
+
+  "${settings_python}" - "${settings_file}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+try:
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+
+value = data.get("default_workspace")
+if isinstance(value, str) and value.strip():
+    print(value)
+PY
+}
+
+save_default_workspace() {
+  local workspace_path="$1"
+
+  if [[ ! -x "${settings_python}" ]]; then
+    return 1
+  fi
+
+  "${settings_python}" - "${settings_file}" "${workspace_path}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+settings_path = Path(sys.argv[1])
+workspace = sys.argv[2]
+settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+data = {}
+if settings_path.exists():
+    try:
+        loaded = json.loads(settings_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            data = loaded
+    except Exception:
+        data = {}
+
+data["default_workspace"] = workspace
+settings_path.write_text(
+    json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+desktop_dir="${user_home}/Desktop"
+if [[ ! -d "${desktop_dir}" ]]; then
+  desktop_dir="${user_home}"
 fi
 
-exec "${command_shim}"
+workspace="$(read_default_workspace || true)"
+workspace="${workspace//$'\r'/}"
+manual_workspace=0
+
+if [[ -z "${workspace}" ]]; then
+  echo "当前启动目录: ${desktop_dir}"
+  read -r -p "请输入工作区路径(直接回车使用桌面): " workspace_input
+  if [[ -z "${workspace_input}" ]]; then
+    workspace="${desktop_dir}"
+  else
+    workspace="${workspace_input}"
+    manual_workspace=1
+  fi
+fi
+
+if [[ ! -d "${workspace}" ]]; then
+  echo "工作区不存在: ${workspace}" >&2
+  read -r -n 1 -s -p "按任意键关闭此窗口..."
+  echo
+  exit 1
+fi
+
+if ((manual_workspace)); then
+  read -r -p "是否将该路径设为默认工作路径(以后打开小螃蟹都将这个路径作为工作路径)? [y/N]: " save_choice
+  case "${save_choice}" in
+    [Yy]|[Yy][Ee][Ss])
+      if save_default_workspace "${workspace}"; then
+        echo "已将默认工作区设置为: ${workspace}"
+      else
+        echo "保存默认工作区失败，但仍会使用当前工作区启动。" >&2
+      fi
+      ;;
+  esac
+fi
+
+if ! cd "${workspace}"; then
+  echo "切换工作区失败: ${workspace}" >&2
+  read -r -n 1 -s -p "按任意键关闭此窗口..."
+  echo
+  exit 1
+fi
+
+"${command_shim}"
+exit_code=$?
+if ((exit_code != 0)); then
+  echo "crab 已退出，退出码: ${exit_code}" >&2
+  read -r -n 1 -s -p "按任意键关闭此窗口..."
+  echo
+fi
+exit "${exit_code}"
 SH
 chmod +x "${protocol_launcher}"
 
@@ -609,6 +808,7 @@ done < <(get_command_candidates || true)
 echo "[portable] install root: ${install_root}"
 echo "[portable] venv ready: ${venv_dir}"
 echo "[portable] command shim: ${command_shim}"
+echo "[portable] browser-harness shim: ${browser_harness_shim}"
 echo "[portable] protocol launcher: ${protocol_launcher}"
 if ((profile_updated)); then
     echo "[portable] added to shell profile PATH: ${user_home}/.tg_agent/bin"
@@ -618,6 +818,7 @@ fi
 echo "[portable] launcher: ${launcher_path}"
 echo "[portable] registered protocol: crab://open"
 echo "[portable] open a new shell and run: crab"
+echo "[portable] browser-harness: enable Chrome remote debugging, then run: browser-harness --doctor"
 
 if ((${#existing_commands[@]} > 0)); then
     conflicting_command="${existing_commands[0]}"
@@ -662,6 +863,18 @@ if [[ ! -f "${entry_shim}" ]]; then
     echo "crab entry shim is missing." >&2
     echo "Run ./deploy.sh from this bundle first." >&2
     exit 1
+fi
+
+if [[ "${CRAB_SKIP_UPDATE_CHECK:-}" != "1" ]]; then
+    set +e
+    "${venv_python}" -m agent_core.updater check-before-launch
+    update_status=$?
+    set -e
+    if [[ "${update_status}" -eq 20 ]]; then
+        "${install_root}/updates/pending_update.sh"
+    elif [[ "${update_status}" -ne 0 ]]; then
+        exit "${update_status}"
+    fi
 fi
 
 exec "${venv_python}" -u "${entry_shim}" "$@"
@@ -717,6 +930,8 @@ if ! runtime_probe="$(find_runtime_python "${resolved_runtime_source}")"; then
 fi
 
 assert_build_backend_available "${resolved_python_exe}"
+assert_python_311_plus "${resolved_python_exe}"
+assert_python_311_plus "${runtime_probe}"
 
 bundle_name="tg-agent-linux-x64-v${version}-portable"
 bundle_dir="${resolved_output_root}/${bundle_name}"
@@ -758,6 +973,9 @@ if [[ -n "${resolved_source_wheelhouse}" && ${skip_project_wheel_build} -eq 0 ]]
     build_project_wheel "${resolved_python_exe}" "${repo_root}" "${wheelhouse_dir}" "${temp_dir}"
 fi
 
+echo "[portable] building browser-harness wheel..."
+build_browser_harness_wheel "${resolved_python_exe}" "${repo_root}" "${wheelhouse_dir}" "${temp_dir}"
+
 rm -rf "${temp_dir}"
 
 write_launcher_script "${launcher_path}"
@@ -768,6 +986,12 @@ if ((skip_tar == 0)); then
     rm -f "${tar_path}"
     echo "[portable] creating tar.gz archive..."
     tar -C "${resolved_output_root}" -czf "${tar_path}" "${bundle_name}"
+    "${resolved_python_exe}" "${repo_root}/scripts/release/generate_update_manifest.py" \
+        --repo-root "${repo_root}" \
+        --output-root "${resolved_output_root}" \
+        --version "${version}" \
+        --platform linux-x64 \
+        --artifact "${tar_path}"
 fi
 
 echo "[portable] build complete"

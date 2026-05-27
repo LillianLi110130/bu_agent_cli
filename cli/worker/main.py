@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import inspect
 import logging
 from pathlib import Path
 from typing import Any
@@ -19,7 +20,12 @@ load_persisted_auth_result: Any = None
 def parse_args() -> argparse.Namespace:
     """Parse worker command line arguments."""
     parser = argparse.ArgumentParser(description="BU Agent worker")
-    parser.add_argument("--worker-id", required=True, help="Stable worker identifier")
+    parser.add_argument("--worker-id", required=True, help="Authenticated user/worker identity")
+    parser.add_argument(
+        "--worker-no",
+        default=None,
+        help="Terminal instance identifier used for message routing",
+    )
     parser.add_argument("--gateway-base-url", required=True, help="Gateway base URL")
     parser.add_argument(
         "--gateway-transport",
@@ -85,14 +91,18 @@ async def async_main() -> None:
         client_kwargs["authorization"] = authorization
 
     client = gateway_client_cls(**client_kwargs)
-    runner = runner_cls(
-        worker_id=args.worker_id,
-        gateway_client=client,
-        model=args.model,
-        root_dir=args.root_dir,
-        gateway_transport=args.gateway_transport,
-        stream_max_session_seconds=args.gateway_stream_max_session_seconds,
-    )
+    runner_kwargs: dict[str, Any] = {
+        "worker_id": args.worker_id,
+        "worker_no": args.worker_no or args.worker_id,
+        "gateway_client": client,
+        "model": args.model,
+        "root_dir": args.root_dir,
+        "gateway_transport": args.gateway_transport,
+        "stream_max_session_seconds": args.gateway_stream_max_session_seconds,
+    }
+    if "worker_no" not in inspect.signature(runner_cls).parameters:
+        runner_kwargs.pop("worker_no", None)
+    runner = runner_cls(**runner_kwargs)
     await runner.run_forever()
 
 

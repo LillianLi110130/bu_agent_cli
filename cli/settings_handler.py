@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from rich.console import Console
 from rich.markup import escape as rich_escape
@@ -21,16 +22,23 @@ class SettingsInputResult:
 
 
 class SettingsSlashHandler:
-    """处理 /settings 的用户级设置交互菜单。"""
+    """Handle the interactive user-level settings menu for /settings."""
 
     _STATE_ROOT = "root"
     _STATE_WORKSPACE = "workspace"
     _STATE_WORKSPACE_EDIT = "workspace_edit"
     _STATE_WORKSPACE_CLEAR_CONFIRM = "workspace_clear_confirm"
 
-    def __init__(self, *, console: Console, workspace_dir: Path) -> None:
+    def __init__(
+        self,
+        *,
+        console: Console,
+        workspace_dir: Path,
+        on_workspace_selected: Callable[[Path], None] | None = None,
+    ) -> None:
         self._console = console
         self._workspace_dir = workspace_dir
+        self._on_workspace_selected = on_workspace_selected
         self._state: str | None = None
 
     @property
@@ -39,6 +47,9 @@ class SettingsSlashHandler:
 
     def bind_console(self, console: Console) -> None:
         self._console = console
+
+    def bind_workspace_dir(self, workspace_dir: Path) -> None:
+        self._workspace_dir = workspace_dir
 
     def start(self) -> None:
         self._state = self._STATE_ROOT
@@ -64,7 +75,7 @@ class SettingsSlashHandler:
         self._state = None
 
     def _handle_root_input(self, value: str) -> SettingsInputResult:
-        if value in {"1"}:
+        if value == "1":
             self._state = self._STATE_WORKSPACE
             self._render_workspace_menu()
             return SettingsInputResult(handled=True)
@@ -130,9 +141,11 @@ class SettingsSlashHandler:
             return SettingsInputResult(handled=True)
 
         saved = set_default_workspace(candidate)
+        if self._on_workspace_selected is not None:
+            self._on_workspace_selected(saved)
         self._console.print(
             f"[green]默认工作区已保存：[/green] {rich_escape(str(saved))}\n"
-            "[dim]该设置将在下次启动时生效，当前会话的工作区不会变化。[/dim]"
+            "[dim]当前会话已切换到新的默认工作区，后续启动 CLI 时也会默认使用该目录。[/dim]"
         )
         self._state = self._STATE_WORKSPACE
         self._render_workspace_menu()
@@ -198,9 +211,9 @@ class SettingsSlashHandler:
         self._console.print()
         self._console.print("[bold cyan]默认工作区说明[/bold cyan]")
         self._console.print(f"当前值：{current_text}")
-        self._console.print("[dim]该设置只影响后续 CLI 启动时的默认工作区。[/dim]")
-        self._console.print("[dim]当前会话的工作区不会因此改变。[/dim]")
-        self._console.print("[dim]如果启动时传入了 --root-dir，会优先使用显式参数。[/dim]")
+        self._console.print("[dim]该设置会立即切换当前会话的工作区。[/dim]")
+        self._console.print("[dim]之后启动 CLI 时，如果未传入 --root-dir，也会默认使用它。[/dim]")
+        self._console.print("[dim]如果启动时传入了 --root-dir，仍然优先使用显式参数。[/dim]")
 
     @staticmethod
     def _safe_get_default_workspace() -> Path | None:

@@ -1,0 +1,149 @@
+import io, os, sys, urllib.request
+
+# Windows default text streams can be cp1252/strict, and page text from CDP may
+# contain lone UTF-16 surrogate code points. Force replacement semantics so
+# `print(js(...))` and tracebacks do not crash on unencodable page text.
+def _configure_text_stream(stream):
+    if hasattr(stream, "reconfigure"):
+        try: stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception: pass
+        else: return stream
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        try:
+            return io.TextIOWrapper(
+                buffer,
+                encoding="utf-8",
+                errors="replace",
+                line_buffering=getattr(stream, "line_buffering", False),
+                write_through=True,
+            )
+        except Exception:
+            pass
+    return stream
+
+
+sys.stdout = _configure_text_stream(sys.stdout)
+sys.stderr = _configure_text_stream(sys.stderr)
+
+from .admin import (
+    _version,
+    NAME,
+    daemon_alive,
+    ensure_daemon,
+    list_cloud_profiles,
+    list_local_profiles,
+    print_update_banner,
+    restart_daemon,
+    run_doctor,
+    run_doctor_fix_snap,
+    run_update,
+    start_remote_daemon,
+    stop_remote_daemon,
+    sync_local_profile,
+)
+from ._ipc import cdp_probe_ports
+from .helpers import *
+
+HELP = """Browser Harness
+
+Read SKILL.md for the default workflow and examples.
+
+Typical usage:
+  browser-harness <<'PY'
+  ensure_real_tab()
+  print(page_info())
+  PY
+
+Helpers are pre-imported. The daemon auto-starts and connects to the running browser.
+
+Commands:
+  browser-harness --version        print the installed version
+  browser-harness --doctor         diagnose install, daemon, and browser state
+  browser-harness doctor           same as --doctor
+  browser-harness doctor --fix-snap   print how to fix Snap Chromium blocking CDP (Linux)
+  browser-harness --update [-y]    pull the latest version (agents: pass -y)
+  browser-harness --reload         stop the daemon so next call picks up code changes
+"""
+
+USAGE = """Usage:
+  browser-harness <<'PY'
+  print(page_info())
+  PY
+"""
+
+
+# Probe /json/version (not a bare TCP connect) so a non-Chrome process bound to
+# a common CDP port doesn't masquerade as Chrome and skip the cloud bootstrap.
+# Mirrors daemon.py's fallback probe.
+def _local_chrome_listening():
+    for port in cdp_probe_ports():
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=0.3).close()
+            return True
+        except OSError: pass
+    return False
+
+
+# BU_CDP_URL / BU_CDP_WS are documented to override local Chrome discovery
+# (install.md:58-59), so they must also block cloud auto-bootstrap. Without this
+# guard, start_remote_daemon() in admin.py overwrites BU_CDP_WS in the daemon
+# env with a cloud WebSocket URL, silently replacing the user's explicit endpoint
+# *and* billing them for a cloud browser they never asked for.
+def _explicit_cdp_configured():
+    return bool(os.environ.get("BU_CDP_URL") or os.environ.get("BU_CDP_WS"))
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] in {"-h", "--help"}:
+        print(HELP)
+        return
+    if args and args[0] == "--version":
+        print(_version() or "unknown")
+        return
+    if args and args[0] == "--doctor":
+        sys.exit(run_doctor())
+    if args and args[0] == "doctor":
+        rest = args[1:]
+        if rest == ["--fix-snap"]:
+            sys.exit(run_doctor_fix_snap())
+        if rest:
+            print("usage: browser-harness doctor [--fix-snap]", file=sys.stderr)
+            sys.exit(2)
+        sys.exit(run_doctor())
+    if args and args[0] == "--update":
+        yes = any(a in {"-y", "--yes"} for a in args[1:])
+        sys.exit(run_update(yes=yes))
+    if args and args[0] == "--reload":
+        restart_daemon()
+        print("daemon stopped — will restart fresh on next call")
+        return
+    if args and args[0] == "--debug-clicks":
+        os.environ["BH_DEBUG_CLICKS"] = "1"
+        args = args[1:]
+    if not args and not sys.stdin.isatty():
+        code = sys.stdin.read()
+        if not code.strip():
+            sys.exit(USAGE)
+    else:
+        sys.exit(USAGE)
+    print_update_banner()
+    # Auto-bootstrap a cloud browser is opt-in via BU_AUTOSPAWN — BROWSER_USE_API_KEY alone
+    # is not enough, since the key is commonly set for unrelated reasons (profile sync,
+    # cloud API calls, parent agents managing their own session). An explicit BU_CDP_URL
+    # or BU_CDP_WS also blocks the spawn so we honour the precedence install.md promises.
+    if (
+        not daemon_alive()
+        and not _local_chrome_listening()
+        and not _explicit_cdp_configured()
+        and os.environ.get("BROWSER_USE_API_KEY")
+        and os.environ.get("BU_AUTOSPAWN")
+    ):
+        start_remote_daemon(NAME)
+    ensure_daemon()
+    exec(code, globals())
+
+
+if __name__ == "__main__":
+    main()

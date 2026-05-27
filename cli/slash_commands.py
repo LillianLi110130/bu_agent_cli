@@ -85,7 +85,7 @@ class SlashCommandRegistry:
             ),
             SlashCommand(
                 name="approval",
-                description="控制高风险工具调用的人类审批开关",
+                description="控制 ask 级危险 bash 命令审批开关",
                 usage="/approval [on|off|status]",
                 examples=[
                     "/approval on",
@@ -150,6 +150,16 @@ class SlashCommandRegistry:
                 description="管理用户级 CLI 设置",
                 usage="/settings",
                 examples=["/settings"],
+                category="配置",
+            ),
+            SlashCommand(
+                name="update",
+                description="检查 Crab CLI 更新状态",
+                usage="/update [check|status]",
+                examples=[
+                    "/update check",
+                    "/update status",
+                ],
                 category="配置",
             ),
             SlashCommand(

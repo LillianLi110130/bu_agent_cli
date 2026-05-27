@@ -162,7 +162,7 @@ async def test_web_console_message_flows_through_worker_bridge(workspace_root: P
 
 
 @pytest.mark.asyncio
-async def test_worker_stream_cleanup_stops_current_web_request(workspace_root: Path) -> None:
+async def test_worker_stream_cleanup_does_not_stop_current_web_request(workspace_root: Path) -> None:
     app = create_mock_gateway_app(MockGatewayState())
     transport = httpx.ASGITransport(app=app)
     state = app.state.web_console_state
@@ -178,14 +178,13 @@ async def test_worker_stream_cleanup_stops_current_web_request(workspace_root: P
         )
         request_id = submit_response.json()["requestId"]
 
-        await state.stop_request_if_current_worker_stream_closed(
-            worker_id="worker-hk-01",
-            request_id=request_id,
-        )
+        queue = await state.add_subscriber(request_id)
+        await state.remove_subscriber(request_id, queue)
 
-        await _wait_until(lambda: state._requests[request_id].status == "stopped")
-        result_payload = await _wait_for_result_status(web_client, request_id, "stopped")
-        assert result_payload["errorMessage"] == "stopped_by_web_disconnect"
+        await _wait_until(lambda: len(state._requests[request_id].subscribers) == 0)
+        result_payload = await state.get_request_result(request_id)
+        assert result_payload["status"] == "submitted"
+        assert result_payload["errorMessage"] is None
 
 
 @pytest.mark.asyncio

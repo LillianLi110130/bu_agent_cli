@@ -30,6 +30,7 @@ apiClient.interceptors.request.use((config) => {
 });
 
 type MockRequestRecord = {
+  requestId: string;
   workerId: string;
   content: string;
 };
@@ -100,13 +101,16 @@ export async function submitMessage(
 ): Promise<SubmitMessageResponse> {
   if (USE_MOCK) {
     const acceptedAt = new Date().toISOString();
+    const requestId = `mock-request-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     mockRequestStore.set(payload.workerId, {
+      requestId,
       workerId: payload.workerId,
       content: payload.content
     });
     return {
       ok: true,
-      acceptedAt
+      acceptedAt,
+      requestId
     };
   }
 
@@ -117,59 +121,73 @@ export async function submitMessage(
 export async function streamWorkerEvents(
   workerId: string,
   {
+    onOpen,
     onEvent,
     signal
   }: {
+    onOpen?: () => void;
     onEvent: (event: RequestEvent) => void;
     signal?: AbortSignal;
   }
 ) {
   if (USE_MOCK) {
-    const record = mockRequestStore.get(workerId);
-    if (!record) {
-      throw new Error('当前没有可供订阅的模拟请求。');
+    onOpen?.();
+    let lastDeliveredRequestId = '';
+
+    while (!signal?.aborted) {
+      const record = mockRequestStore.get(workerId);
+      if (!record || record.requestId === lastDeliveredRequestId) {
+        await sleep(300);
+        continue;
+      }
+
+      lastDeliveredRequestId = record.requestId;
+
+      onEvent({
+        type: 'submitted',
+        workerId,
+        requestId: record.requestId,
+        ts: new Date().toISOString()
+      });
+
+      await sleep(220);
+      if (signal?.aborted) {
+        return;
+      }
+
+      onEvent({
+        type: 'processing',
+        workerId,
+        requestId: record.requestId,
+        ts: new Date().toISOString()
+      });
+
+      await sleep(500);
+      if (signal?.aborted) {
+        return;
+      }
+
+      onEvent({
+        type: 'progress',
+        workerId,
+        requestId: record.requestId,
+        content: '正在整理相关上下文，请稍候。',
+        ts: new Date().toISOString()
+      });
+
+      await sleep(450);
+      if (signal?.aborted) {
+        return;
+      }
+
+      onEvent({
+        type: 'completed',
+        workerId,
+        requestId: record.requestId,
+        finalContent: buildMockAnswer(record.content),
+        finishedAt: new Date().toISOString()
+      });
     }
-
-    onEvent({
-      type: 'submitted',
-      workerId,
-      ts: new Date().toISOString()
-    });
-
-    await sleep(220);
-    if (signal?.aborted) {
-      return;
-    }
-
-    onEvent({
-      type: 'processing',
-      workerId,
-      ts: new Date().toISOString()
-    });
-
-    await sleep(500);
-    if (signal?.aborted) {
-      return;
-    }
-
-    onEvent({
-      type: 'progress',
-      workerId,
-      content: '正在整理相关上下文，请稍候。',
-      ts: new Date().toISOString()
-    });
-
-    await sleep(450);
-    if (signal?.aborted) {
-      return;
-    }
-
-    onEvent({
-      type: 'completed',
-      workerId,
-      finalContent: buildMockAnswer(record.content),
-      finishedAt: new Date().toISOString()
-    });
     return;
   }
 
@@ -182,6 +200,8 @@ export async function streamWorkerEvents(
   if (!response.ok || !response.body) {
     throw new Error(`连接消息事件流失败，状态码：${response.status}`);
   }
+
+  onOpen?.();
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
@@ -199,10 +219,6 @@ export async function streamWorkerEvents(
     while (boundary >= 0) {
       const rawChunk = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-
-      if (rawChunk.replace(/\r/g, '').trim() === ': done') {
-        return;
-      }
 
       const event = parseSseChunk(rawChunk);
       if (event) {

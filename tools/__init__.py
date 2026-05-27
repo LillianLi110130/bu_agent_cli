@@ -1,9 +1,11 @@
 """Tools for Claude Code CLI."""
 
-from tools.bash import bash
 from tools.agent_tool import delegate, delegate_parallel
 from tools.cronjob import cronjob
+from tools.bash import bash
+from tools.browser_harness import browser_harness
 from tools.files import edit, read, write
+from tools.image_analysis import analyze_image
 from tools.message import message
 from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, SecurityError, get_sandbox_context
@@ -22,15 +24,17 @@ from tools.team_tool import (
     team_status,
     team_update_task,
 )
-from tools.todos import done, todo_read, todo_write
+from tools.todos import done, todo
 from tools.web import web_fetch
 from tools.xlsx import read_excel
 
 ALL_TOOLS = [
     bash,
+    browser_harness,
     resolve_path,
     read,
     read_excel,
+    analyze_image,
     # read_excel,
     write,
     edit,
@@ -38,8 +42,7 @@ ALL_TOOLS = [
     glob_search,
     grep,
     message,
-    todo_read,
-    todo_write,
+    todo,
     done,
     web_fetch,
     delegate,
@@ -65,16 +68,17 @@ __all__ = [
     "SecurityError",
     "get_sandbox_context",
     "bash",
+    "browser_harness",
     "resolve_path",
     "read",
     "read_excel",
+    "analyze_image",
     "write",
     "edit",
     "glob_search",
     "grep",
     "message",
-    "todo_read",
-    "todo_write",
+    "todo",
     "done",
     "web_fetch",
     "delegate",

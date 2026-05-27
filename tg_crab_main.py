@@ -23,6 +23,7 @@ import logging
 import os
 import socket
 import sys
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,10 +35,11 @@ from agent_core.agent import (
     AgentHook,
     AuditHook,
     BashFileTaskGuardHook,
+    DangerousBashCommandGuardHook,
     ExcelReadGuardHook,
     HumanApprovalHook,
     SubagentCompletionHook,
-    build_default_approval_policy,
+    build_command_safety_approval_policy,
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources
@@ -67,7 +69,7 @@ from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.task import SubagentTaskManager
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id, get_bridge_store
+from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from cli.session_runtime import CLISessionRuntime
 from cli.slash_commands import SlashCommandRegistry
 from cli.worker.auth import (
@@ -75,6 +77,7 @@ from cli.worker.auth import (
     _resolve_auth_config_path,
     authenticate_startup,
     load_auth_config,
+    load_persisted_auth_result,
 )
 from cli.worker.gateway_client import WorkerGatewayClient
 from tools import ALL_TOOLS, SandboxContext, get_sandbox_context
@@ -425,6 +428,7 @@ def _strip_internal_team_worker_flag(argv: list[str] | None = None) -> list[str]
 def _build_worker_process_command(
     *,
     worker_id: str,
+    worker_no: str,
     gateway_base_url: str,
     config_dir: Path,
     root_dir: Path,
@@ -440,6 +444,8 @@ def _build_worker_process_command(
         [
             "--worker-id",
             worker_id,
+            "--worker-no",
+            worker_no,
             "--gateway-base-url",
             gateway_base_url,
             "--config-dir",
@@ -451,6 +457,11 @@ def _build_worker_process_command(
     if model:
         command.extend(["--model", model])
     return command
+
+
+def _generate_worker_no() -> str:
+    """Generate one terminal-instance identifier for this CLI process."""
+    return f"worker-{uuid.uuid4().hex[:12]}"
 
 
 def parse_args():
@@ -495,7 +506,11 @@ def parse_args():
     if args.im_enable:
         args.local_bridge = True
         args.im_worker_id = _DEFAULT_IM_WORKER_ID
+        args.im_worker_no = _generate_worker_no()
         args.im_gateway_base_url = args.im_gateway_base_url or auth_config.gateway_base_url
+    else:
+        args.im_worker_id = None
+        args.im_worker_no = _generate_worker_no()
     return args
 
 
@@ -507,7 +522,7 @@ def _build_bridge_store(
     """Create the file-backed bridge store for local or IM-enabled runs."""
     if not (args.local_bridge or args.im_enable):
         return None
-    binding_source = args.im_worker_id or "local-cli"
+    binding_source = getattr(args, "im_worker_no", None) or "local-cli"
     session_binding_id = resolve_session_binding_id(binding_source)
     return FileBridgeStore(root_dir=ctx.working_dir, session_binding_id=session_binding_id)
 
@@ -525,6 +540,7 @@ async def _start_im_worker_process(
         name
         for name, value in (
             ("worker_id", args.im_worker_id),
+            ("worker_no", args.im_worker_no),
             ("gateway_base_url", args.im_gateway_base_url),
         )
         if not value
@@ -535,6 +551,7 @@ async def _start_im_worker_process(
 
     command = _build_worker_process_command(
         worker_id=str(args.im_worker_id),
+        worker_no=str(args.im_worker_no),
         gateway_base_url=str(args.im_gateway_base_url),
         config_dir=Path(getattr(args, "config_dir", Path.cwd())).resolve(),
         root_dir=ctx.working_dir,
@@ -589,14 +606,31 @@ async def _mark_worker_offline(
     *,
     worker_id: str | None,
     gateway_base_url: str | None,
+    worker_no: str | None = None,
+    base_dir: Path | str | None = None,
 ) -> None:
     """Best-effort offline notification sent by the parent CLI process."""
     if not worker_id or not gateway_base_url:
         return
 
-    client = WorkerGatewayClient(base_url=gateway_base_url)
+    authorization: str | None = None
+    persisted_auth = load_persisted_auth_result(base_dir=base_dir)
+    if persisted_auth is not None:
+        authorization = persisted_auth.authorization
+
+    client = WorkerGatewayClient(
+        base_url=gateway_base_url,
+        authorization=authorization,
+        base_dir=base_dir,
+    )
     try:
-        await client.offline(worker_id=worker_id)
+        offline_kwargs: dict[str, str | None] = {
+            "worker_id": worker_id,
+            "worker_no": worker_no,
+        }
+        if "worker_no" not in inspect.signature(client.offline).parameters:
+            offline_kwargs.pop("worker_no", None)
+        await client.offline(**offline_kwargs)
     except Exception:
         pass
     finally:
@@ -678,7 +712,10 @@ def build_agent_hooks() -> list[AgentHook]:
     only adds optional extra hooks.
     """
     hooks: list[AgentHook] = [
-        HumanApprovalHook(policy=build_default_approval_policy()),
+        DangerousBashCommandGuardHook(),
+        HumanApprovalHook(
+            mandatory_policy=build_command_safety_approval_policy(),
+        ),
         BashFileTaskGuardHook(),
         ExcelReadGuardHook(),
         SubagentCompletionHook(),
@@ -759,6 +796,7 @@ def create_agent(
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
     setattr(agent, "_memory_store", memory_store)
     setattr(agent, "_memory_context_snapshot", frozen_memory_context)
+    setattr(agent, "_sandbox_context", ctx)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
     setattr(ctx, "memory_store", memory_store)
     agent.register_hook(
@@ -793,20 +831,6 @@ async def main():
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
     ctx.bridge_store = bridge_store
     worker_process = await _start_im_worker_process(args=args, ctx=ctx)
-    if bridge_store is not None:
-        console.print(
-            "[dim]桥接会话：[/] "
-            f"[cyan]{bridge_store.session_binding_id}[/cyan] "
-            f"[dim]->[/dim] {bridge_store.bridge_dir}"
-        )
-    if args.im_enable:
-        console.print(
-            "[dim]IM 工作进程：[/] "
-            f"worker=[cyan]{args.im_worker_id}[/cyan] "
-            f"gateway=[cyan]{args.im_gateway_base_url}[/cyan]"
-        )
-        if bridge_store is not None:
-            console.print(f"[dim]工作日志：[/] {bridge_store.logs_dir / 'worker.log'}")
     cli = TGAgentCLI(
         agent=agent,
         context=ctx,
@@ -823,6 +847,10 @@ async def main():
         skill_runtime_service=getattr(agent, "_skill_runtime_service", None),
         bridge_store=bridge_store,
         session_runtime=session_runtime,
+        im_worker_id=args.im_worker_id if args.im_enable else None,
+        im_worker_no=args.im_worker_no if args.im_enable else None,
+        im_gateway_base_url=args.im_gateway_base_url if args.im_enable else None,
+        im_auth_base_dir=args.config_dir if args.im_enable else None,
     )
 
     try:
@@ -838,7 +866,9 @@ async def main():
         await _close_llm_runtime(agent.llm)
         await _mark_worker_offline(
             worker_id=args.im_worker_id,
+            worker_no=args.im_worker_no,
             gateway_base_url=args.im_gateway_base_url,
+            base_dir=args.config_dir,
         )
         await _stop_im_worker_process(worker_process)
 

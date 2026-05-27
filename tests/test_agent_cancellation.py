@@ -357,7 +357,7 @@ async def test_query_stream_emits_text_delta_events_before_final_response() -> N
     text_events = [event for event in events if isinstance(event, TextEvent)]
 
     assert llm.stream_invocations
-    assert text_deltas == ["hel", "lo"]
+    assert text_deltas == ["hello"]
     assert len(final_events) == 1
     assert final_events[0].content == "hello"
     assert text_events == []
@@ -390,6 +390,58 @@ async def test_query_stream_emits_thinking_delta_events_before_final_response() 
     assert len(thinking_ends) == 1
     assert thinking_starts[0].think_id == thinking_ends[0].think_id
     assert thinking_events == []
+    assert len(final_events) == 1
+    assert final_events[0].content == "答"
+
+
+@pytest.mark.asyncio
+async def test_query_stream_parses_implicit_leading_think_block() -> None:
+    llm = ScriptedStreamingLLM(
+        [
+            ChatInvokeCompletionChunk(delta="先"),
+            ChatInvokeCompletionChunk(delta="想</thi"),
+            ChatInvokeCompletionChunk(delta="nk>答", stop_reason="stop"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt="test",
+    )
+
+    events = [event async for event in agent.query_stream("hello")]
+
+    thinking_deltas = [event.delta for event in events if isinstance(event, ThinkingDeltaEvent)]
+    text_deltas = [event.delta for event in events if isinstance(event, TextDeltaEvent)]
+    final_events = [event for event in events if isinstance(event, FinalResponseEvent)]
+
+    assert thinking_deltas == ["先想"]
+    assert text_deltas == ["答"]
+    assert len(final_events) == 1
+    assert final_events[0].content == "答"
+
+
+@pytest.mark.asyncio
+async def test_query_stream_parses_explicit_think_block() -> None:
+    llm = ScriptedStreamingLLM(
+        [
+            ChatInvokeCompletionChunk(delta="<think>先想</think>答", stop_reason="stop"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt="test",
+    )
+
+    events = [event async for event in agent.query_stream("hello")]
+
+    thinking_deltas = [event.delta for event in events if isinstance(event, ThinkingDeltaEvent)]
+    text_deltas = [event.delta for event in events if isinstance(event, TextDeltaEvent)]
+    final_events = [event for event in events if isinstance(event, FinalResponseEvent)]
+
+    assert thinking_deltas == ["先想"]
+    assert text_deltas == ["答"]
     assert len(final_events) == 1
     assert final_events[0].content == "答"
 

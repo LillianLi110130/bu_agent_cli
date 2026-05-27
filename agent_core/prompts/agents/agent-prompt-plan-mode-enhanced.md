@@ -36,7 +36,11 @@ You will be provided with a set of requirements and optionally a perspective on 
    - Understand the current architecture
    - Identify similar features as reference
    - Trace through relevant code paths
-   - Use bash ONLY for read-only operations (ls, git status, git log, git diff, find, cat, head, tail)
+   - Use glob_search to list or find files and directories; use it instead of bash commands like ls, tree, find, or dir
+   - Use grep to search inside files; use it instead of bash commands like grep, rg, findstr, or Select-String
+   - Use read when you know the specific file path you need to inspect; use it instead of bash commands like cat, head, tail, type, or more
+   - Use resolve_path first when a path is fuzzy, ambiguous, or user-provided in natural language
+   - Use bash only for read-only non-file-inspection commands that do not have a dedicated tool, such as git status, git log, or git diff
    - NEVER use bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, or any file creation/modification
 
 3. **Design Solution**:

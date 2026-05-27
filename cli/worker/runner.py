@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import logging
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ class WorkerRunner:
         gateway_client: Any,
         model: str | None,
         root_dir: str | Path | None,
+        worker_no: str | None = None,
         gateway_transport: str = "sse",
         stream_max_session_seconds: float = 20 * 60,
         result_poll_interval_seconds: float = 0.5,
@@ -38,6 +40,7 @@ class WorkerRunner:
         agent: Agent | None = None,
     ) -> None:
         self.worker_id = worker_id
+        self.worker_no = worker_no or worker_id
         self.gateway_client = gateway_client
         self.model = model
         self.root_dir = root_dir
@@ -53,7 +56,7 @@ class WorkerRunner:
         self.root_path = resolved_root_dir
         self.bridge_store = FileBridgeStore(
             root_dir=resolved_root_dir,
-            session_binding_id=resolve_session_binding_id(worker_id),
+            session_binding_id=resolve_session_binding_id(self.worker_no),
         )
         self.bridge_store.initialize()
         self.cron_scheduler = CronScheduler(store=CronJobStore())
@@ -67,7 +70,7 @@ class WorkerRunner:
 
     async def run_forever(self) -> None:
         """Run the worker loop until explicitly stopped."""
-        if not await self.gateway_client.online(worker_id=self.worker_id):
+        if not await self._call_gateway("online", worker_id=self.worker_id, worker_no=self.worker_no):
             raise RuntimeError(f"Failed to mark worker online for worker_id={self.worker_id}")
 
         try:
@@ -80,14 +83,33 @@ class WorkerRunner:
             if self._completion_tasks:
                 await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
             await self.cron_scheduler.wait_background_tasks()
-            await self.gateway_client.offline(worker_id=self.worker_id)
+            await self._call_gateway("offline", worker_id=self.worker_id, worker_no=self.worker_no)
+
+    def _gateway_kwargs(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
+        """Keep old test doubles working while passing worker_no to real clients."""
+        method = getattr(self.gateway_client, method_name)
+        if "worker_no" not in inspect.signature(method).parameters:
+            kwargs.pop("worker_no", None)
+        return kwargs
+
+    async def _call_gateway(self, method_name: str, **kwargs: Any) -> Any:
+        method = getattr(self.gateway_client, method_name)
+        return await method(**self._gateway_kwargs(method_name, **kwargs))
+
+    def _call_gateway_iter(self, method_name: str, **kwargs: Any) -> Any:
+        method = getattr(self.gateway_client, method_name)
+        return method(**self._gateway_kwargs(method_name, **kwargs))
 
     async def _run_poll_loop(self) -> None:
         """Consume remote messages via long polling."""
         while not self._stop_event.is_set():
             await self._maybe_tick_cron()
             try:
-                messages = await self.gateway_client.poll(worker_id=self.worker_id)
+                messages = await self._call_gateway(
+                    "poll",
+                    worker_id=self.worker_id,
+                    worker_no=self.worker_no,
+                )
             except httpx.ReadTimeout as exc:
                 logger.warning(
                     "Worker poll timed out for "
@@ -104,7 +126,11 @@ class WorkerRunner:
     async def _run_stream_loop(self) -> None:
         """Consume remote messages via a persistent SSE stream."""
         while not self._stop_event.is_set():
-            stream_iter = self.gateway_client.stream_events(worker_id=self.worker_id)
+            stream_iter = self._call_gateway_iter(
+                "stream_events",
+                worker_id=self.worker_id,
+                worker_no=self.worker_no,
+            )
             stream_session_deadline = self._get_stream_session_deadline()
             reconnect_delay_seconds = self.empty_poll_sleep_seconds
             try:
@@ -177,6 +203,7 @@ class WorkerRunner:
             source=source,
             source_meta={
                 "worker_id": self.worker_id,
+                "worker_no": self.worker_no,
                 "origin": source,
             },
             remote_response_required=True,
@@ -198,16 +225,20 @@ class WorkerRunner:
     async def _complete_bridge_result(self, result: Any, *, source: str) -> bool:
         """Report a bridge result back to the gateway complete endpoint."""
         if result.final_status == "failed":
-            return await self.gateway_client.complete(
+            return await self._call_gateway(
+                "complete",
                 worker_id=self.worker_id,
+                worker_no=self.worker_no,
                 final_content=result.final_content,
                 source=source,
                 final_status="failed",
                 error_code=result.error_code,
                 error_message=result.error_message,
             )
-        return await self.gateway_client.complete(
+        return await self._call_gateway(
+            "complete",
             worker_id=self.worker_id,
+            worker_no=self.worker_no,
             final_content=result.final_content,
             source=source,
         )
@@ -216,8 +247,10 @@ class WorkerRunner:
         """Best-effort complete-call report for failures before a bridge result exists."""
         error_message = str(exc) or exc.__class__.__name__
         try:
-            ok = await self.gateway_client.complete(
+            ok = await self._call_gateway(
+                "complete",
                 worker_id=self.worker_id,
+                worker_no=self.worker_no,
                 final_content=f"Execution failed: {error_message}",
                 source=source,
                 final_status="failed",
@@ -260,8 +293,10 @@ class WorkerRunner:
             if progress.progress_id in sent_progress_ids:
                 continue
             sent_progress_ids.add(progress.progress_id)
-            ok = await self.gateway_client.progress(
+            ok = await self._call_gateway(
+                "progress",
                 worker_id=self.worker_id,
+                worker_no=self.worker_no,
                 content=progress.content,
                 source=source,
             )
@@ -373,14 +408,18 @@ class WorkerRunner:
                 return
 
             if event.action == "text":
-                ok = await self.gateway_client.send_text(
+                ok = await self._call_gateway(
+                    "send_text",
                     worker_id=self.worker_id,
+                    worker_no=self.worker_no,
                     text=event.text,
                 )
             elif event.action == "attachment":
                 file_bytes = Path(event.file_path).read_bytes()
-                ok = await self.gateway_client.upload_attachment(
+                ok = await self._call_gateway(
+                    "upload_attachment",
                     worker_id=self.worker_id,
+                    worker_no=self.worker_no,
                     file_name=event.file_name,
                     mime_type=event.mime_type,
                     file_size=event.file_size,

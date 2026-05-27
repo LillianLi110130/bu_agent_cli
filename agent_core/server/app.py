@@ -14,6 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Callable
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -39,6 +40,7 @@ from agent_core.agent.events import (
 from agent_core.server.models import (
     QueryRequest,
     LLMQueryRequest,
+    LLMSessionEvent,
     QueryResponse,
     UsageInfo,
     StreamEvent,
@@ -707,7 +709,13 @@ def create_app(
         async def event_generator():
             try:
                 gateway: LLMGatewayService = app.state.llm_gateway
-                async for event in gateway.query_stream(request):
+                requested_session_id = (request.session_id or "").strip()
+                session_id = requested_session_id or str(uuid4())
+                yield _serialize_event(
+                    LLMSessionEvent(session_id=session_id, is_new=not requested_session_id)
+                )
+                effective_request = request.model_copy(update={"session_id": session_id})
+                async for event in gateway.query_stream(effective_request):
                     yield _serialize_event(event)
                 yield ": done\n\n"
             except Exception as e:
