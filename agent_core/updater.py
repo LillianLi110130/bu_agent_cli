@@ -170,13 +170,31 @@ def _s3_client() -> Any:
     return boto3.client("s3", **kwargs)
 
 
+def _s3_error_message(exc: Exception, *, bucket: str, key: str) -> str:
+    response = getattr(exc, "response", None)
+    error = response.get("Error", {}) if isinstance(response, dict) else {}
+    code = error.get("Code") or exc.__class__.__name__
+    message = error.get("Message") or str(exc)
+    return (
+        "对象存储文件下载失败: "
+        f"bucket={bucket}, key={key}, code={code}, message={message}. "
+        "请确认 manifest 中的 url 和实际上传到对象存储的 key 完全一致。"
+    )
+
+
 def _download_bytes(url: str) -> bytes:
     s3_location = _parse_s3_url(url)
     if s3_location is not None:
         bucket, key = s3_location
-        response = _s3_client().get_object(Bucket=bucket, Key=key)
-        body = response["Body"]
-        return body.read()
+        try:
+            response = _s3_client().get_object(Bucket=bucket, Key=key)
+            body = response["Body"]
+            try:
+                return body.read()
+            finally:
+                body.close()
+        except Exception as exc:
+            raise RuntimeError(_s3_error_message(exc, bucket=bucket, key=key)) from exc
 
     request = urllib.request.Request(url, headers={"User-Agent": "CrabCLI-Updater/1"})
     with urllib.request.urlopen(request, timeout=15) as response:
@@ -267,7 +285,16 @@ def _download_file(url: str, destination: Path) -> None:
     s3_location = _parse_s3_url(url)
     if s3_location is not None:
         bucket, key = s3_location
-        _s3_client().download_file(bucket, key, str(destination))
+        try:
+            response = _s3_client().get_object(Bucket=bucket, Key=key)
+            body = response["Body"]
+            try:
+                with destination.open("wb") as output:
+                    shutil.copyfileobj(body, output)
+            finally:
+                body.close()
+        except Exception as exc:
+            raise RuntimeError(_s3_error_message(exc, bucket=bucket, key=key)) from exc
         return
 
     request = urllib.request.Request(url, headers={"User-Agent": "CrabCLI-Updater/1"})

@@ -6,6 +6,9 @@ import json
 import re
 from pathlib import Path
 
+UPDATE_OBJECT_ROOT = "crab-cli"
+RELEASES_OBJECT_PREFIX = f"{UPDATE_OBJECT_ROOT}/releases"
+
 
 def _read_project_version(repo_root: Path) -> str:
     pyproject = repo_root / "pyproject.toml"
@@ -47,7 +50,6 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--platform", required=True, choices=("linux-x64", "windows-x64"))
     parser.add_argument("--artifact", required=True)
-    parser.add_argument("--base-url", default="")
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -80,10 +82,7 @@ def main() -> int:
     sha_path = artifact.with_name(f"{artifact.name}.sha256")
     sha_path.write_text(f"{artifact_sha}  {artifact.name}\n", encoding="utf-8")
 
-    base_url = args.base_url.strip().strip("/")
-    artifact_url = (
-        f"{base_url}/releases/{args.version}/{artifact.name}" if base_url else f"releases/{args.version}/{artifact.name}"
-    )
+    artifact_url = f"{RELEASES_OBJECT_PREFIX}/{args.version}/{artifact.name}"
 
     update_root = output_root / "update"
     release_manifest_path = update_root / "releases" / args.version / "manifest.json"

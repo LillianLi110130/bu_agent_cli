@@ -990,8 +990,7 @@ if ((skip_tar == 0)); then
         --output-root "${resolved_output_root}" \
         --version "${version}" \
         --platform linux-x64 \
-        --artifact "${tar_path}" \
-        --base-url "${CRAB_RELEASE_BASE_URL:-}"
+        --artifact "${tar_path}"
 fi
 
 echo "[portable] build complete"

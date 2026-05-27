@@ -1480,14 +1480,12 @@ if (-not $SkipZip) {
     Write-Host "[portable] creating zip archive..."
     Compress-Archive -Path $bundleDir -DestinationPath $zipPath -Force
     $manifestGenerator = Join-Path $repoRoot "scripts\release\generate_update_manifest.py"
-    $releaseBaseUrl = if ($env:CRAB_RELEASE_BASE_URL) { $env:CRAB_RELEASE_BASE_URL } else { "" }
     & $resolvedPythonExe $manifestGenerator `
         --repo-root $repoRoot `
         --output-root $resolvedOutputRoot `
         --version $version `
         --platform windows-x64 `
-        --artifact $zipPath `
-        --base-url $releaseBaseUrl
+        --artifact $zipPath
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to generate update manifest"
     }
