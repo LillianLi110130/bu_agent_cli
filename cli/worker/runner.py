@@ -329,6 +329,7 @@ class WorkerRunner:
             compaction=main_agent.compaction,
             dependency_overrides=dependency_overrides,
             runtime_role="primary",
+            llm_session_role="cron",
             hooks=[],
             use_streaming=main_agent.use_streaming,
         )
@@ -337,8 +338,16 @@ class WorkerRunner:
 
     @staticmethod
     def _cron_background_tools(main_agent: Agent, job: CronJob) -> list[Any]:
+        # 禁止cron_agent使用 定时任务，subagent，agent-team，web相关工具
         blocked_tools = {"cronjob", "delegate", "delegate_parallel"}
-        tools = [tool for tool in main_agent.tools if tool.name not in blocked_tools]
+        tools = [
+            tool
+            for tool in main_agent.tools
+            if tool.name not in blocked_tools
+            and not tool.name.startswith("team_")
+            and not tool.name.startswith("task_")
+            and tool.name != "web_fetch"
+        ]
         if job.enabled_toolsets is None:
             return tools
         allowed_names = set(job.enabled_toolsets)
