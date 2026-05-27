@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gateway Scheduled Notifier"
+  short_description: "Generate scheduled task scripts that notify the worker gateway."
+  default_prompt: "Use $gateway-scheduled-notifier to create a Python scheduled task that reports completion to the gateway."
