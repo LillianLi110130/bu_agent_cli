@@ -14,6 +14,7 @@ import httpx
 from agent_core import Agent
 from agent_core.bootstrap.agent_factory import create_agent
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from config.model_config import ModelPreset, load_model_presets
 from cron.jobs import CronJobStore
 from cron.models import CronHostContext, CronJob
 from cron.scheduler import CronScheduler
@@ -349,8 +350,27 @@ class WorkerRunner:
 
     def _resolve_main_agent(self) -> Agent:
         if self._main_agent is None:
-            self._main_agent, _ = create_agent(model=self.model, root_dir=self.root_path)
+            self._main_agent, _ = create_agent(
+                model=self._resolve_main_agent_model(),
+                root_dir=self.root_path,
+            )
         return self._main_agent
+
+    def _resolve_main_agent_model(self) -> str | None:
+        """Resolve the worker main agent model with a config-based fallback."""
+        if self.model is not None:
+            return self.model
+        return self._select_fallback_model(load_model_presets())
+
+    @staticmethod
+    def _select_fallback_model(presets: dict[str, ModelPreset]) -> str:
+        for keyword in ("Qwen3.6", "minimax"):
+            keyword_lower = keyword.lower()
+            for name, preset in presets.items():
+                preset_model = str(preset.get("model", ""))
+                if keyword_lower in name.lower() or keyword_lower in preset_model.lower():
+                    return name
+        return "small"
 
     def _build_cron_background_agent(self, main_agent: Agent, job: CronJob) -> Agent:
         dependency_overrides = dict(main_agent.dependency_overrides or {})

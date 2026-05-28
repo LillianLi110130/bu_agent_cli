@@ -171,7 +171,7 @@ class CronScheduler:
                 run.status = "enqueued"
                 run.delivery_status = "queued" if job.delivery == "remote" else "local_only"
             elif job.execution.mode == "fresh_agent_background":
-                output = await self._run_fresh_agent_background(job, host_context=host_context)
+                output = await self._run_fresh_agent_background(job, host_context=host_context) or ""
                 run.status = "success"
                 run.delivery_status = "local_only"
                 if job.delivery == "remote":
