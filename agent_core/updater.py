@@ -223,13 +223,54 @@ def _notes_from_manifest(manifest: dict[str, Any]) -> list[str]:
     return [item.strip() for item in raw_notes if isinstance(item, str) and item.strip()]
 
 
+def _rich_console(*, stderr: bool = False) -> Any | None:
+    try:
+        from rich.console import Console
+    except ImportError:
+        return None
+    return Console(stderr=stderr)
+
+
+def _print_styled(parts: list[tuple[str, str]], *, stderr: bool = False, end: str = "\n") -> None:
+    console = _rich_console(stderr=stderr)
+    if console is None:
+        stream = sys.stderr if stderr else sys.stdout
+        print("".join(text for text, _style in parts), end=end, file=stream)
+        return
+
+    from rich.text import Text
+
+    line = Text()
+    for text, style in parts:
+        line.append(text, style=style)
+    console.print(line, end=end)
+
+
+def _print_white(message: str = "", *, stderr: bool = False) -> None:
+    if message:
+        _print_styled([(message, "white")], stderr=stderr)
+        return
+    print(file=sys.stderr if stderr else sys.stdout)
+
+
+def _prompt_choice() -> str:
+    _print_styled([("请输入选项 [1/2]: ", "cyan")], end="")
+    return input().strip()
+
+
 def check_for_update(*, force_message: bool = False) -> UpdateInfo | None:
     _load_update_env()
     manifest_url = _manifest_url()
     current_version = get_cli_version()
     if manifest_url is None:
         if force_message:
-            print(f"未配置更新地址。请设置 {MANIFEST_URL_ENV} 指向 stable.json。")
+            _print_styled(
+                [
+                    ("未配置更新地址。请设置 ", "white"),
+                    (MANIFEST_URL_ENV, "yellow"),
+                    (" 指向 stable.json。", "white"),
+                ]
+            )
         return None
 
     manifest = _download_json(manifest_url)
@@ -245,7 +286,7 @@ def check_for_update(*, force_message: bool = False) -> UpdateInfo | None:
 
     if not _is_newer(latest, current_version):
         if force_message:
-            print(f"当前已是最新版本：v{current_version}")
+            _print_styled([("当前已是最新版本：v", "white"), (current_version, "green")])
         return None
 
     releases = manifest.get("releases")
@@ -267,17 +308,17 @@ def check_for_update(*, force_message: bool = False) -> UpdateInfo | None:
 
 
 def _print_update_info(info: UpdateInfo) -> None:
-    print("发现 Crab CLI 新版本")
-    print()
-    print(f"当前版本: {info.current_version}")
-    print(f"最新版本: {info.latest_version}")
+    _print_styled([("发现 Crab CLI 新版本", "bold cyan")])
+    _print_white()
+    _print_styled([("当前版本: ", "white"), (info.current_version, "yellow")])
+    _print_styled([("最新版本: ", "white"), (info.latest_version, "bold green")])
     if info.published_at:
-        print(f"发布时间: {info.published_at}")
+        _print_styled([("发布时间: ", "white"), (info.published_at, "white")])
     if info.notes:
-        print()
-        print("更新内容:")
+        _print_white()
+        _print_styled([("更新内容:", "bold cyan")])
         for note in info.notes:
-            print(f"- {note}")
+            _print_styled([("- ", "cyan"), (note, "white")])
 
 
 def _download_file(url: str, destination: Path) -> None:
@@ -430,7 +471,7 @@ def _write_pending_deploy_script(bundle_root: Path, deploy_script: Path, version
 
 def prepare_update_before_launch(info: UpdateInfo) -> Path:
     if not _acquire_update_lock():
-        print("Crab 正在更新中，请稍后重新启动。")
+        _print_styled([("Crab 正在更新中，请稍后重新启动。", "yellow")])
         raise SystemExit(10)
     try:
         url = info.release.get("url")
@@ -455,13 +496,13 @@ def prepare_update_before_launch(info: UpdateInfo) -> Path:
             shutil.rmtree(staging_root)
         staging_root.mkdir(parents=True, exist_ok=True)
 
-        print(f"正在下载: {url}")
+        _print_styled([("正在下载: ", "cyan"), (url, "white")])
         _download_file(url, archive_path)
         actual_sha = _sha256(archive_path).lower()
         if actual_sha != expected_sha:
             raise ValueError(f"sha256 mismatch: expected {expected_sha}, got {actual_sha}")
 
-        print(f"正在解压: {archive_path}")
+        _print_styled([("正在解压: ", "cyan"), (str(archive_path), "white")])
         _extract_archive(archive_path, staging_dir)
         bundle_root = _find_bundle_root(staging_dir)
         deploy_script = _deploy_script(bundle_root)
@@ -474,7 +515,7 @@ def prepare_update_before_launch(info: UpdateInfo) -> Path:
             "script": str(pending_script),
         }
         save_update_state(state)
-        print(f"更新已准备好: {pending_script}")
+        _print_styled([("更新已准备好: ", "bold green"), (str(pending_script), "white")])
         return pending_script
     except Exception:
         try:
@@ -491,27 +532,30 @@ def check_before_launch() -> int:
     if load_update_state().get("auto_check_enabled") is False:
         return 0
     if update_lock_path().exists():
-        print("Crab 正在更新中，请稍后重新启动。")
+        _print_styled([("Crab 正在更新中，请稍后重新启动。", "yellow")])
         return 10
     try:
         info = check_for_update(force_message=False)
     except Exception as exc:
-        print(f"检查更新失败，继续启动当前版本: {exc}", file=sys.stderr)
+        _print_styled(
+            [("检查更新失败，继续启动当前版本: ", "bold red"), (str(exc), "white")],
+            stderr=True,
+        )
         return 0
     if info is None:
         return 0
 
     _print_update_info(info)
     if not sys.stdin.isatty():
-        print()
-        print("请关闭所有 Crab 后重新启动以更新。")
+        _print_white()
+        _print_white("请关闭所有 Crab 后重新启动以更新。")
         return 0
 
-    print()
-    print("请选择:")
-    print("1. 立即更新")
-    print("2. 跳过本次，继续启动")
-    choice = input("请输入选项 [1/2]: ").strip()
+    _print_white()
+    _print_styled([("请选择:", "bold cyan")])
+    _print_styled([("1.", "bold green"), (" 立即更新", "white")])
+    _print_styled([("2.", "bold yellow"), (" 跳过本次，继续启动", "white")])
+    choice = _prompt_choice()
     if choice != "1":
         return 0
 
@@ -519,7 +563,10 @@ def check_before_launch() -> int:
         prepare_update_before_launch(info)
         return 20
     except Exception as exc:
-        print(f"更新失败，继续启动当前版本: {exc}", file=sys.stderr)
+        _print_styled(
+            [("更新失败，继续启动当前版本: ", "bold red"), (str(exc), "white")],
+            stderr=True,
+        )
         return 0
     return 10
 
@@ -528,13 +575,13 @@ def run_check() -> int:
     try:
         info = check_for_update(force_message=True)
     except Exception as exc:
-        print(f"检查更新失败: {exc}")
+        _print_styled([("检查更新失败: ", "bold red"), (str(exc), "white")])
         return 1
     if info is None:
         return 0
     _print_update_info(info)
-    print()
-    print("请关闭所有 Crab 后重新启动以更新。")
+    _print_white()
+    _print_white("请关闭所有 Crab 后重新启动以更新。")
     return 0
 
 
@@ -546,9 +593,9 @@ def run_status() -> int:
     last_updated_at = "-"
     if isinstance(last_install, dict):
         last_updated_at = str(last_install.get("finished_at") or "-")
-    print(f"当前版本: {current_version}")
-    print(f"上次检查时间: {last_check_at}")
-    print(f"上一次成功更新时间: {last_updated_at}")
+    _print_styled([("当前版本: ", "white"), (current_version, "yellow")])
+    _print_styled([("上次检查时间: ", "white"), (str(last_check_at), "white")])
+    _print_styled([("上一次成功更新时间: ", "white"), (last_updated_at, "white")])
     return 0
 
 
