@@ -52,7 +52,8 @@ async def test_chat_gateway_aggregates_sse_events(
         payload = json.loads(request.content.decode("utf-8"))
         assert payload["model"] == "coding-default"
         assert payload["worker_no"] == "worker-terminal-1"
-        assert payload["session_id"] == "session-local-1"
+        assert payload["session_no"] == "session-local-1"
+        assert "session_id" not in payload
         assert payload["user_id"] == "user-1"
         assert payload["messages"][0]["role"] == "user"
 
@@ -118,6 +119,7 @@ async def test_chat_gateway_aggregates_sse_events(
     assert json.loads(response.tool_calls[0].function.arguments) == {"path": "README.md"}
     assert session_events == [("session-local-1", True)]
     assert llm.session_id == "session-local-1"
+    assert llm.session_no == "session-local-1"
     assert persisted_updates == [(tmp_path.resolve(), "Bearer refreshed-token")]
 
 

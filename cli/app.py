@@ -627,11 +627,15 @@ class TGAgentCLI:
         self._foreground_delegate_depth = 0
         self._active_thinking_id: str | None = None
         self._session_store: CLISessionStore | None = None
-        self._conversation_session_id = (
+        initial_session_id = (
             self._session_runtime.session_id
             if self._session_runtime is not None
             else self._ctx.session_id
         )
+        if self._is_gateway_llm(self._agent):
+            self._conversation_session_id = None
+        else:
+            self._conversation_session_id = f"local_{initial_session_id}"
         self._last_transcript_flushed_idx = 0
         self._conversation_session_created = False
         self._initialize_session_store()
@@ -649,6 +653,23 @@ class TGAgentCLI:
             self._bridge_store.initialize()
         self._sync_gateway_llm_context(self._agent)
 
+    @staticmethod
+    def _is_gateway_llm(agent: Agent) -> bool:
+        return getattr(getattr(agent, "llm", None), "provider", None) == "gateway"
+
+    @staticmethod
+    def _is_local_session_id(session_id: str | None) -> bool:
+        return bool(session_id and session_id.startswith("local_"))
+
+    @staticmethod
+    def _generate_local_session_id() -> str:
+        return f"local_{uuid.uuid4().hex}"
+
+    def _session_no_for_gateway_request(self) -> str | None:
+        if self._is_local_session_id(self._conversation_session_id):
+            return None
+        return self._conversation_session_id
+
     def _sync_gateway_llm_context(self, agent: Agent | None = None) -> None:
         """Attach worker/session attribution to gateway-backed LLMs."""
         active_agent = agent or self._agent
@@ -658,26 +679,39 @@ class TGAgentCLI:
         if hasattr(llm, "worker_no"):
             setattr(llm, "worker_no", self._im_worker_no)
         if hasattr(llm, "session_id"):
-            setattr(llm, "session_id", self._conversation_session_id)
+            setattr(llm, "session_id", self._session_no_for_gateway_request())
+        if hasattr(llm, "session_no"):
+            setattr(llm, "session_no", self._session_no_for_gateway_request())
         if hasattr(llm, "user_id"):
             setattr(llm, "user_id", self._im_worker_id)
         if hasattr(llm, "session_callback"):
             setattr(llm, "session_callback", self._handle_gateway_session_event)
 
     def _handle_gateway_session_event(self, session_id: str, is_new: bool = False) -> None:
-        """Adopt a server-created session id before local history is first persisted."""
+        """Adopt the gateway session id and migrate local-only history when needed."""
         normalized_session_id = (session_id or "").strip()
         if not normalized_session_id or normalized_session_id == self._conversation_session_id:
             return
-        if self._conversation_session_created:
+        old_session_id = self._conversation_session_id
+        if self._conversation_session_created and not self._is_local_session_id(old_session_id):
             logger.warning(
                 "Ignoring gateway session switch after local session was created: "
                 "current=%s incoming=%s",
-                self._conversation_session_id,
+                old_session_id,
                 normalized_session_id,
             )
             return
         self._conversation_session_id = normalized_session_id
+        if self._is_local_session_id(old_session_id) and self._session_store is not None:
+            try:
+                self._session_store.rename_session(old_session_id, normalized_session_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to rename local session %s to gateway session %s: %s",
+                    old_session_id,
+                    normalized_session_id,
+                    exc,
+                )
         self._sync_gateway_llm_context(self._agent)
 
     def _workspace_skill_dirs(self, workspace_dir: Path | None = None) -> list[Path]:
@@ -994,7 +1028,9 @@ class TGAgentCLI:
         if self._session_store is not None and self._conversation_session_created:
             self._session_store.end_session(old_conversation_session_id, reason="new_session")
 
-        self._conversation_session_id = None
+        self._conversation_session_id = (
+            None if self._is_gateway_llm(self._agent) else self._generate_local_session_id()
+        )
         self._conversation_session_created = False
         self._last_transcript_flushed_idx = 0
         self._sync_gateway_llm_context(self._agent)

@@ -54,6 +54,10 @@ class LLMQueryRequest(BaseModel):
         default=None,
         description="Unified local/remote conversation session identifier.",
     )
+    session_no: str | None = Field(
+        default=None,
+        description="Gateway conversation session identifier used by the external protocol.",
+    )
     user_id: str | None = Field(
         default=None,
         description="Optional authenticated user identity for attribution.",
@@ -261,8 +265,12 @@ class LLMUsageEvent(StreamEventType):
 class LLMSessionEvent(StreamEventType):
     """Emitted when the gateway creates or confirms the unified session id."""
 
-    type: Literal["session"] = "session"
-    session_id: str = Field(..., description="Unified conversation session identifier")
+    type: Literal["session", "session_created"] = "session_created"
+    session_no: str = Field(..., description="Gateway conversation session identifier")
+    session_id: str | None = Field(
+        default=None,
+        description="Deprecated compatibility alias for session_no.",
+    )
     is_new: bool = Field(default=False, description="Whether the session was created now")
 
 

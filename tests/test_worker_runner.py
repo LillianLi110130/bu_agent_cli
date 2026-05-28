@@ -475,7 +475,7 @@ async def test_mock_gateway_new_and_llm_stream_return_session_event():
 
     class FakeLLMGateway:
         async def query_stream(self, request):  # noqa: ANN001
-            assert request.session_id.startswith("session-")
+            assert request.session_no.startswith("session-")
             yield type("TextEvent", (), {"model_dump": lambda self: {"type": "text", "content": "hello"}})()
             yield type("DoneEvent", (), {"model_dump": lambda self: {"type": "done", "stop_reason": "stop"}})()
 

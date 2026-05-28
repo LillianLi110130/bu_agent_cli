@@ -775,7 +775,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/llm/query-stream", tags=["LLM"])
     async def llm_query_stream(request: LLMQueryRequest):
-        requested_session_id = (request.session_id or "").strip()
+        requested_session_id = (request.session_no or request.session_id or "").strip()
         session_id = requested_session_id or state.create_session(
             worker_id=request.user_id,
             worker_no=request.worker_no,
@@ -796,12 +796,13 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
                     {
                         "type": "session_created" if is_new else "session",
                         "session_no": session_id,
-                        "session_id": session_id,
                         "is_new": is_new,
                     }
                 )
                 gateway: LLMGatewayService = app.state.llm_gateway
-                effective_request = request.model_copy(update={"session_id": session_id})
+                effective_request = request.model_copy(
+                    update={"session_id": session_id, "session_no": session_id}
+                )
                 async for event in gateway.query_stream(effective_request):
                     yield _encode_model_sse_event(event)
                 yield b": done\n\n"

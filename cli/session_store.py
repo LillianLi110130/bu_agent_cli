@@ -269,6 +269,41 @@ class CLISessionStore:
             row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
         return self._row_to_session(row) if row is not None else None
 
+    def rename_session(self, old_session_id: str, new_session_id: str) -> bool:
+        """Rename one persisted session id and all local references."""
+        old_id = old_session_id.strip()
+        new_id = new_session_id.strip()
+        if not old_id or not new_id:
+            raise ValueError("session ids must not be empty")
+        if old_id == new_id:
+            return self.get_session(old_id) is not None
+
+        with self._connection() as conn:
+            existing_old = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                (old_id,),
+            ).fetchone()
+            if existing_old is None:
+                return False
+
+            existing_new = conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?",
+                (new_id,),
+            ).fetchone()
+            if existing_new is not None:
+                raise SessionStoreError(f"target session already exists: {new_id}")
+
+            conn.execute("UPDATE sessions SET id = ? WHERE id = ?", (new_id, old_id))
+            conn.execute(
+                "UPDATE messages SET session_id = ? WHERE session_id = ?",
+                (new_id, old_id),
+            )
+            conn.execute(
+                "UPDATE session_context SET session_id = ? WHERE session_id = ?",
+                (new_id, old_id),
+            )
+        return True
+
     def append_messages(self, session_id: str, messages: Iterable[BaseMessage]) -> int:
         materialized = list(messages)
         if not materialized:

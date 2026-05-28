@@ -30,6 +30,7 @@ class ChatGateway(BaseChatModel):
     stream_line_log_file: str | Path | None = "llm.log"
     worker_no: str | None = None
     session_id: str | None = None
+    session_no: str | None = None
     user_id: str | None = None
     session_callback: Callable[[str, bool], None] | None = None
     _client: httpx.AsyncClient | None = field(default=None, init=False, repr=False)
@@ -90,6 +91,8 @@ class ChatGateway(BaseChatModel):
             return persisted.authorization
 
         fallback_authorization = self._normalize_authorization_value(self.api_key)
+        if fallback_authorization and " " not in fallback_authorization:
+            fallback_authorization = f"Bearer {fallback_authorization}"
         self._authorization = fallback_authorization
         return fallback_authorization
 
@@ -147,24 +150,25 @@ class ChatGateway(BaseChatModel):
             "metadata": kwargs.get("metadata"),
         }
         worker_no = kwargs.get("worker_no", self.worker_no)
-        session_id = kwargs.get("session_id", self.session_id)
+        session_no = kwargs.get("session_no", self.session_no or self.session_id)
         user_id = kwargs.get("user_id", self.user_id)
         if worker_no:
             payload["worker_no"] = str(worker_no)
-        if session_id:
-            payload["session_id"] = str(session_id)
+        if session_no:
+            payload["session_no"] = str(session_no)
         if user_id:
             payload["user_id"] = str(user_id)
         return payload
 
     def _handle_session_event(self, event_data: dict[str, Any], **kwargs: Any) -> None:
         session_id = str(
-            event_data.get("session_id") or event_data.get("session_no") or ""
+            event_data.get("session_no") or event_data.get("session_id") or ""
         ).strip()
         if not session_id:
             return
         is_new = bool(event_data.get("is_new", False))
         self.session_id = session_id
+        self.session_no = session_id
         callback = kwargs.get("session_callback") or self.session_callback
         if callback is None:
             return
