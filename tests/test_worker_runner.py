@@ -9,10 +9,86 @@ from pathlib import Path
 import httpx
 import pytest
 
+from agent_core import Agent
+from agent_core.llm.messages import BaseMessage
+from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core.tools import tool
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
 from cli.worker.gateway_client import WorkerGatewayClient, WorkerMessage, WorkerStreamEvent
 from cli.worker.mock_server import MockGatewayState, create_mock_gateway_app
 from cli.worker.runner import WorkerRunner
+from cron.jobs import CronJobStore
+
+
+class _RecordingCronScheduler:
+    def __init__(self) -> None:
+        self.contexts = []
+
+    async def tick(self, *, host_context):
+        self.contexts.append(host_context)
+
+
+class _FailingCronScheduler:
+    async def tick(self, *, host_context):
+        del host_context
+        raise RuntimeError("synthetic cron failure")
+
+
+class _CapturingLLM:
+    def __init__(self) -> None:
+        self.model = "capture-model"
+        self.tool_names: list[str] = []
+        self.last_user_content = ""
+
+    async def ainvoke(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
+        del tool_choice, kwargs
+        self.tool_names = [tool_def.name for tool_def in tools or []]
+        for message in reversed(messages):
+            if getattr(message, "role", None) == "user":
+                self.last_user_content = str(getattr(message, "content", ""))
+                break
+        return ChatInvokeCompletion(content="cron final")
+
+    async def astream(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ):
+        del messages, tools, tool_choice, kwargs
+        yield ChatInvokeCompletionChunk(delta="stream")
+
+
+@tool("Cron management", name="cronjob")
+async def _fake_cronjob_tool() -> str:
+    return "cron"
+
+
+@tool("Message delivery", name="message")
+async def _fake_message_tool() -> str:
+    return "message"
+
+
+@tool("Delegate", name="delegate")
+async def _fake_delegate_tool() -> str:
+    return "delegate"
+
+
+@tool("Parallel delegate", name="delegate_parallel")
+async def _fake_delegate_parallel_tool() -> str:
+    return "delegate_parallel"
+
+
+@tool("Allowed tool", name="allowed_tool")
+async def _fake_allowed_tool() -> str:
+    return "allowed"
 
 
 async def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.01) -> None:
@@ -140,7 +216,12 @@ async def test_worker_runner_bridges_remote_message_and_completes_via_sse(worksp
             self.offline_calls.append(worker_id)
             return True
 
-        async def complete(self, worker_id: str, final_content: str, source: str | None = None) -> bool:
+        async def complete(
+            self,
+            worker_id: str,
+            final_content: str,
+            source: str | None = None,
+        ) -> bool:
             self.completions.append(
                 {"worker_id": worker_id, "final_content": final_content, "source": source}
             )
@@ -213,7 +294,12 @@ async def test_worker_runner_keeps_streaming_while_previous_remote_request_is_pr
             self.offline_calls.append(worker_id)
             return True
 
-        async def complete(self, worker_id: str, final_content: str, source: str | None = None) -> bool:
+        async def complete(
+            self,
+            worker_id: str,
+            final_content: str,
+            source: str | None = None,
+        ) -> bool:
             self.completions.append(
                 {"worker_id": worker_id, "final_content": final_content, "source": source}
             )
@@ -513,3 +599,105 @@ def test_mock_gateway_register_stream_replaces_previous_connection():
 
     assert state.is_current_stream(worker_id="worker-1", version=first_version) is False
     assert state.is_current_stream(worker_id="worker-1", version=second_version) is True
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_builds_remote_cron_host_context(workspace_root: Path):
+    class FakeGatewayClient:
+        pass
+
+    scheduler = _RecordingCronScheduler()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+        cron_tick_interval_seconds=0.01,
+    )
+    runner.cron_scheduler = scheduler
+    runner._cron_next_tick_at = 0
+
+    await runner._maybe_tick_cron()
+
+    assert len(scheduler.contexts) == 1
+    context = scheduler.contexts[0]
+    assert context.source == "remote"
+    assert context.workspace_root == workspace_root
+    assert context.session_binding_id == resolve_session_binding_id("worker-1")
+    assert context.worker_id == "worker-1"
+    assert context.gateway_client is runner.gateway_client
+    assert context.default_delivery == "remote"
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_cron_tick_error_does_not_raise(workspace_root: Path):
+    class FakeGatewayClient:
+        pass
+
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+        cron_tick_interval_seconds=0.01,
+    )
+    runner.cron_scheduler = _FailingCronScheduler()
+    runner._cron_next_tick_at = 0
+
+    await runner._maybe_tick_cron()
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_fresh_cron_agent_reuses_main_agent_llm_and_query(
+    workspace_root: Path,
+):
+    class FakeGatewayClient:
+        pass
+
+    llm = _CapturingLLM()
+    main_agent = Agent(
+        llm=llm,
+        tools=[
+            _fake_cronjob_tool,
+            _fake_message_tool,
+            _fake_delegate_tool,
+            _fake_delegate_parallel_tool,
+            _fake_allowed_tool,
+        ],
+        system_prompt="main system",
+        max_iterations=37,
+        hooks=[],
+        use_streaming=False,
+    )
+    store = CronJobStore(base_dir=workspace_root / "cron")
+    job = store.create_job(
+        name="Fresh",
+        prompt="do scheduled work",
+        schedule_text="every 30m",
+        workspace_root=workspace_root,
+        session_binding_id="worker-1",
+        execution_mode="fresh_agent_background",
+    )
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+        agent=main_agent,
+    )
+
+    cron_agent = runner._build_cron_background_agent(main_agent, job)
+    result = await runner._run_cron_fresh_agent(job)
+
+    assert result == "cron final"
+    assert cron_agent.llm is main_agent.llm
+    assert cron_agent.system_prompt == "main system"
+    assert cron_agent.max_iterations == 37
+    assert cron_agent.runtime_role == "primary"
+    assert cron_agent.hooks == []
+    assert "message" in llm.tool_names
+    assert "allowed_tool" in llm.tool_names
+    assert "cronjob" not in llm.tool_names
+    assert "delegate" not in llm.tool_names
+    assert "delegate_parallel" not in llm.tool_names
+    assert "do scheduled work" in llm.last_user_content

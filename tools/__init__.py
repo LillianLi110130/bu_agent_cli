@@ -1,6 +1,7 @@
 """Tools for Claude Code CLI."""
 
 from tools.agent_tool import delegate, delegate_parallel
+from tools.cronjob import cronjob
 from tools.bash import bash
 from tools.browser_harness import browser_harness
 from tools.files import edit, read, write
@@ -46,6 +47,7 @@ ALL_TOOLS = [
     web_fetch,
     delegate,
     delegate_parallel,
+    cronjob,
     task_output,
     task_status,
     task_cancel,
@@ -81,6 +83,7 @@ __all__ = [
     "web_fetch",
     "delegate",
     "delegate_parallel",
+    "cronjob",
     "task_output",
     "task_status",
     "task_cancel",

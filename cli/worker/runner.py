@@ -11,7 +11,14 @@ from typing import Any
 
 import httpx
 
+from agent_core import Agent
+from agent_core.bootstrap.agent_factory import create_agent
 from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from config.model_config import ModelPreset, load_model_presets
+from cron.jobs import CronJobStore
+from cron.models import CronHostContext, CronJob
+from cron.scheduler import CronScheduler
+from tools.sandbox import get_current_agent
 
 logger = logging.getLogger("cli.worker.runner")
 
@@ -30,6 +37,8 @@ class WorkerRunner:
         stream_max_session_seconds: float = 20 * 60,
         result_poll_interval_seconds: float = 0.5,
         empty_poll_sleep_seconds: float = 0.1,
+        cron_tick_interval_seconds: float = 60.0,
+        agent: Agent | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.worker_no = worker_no or worker_id
@@ -40,14 +49,19 @@ class WorkerRunner:
         self.stream_max_session_seconds = stream_max_session_seconds
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
+        self.cron_tick_interval_seconds = cron_tick_interval_seconds
+        self._main_agent = agent
         resolved_root_dir = (
             Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         )
+        self.root_path = resolved_root_dir
         self.bridge_store = FileBridgeStore(
             root_dir=resolved_root_dir,
             session_binding_id=resolve_session_binding_id(self.worker_no),
         )
         self.bridge_store.initialize()
+        self.cron_scheduler = CronScheduler(store=CronJobStore())
+        self._cron_next_tick_at: float | None = None
         self._stop_event = asyncio.Event()
         self._completion_tasks: set[asyncio.Task[Any]] = set()
 
@@ -69,6 +83,7 @@ class WorkerRunner:
             self._stop_event.set()
             if self._completion_tasks:
                 await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
+            await self.cron_scheduler.wait_background_tasks()
             await self._call_gateway("offline", worker_id=self.worker_id, worker_no=self.worker_no)
 
     def _gateway_kwargs(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -89,6 +104,7 @@ class WorkerRunner:
     async def _run_poll_loop(self) -> None:
         """Consume remote messages via long polling."""
         while not self._stop_event.is_set():
+            await self._maybe_tick_cron()
             try:
                 messages = await self._call_gateway(
                     "poll",
@@ -97,7 +113,8 @@ class WorkerRunner:
                 )
             except httpx.ReadTimeout as exc:
                 logger.warning(
-                    f"Worker poll timed out for worker_id={self.worker_id}, continuing next poll: {exc}"
+                    "Worker poll timed out for "
+                    f"worker_id={self.worker_id}, continuing next poll: {exc}"
                 )
                 continue
             if not messages:
@@ -124,6 +141,7 @@ class WorkerRunner:
                         deadline=stream_session_deadline,
                     )
                     await self._drain_outbound_events()
+                    await self._maybe_tick_cron()
                     if self._stop_event.is_set():
                         break
                     if event.event != "message" or event.message is None:
@@ -294,6 +312,113 @@ class WorkerRunner:
         if normalized_source in {"im", "web"}:
             return normalized_source
         return "im"
+
+    async def _maybe_tick_cron(self) -> None:
+        """Run a cron scheduler tick when the worker host interval elapses."""
+        loop = asyncio.get_running_loop()
+        now = loop.time()
+        if self._cron_next_tick_at is None:
+            self._cron_next_tick_at = now + self.cron_tick_interval_seconds
+            return
+        if now < self._cron_next_tick_at:
+            return
+        self._cron_next_tick_at = now + self.cron_tick_interval_seconds
+        try:
+            await self.cron_scheduler.tick(host_context=self._build_cron_host_context())
+        except Exception as exc:
+            logger.exception(
+                f"Cron scheduler tick failed for worker_id={self.worker_id}: {exc}"
+            )
+
+    def _build_cron_host_context(self) -> CronHostContext:
+        return CronHostContext(
+            source="remote",
+            workspace_root=self.root_path,
+            session_binding_id=resolve_session_binding_id(self.worker_id),
+            worker_id=self.worker_id,
+            gateway_client=self.gateway_client,
+            default_delivery="remote",
+            fresh_agent_runner=self._run_cron_fresh_agent,
+        )
+
+    async def _run_cron_fresh_agent(self, job: CronJob) -> str:
+        """Execute one scheduled job in a clean worker Agent session."""
+        main_agent = self._resolve_main_agent()
+        cron_agent = self._build_cron_background_agent(main_agent, job)
+        prompt = self._build_cron_background_prompt(job)
+        return await cron_agent.query(prompt)
+
+    def _resolve_main_agent(self) -> Agent:
+        if self._main_agent is None:
+            self._main_agent, _ = create_agent(
+                model=self._resolve_main_agent_model(),
+                root_dir=self.root_path,
+            )
+        return self._main_agent
+
+    def _resolve_main_agent_model(self) -> str | None:
+        """Resolve the worker main agent model with a config-based fallback."""
+        if self.model is not None:
+            return self.model
+        return self._select_fallback_model(load_model_presets())
+
+    @staticmethod
+    def _select_fallback_model(presets: dict[str, ModelPreset]) -> str:
+        for keyword in ("Qwen3.6", "minimax"):
+            keyword_lower = keyword.lower()
+            for name, preset in presets.items():
+                preset_model = str(preset.get("model", ""))
+                if keyword_lower in name.lower() or keyword_lower in preset_model.lower():
+                    return name
+        return "small"
+
+    def _build_cron_background_agent(self, main_agent: Agent, job: CronJob) -> Agent:
+        dependency_overrides = dict(main_agent.dependency_overrides or {})
+        tools = self._cron_background_tools(main_agent, job)
+        cron_agent = Agent(
+            llm=main_agent.llm,
+            tools=tools,
+            system_prompt=main_agent.system_prompt,
+            max_iterations=main_agent.max_iterations,
+            tool_choice=main_agent.tool_choice,
+            compaction=main_agent.compaction,
+            dependency_overrides=dependency_overrides,
+            runtime_role="primary",
+            llm_session_role="cron",
+            hooks=[],
+            use_streaming=main_agent.use_streaming,
+        )
+        cron_agent.dependency_overrides[get_current_agent] = lambda: cron_agent
+        return cron_agent
+
+    @staticmethod
+    def _cron_background_tools(main_agent: Agent, job: CronJob) -> list[Any]:
+        # 禁止cron_agent使用 定时任务，subagent，agent-team，web相关工具
+        blocked_tools = {"cronjob", "delegate", "delegate_parallel"}
+        tools = [
+            tool
+            for tool in main_agent.tools
+            if tool.name not in blocked_tools
+            and not tool.name.startswith("team_")
+            and not tool.name.startswith("task_")
+            and tool.name != "web_fetch"
+        ]
+        if job.enabled_toolsets is None:
+            return tools
+        allowed_names = set(job.enabled_toolsets)
+        return [tool for tool in tools if tool.name in allowed_names]
+
+    @staticmethod
+    def _build_cron_background_prompt(job: CronJob) -> str:
+        return (
+            "You are running an unattended scheduled cron job.\n"
+            "Execute the prompt directly. Do not ask follow-up questions. "
+            "Do not send outbound messages; return the final result as your response.\n\n"
+            f"Job ID: {job.id}\n"
+            f"Job Name: {job.name}\n\n"
+            "Prompt:\n"
+            f"{job.prompt}"
+        )
 
     async def _drain_outbound_events(self) -> None:
         """Deliver queued outbound events through the gateway."""

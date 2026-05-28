@@ -531,6 +531,7 @@ async def _start_im_worker_process(
     *,
     args: argparse.Namespace,
     ctx: SandboxContext,
+    model: str | None = None,
 ) -> WorkerProcessHandle | None:
     """Start the background worker process when IM mode is enabled."""
     if not args.im_enable:
@@ -555,7 +556,7 @@ async def _start_im_worker_process(
         gateway_base_url=str(args.im_gateway_base_url),
         config_dir=Path(getattr(args, "config_dir", Path.cwd())).resolve(),
         root_dir=ctx.working_dir,
-        model=str(args.model) if args.model else None,
+        model=model or (str(args.model) if args.model else None),
     )
 
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
@@ -830,7 +831,12 @@ async def main():
     session_runtime = CLISessionRuntime.create_for_context(ctx)
     bridge_store = _build_bridge_store(args=args, ctx=ctx)
     ctx.bridge_store = bridge_store
-    worker_process = await _start_im_worker_process(args=args, ctx=ctx)
+    worker_model = getattr(agent.llm, "model", None)
+    worker_process = await _start_im_worker_process(
+        args=args,
+        ctx=ctx,
+        model=str(worker_model) if worker_model else None,
+    )
     cli = TGAgentCLI(
         agent=agent,
         context=ctx,

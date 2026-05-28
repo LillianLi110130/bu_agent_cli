@@ -183,6 +183,8 @@ class Agent:
     """Agent configuration with tool permissions and other metadata."""
     runtime_role: Literal["primary", "subagent", "skill_review", "team_member"] = "primary"
     """Execution role used by runtime hooks to distinguish primary and internal agents."""
+    llm_session_role: str | None = None
+    """Optional session role override for gateway observability metadata."""
     is_fork_child: bool = False
     """Whether this runtime instance is a forked child agent."""
     human_in_loop_config: HumanInLoopConfig = field(default_factory=HumanInLoopConfig, repr=False)
@@ -279,6 +281,18 @@ class Agent:
                 session_id=runtime.session_id,
             ),
         )
+
+    def _build_llm_metadata(self) -> dict[str, str]:
+        """Build opaque gateway trace metadata for one LLM invocation."""
+        runtime_role = str(getattr(self, "runtime_role", "primary") or "primary")
+        session_role = (
+            self.llm_session_role
+            or ("master" if runtime_role == "primary" else runtime_role)
+        )
+        return {
+            "runtime_role": runtime_role,
+            "session_role": session_role,
+        }
 
     async def get_usage(self) -> UsageSummary:
         """Get usage summary for the agent.
@@ -1372,6 +1386,7 @@ class Agent:
                             messages=prompt_messages,
                             tools=self.tool_definitions if self.tools else None,
                             tool_choice=self.tool_choice if self.tools else None,
+                            metadata=self._build_llm_metadata(),
                         )
                     )
                 else:
@@ -1380,6 +1395,7 @@ class Agent:
                             messages=prompt_messages,
                             tools=self.tool_definitions if self.tools else None,
                             tool_choice=self.tool_choice if self.tools else None,
+                            metadata=self._build_llm_metadata(),
                         )
                     )
 
@@ -1489,6 +1505,7 @@ class Agent:
                         messages=messages,
                         tools=tools,
                         tool_choice=tool_choice,
+                        metadata=self._build_llm_metadata(),
                     )
                 ):
                     emitted_any_chunks = True
@@ -1588,12 +1605,14 @@ Keep the summary brief but informative."""
                     messages=self._context.get_messages(),
                     tools=None,
                     tool_choice=None,
+                    metadata=self._build_llm_metadata(),
                 )
             else:
                 response = await self.llm.ainvoke(
                     messages=self._context.get_messages(),
                     tools=None,
                     tool_choice=None,
+                    metadata=self._build_llm_metadata(),
                 )
             summary = response.content or "Unable to generate summary."
         except Exception as e:
@@ -1970,6 +1989,7 @@ Keep the summary brief but informative."""
                     messages=prompt_messages,
                     tools=self.tool_definitions if self.tools else None,
                     tool_choice=self.tool_choice if self.tools else None,
+                    metadata=self._build_llm_metadata(),
                 )
 
                 async for chunk in stream_iter:

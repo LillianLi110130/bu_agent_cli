@@ -71,6 +71,7 @@ class AgentCallRunner:
             agent_config=config,
             hooks=list(parent_agent.hooks),
             runtime_role=runtime_role,
+            llm_session_role=runtime_role,
         )
         child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)
         self._inherit_runtime_context(parent_agent, child)
@@ -92,6 +93,7 @@ class AgentCallRunner:
             dependency_overrides=dict(parent_agent.dependency_overrides or {}),
             hooks=list(parent_agent.hooks),
             runtime_role="subagent",
+            llm_session_role="subagent",
             is_fork_child=True,
         )
         child.dependency_overrides = self._bind_current_agent(child.dependency_overrides, child)

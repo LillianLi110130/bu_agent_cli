@@ -105,6 +105,7 @@ from cli.image_input import (
     parse_image_command,
     parse_remote_image_message,
 )
+from cli.cron_handler import CronSlashHandler
 from cli.init_agent import build_init_agent, build_init_user_prompt, validate_init_output
 from cli.im_bridge import BridgeRequest, FileBridgeStore
 from cli.interactive_input import InteractivePrompter
@@ -2351,6 +2352,10 @@ class TGAgentCLI:
                 subagent_tasks=subagent_tasks,
             )
             return True
+
+        if command_name == "cron":
+            handler = CronSlashHandler(console=self._console)
+            return await handler.handle(args)
 
         if command_name == "task":
             if not args:

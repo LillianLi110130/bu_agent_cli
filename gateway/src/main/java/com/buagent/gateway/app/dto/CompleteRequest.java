@@ -25,7 +25,7 @@ public class CompleteRequest {
     private String finalStatus;
 
     @JsonProperty("error_code")
-    private String error_code;
+    private String errorCode;
 
     @JsonProperty("error_message")
     private String errorMessage;

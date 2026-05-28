@@ -63,7 +63,7 @@ async def message(
         return "Error: outbound message bridge is not configured."
 
     if action == "text":
-        normalized = text.strip()
+        normalized = (text or "").strip()
         if not normalized:
             return "Error: text is required when action='text'."
         bridge_store.enqueue_outbound_text(normalized)

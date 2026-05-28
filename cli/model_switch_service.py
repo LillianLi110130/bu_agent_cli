@@ -218,6 +218,10 @@ class ModelSwitchService:
             ],
             tools=None,
             tool_choice=None,
+            metadata={
+                "runtime_role": "image_summary",
+                "session_role": "skill_review",
+            },
         )
         return self._normalize_image_detail(response.content or "")
 
@@ -236,6 +240,10 @@ class ModelSwitchService:
             ],
             tools=None,
             tool_choice=None,
+            metadata={
+                "runtime_role": "image_summary",
+                "session_role": "skill_review",
+            },
         )
         return self._normalize_image_summary(response.content or "", max_chars)
 
