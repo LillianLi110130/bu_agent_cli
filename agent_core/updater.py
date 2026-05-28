@@ -254,7 +254,7 @@ def _print_white(message: str = "", *, stderr: bool = False) -> None:
 
 
 def _prompt_choice() -> str:
-    _print_styled([("请输入选项 [1/2]: ", "cyan")], end="")
+    _print_styled([("请输入选项 [1/2]: ", "white")], end="")
     return input().strip()
 
 
@@ -308,7 +308,7 @@ def check_for_update(*, force_message: bool = False) -> UpdateInfo | None:
 
 
 def _print_update_info(info: UpdateInfo) -> None:
-    _print_styled([("发现 Crab CLI 新版本", "bold cyan")])
+    _print_styled([("✦ ", "bold #c084fc"), ("发现 Crab CLI 新版本", "bold white")])
     _print_white()
     _print_styled([("当前版本: ", "white"), (info.current_version, "yellow")])
     _print_styled([("最新版本: ", "white"), (info.latest_version, "bold green")])
@@ -316,9 +316,9 @@ def _print_update_info(info: UpdateInfo) -> None:
         _print_styled([("发布时间: ", "white"), (info.published_at, "white")])
     if info.notes:
         _print_white()
-        _print_styled([("更新内容:", "bold cyan")])
+        _print_styled([("更新内容:", "bold white")])
         for note in info.notes:
-            _print_styled([("- ", "cyan"), (note, "white")])
+            _print_styled([("  - ", "white"), (note, "white")])
 
 
 def _download_file(url: str, destination: Path) -> None:
@@ -496,13 +496,13 @@ def prepare_update_before_launch(info: UpdateInfo) -> Path:
             shutil.rmtree(staging_root)
         staging_root.mkdir(parents=True, exist_ok=True)
 
-        _print_styled([("正在下载: ", "cyan"), (url, "white")])
+        _print_styled([("正在下载: ", "white"), (url, "white")])
         _download_file(url, archive_path)
         actual_sha = _sha256(archive_path).lower()
         if actual_sha != expected_sha:
             raise ValueError(f"sha256 mismatch: expected {expected_sha}, got {actual_sha}")
 
-        _print_styled([("正在解压: ", "cyan"), (str(archive_path), "white")])
+        _print_styled([("正在解压: ", "white"), (str(archive_path), "white")])
         _extract_archive(archive_path, staging_dir)
         bundle_root = _find_bundle_root(staging_dir)
         deploy_script = _deploy_script(bundle_root)
@@ -552,9 +552,10 @@ def check_before_launch() -> int:
         return 0
 
     _print_white()
-    _print_styled([("请选择:", "bold cyan")])
-    _print_styled([("1.", "bold green"), (" 立即更新", "white")])
-    _print_styled([("2.", "bold yellow"), (" 跳过本次，继续启动", "white")])
+    _print_styled([("请选择:", "bold white")])
+    _print_styled([("  1.", "bold green"), (" 立即更新", "white")])
+    _print_styled([("  2.", "bold yellow"), (" 跳过本次，继续启动", "white")])
+    _print_white()
     choice = _prompt_choice()
     if choice != "1":
         return 0
