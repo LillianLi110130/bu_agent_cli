@@ -69,7 +69,7 @@ async def message(
         bridge_store.enqueue_outbound_text(normalized)
         return f"Queued outbound text message: {normalized}"
 
-    normalized_path = file_path.strip()
+    normalized_path = (file_path or "").strip()
     if not normalized_path:
         return "Error: file_path is required when action='attachment'."
 

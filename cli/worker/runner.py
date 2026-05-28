@@ -13,7 +13,7 @@ import httpx
 
 from agent_core import Agent
 from agent_core.bootstrap.agent_factory import create_agent
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from config.model_config import ModelPreset, load_model_presets
 from cron.jobs import CronJobStore
 from cron.models import CronHostContext, CronJob
@@ -374,6 +374,7 @@ class WorkerRunner:
 
     def _build_cron_background_agent(self, main_agent: Agent, job: CronJob) -> Agent:
         dependency_overrides = dict(main_agent.dependency_overrides or {})
+        dependency_overrides[get_bridge_store] = lambda: self.bridge_store
         tools = self._cron_background_tools(main_agent, job)
         cron_agent = Agent(
             llm=main_agent.llm,
