@@ -5,7 +5,7 @@ This module provides a unified interface for chat models across different provid
 with first-class support for tool calling.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 # Core types - always imported
 from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition
@@ -36,13 +36,10 @@ from agent_core.llm.messages import (
 )
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeUsage
 
-# Chat models - direct import
-from agent_core.llm.gateway.chat import ChatGateway
-from agent_core.llm.openai.chat import ChatOpenAI
-
 # Type stubs for lazy imports
 if TYPE_CHECKING:
-    pass
+    from agent_core.llm.gateway.chat import ChatGateway
+    from agent_core.llm.openai.chat import ChatOpenAI
 
 
 __all__ = [
@@ -72,3 +69,24 @@ __all__ = [
     "ChatGateway",
     "ChatOpenAI",
 ]
+
+_CHAT_MODEL_EXPORTS = {"ChatGateway", "ChatOpenAI"}
+
+
+def __getattr__(name: str) -> Any:
+    if name not in _CHAT_MODEL_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    from agent_core.llm.gateway.chat import ChatGateway
+    from agent_core.llm.openai.chat import ChatOpenAI
+
+    exports = {
+        "ChatGateway": ChatGateway,
+        "ChatOpenAI": ChatOpenAI,
+    }
+    globals().update(exports)
+    return exports[name]
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

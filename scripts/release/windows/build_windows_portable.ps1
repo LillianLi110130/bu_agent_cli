@@ -1255,7 +1255,7 @@ if (-not $Update) {
 Register-CrabProtocol -ProtocolLauncherPath $ProtocolLauncher
 
 if (-not $SkipDesktopShortcut -and -not $Update) {
-    $desktopDir = Join-Path $UserProfileDir "Desktop"
+    $desktopDir = [Environment]::GetFolderPath("Desktop")
     if (Test-Path -LiteralPath $desktopDir) {
         $shortcutPath = Join-Path $desktopDir "Crab Portable.lnk"
         $shell = New-Object -ComObject WScript.Shell
