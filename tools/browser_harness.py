@@ -103,11 +103,11 @@ async def _run_browser_harness(*, script: str, cwd: str, timeout: int) -> _Brows
     if details:
         raise BrowserHarnessNotFoundError(
             "browser-harness is not installed in the active crab Python environment "
-            f"or the portable install venv. Details: {details}"
+            f"or available on PATH. Details: {details}"
         )
     raise BrowserHarnessNotFoundError(
         "browser-harness is not installed in the active crab Python environment "
-        "or the portable install venv"
+        "or available on PATH"
     )
 
 
@@ -150,21 +150,8 @@ def _browser_harness_commands() -> list[list[str]]:
             commands.append(command)
 
     add_python_command(sys.executable)
-    add_python_command(_portable_install_python())
     commands.append(["browser-harness"])
     return commands
-
-
-def _portable_install_python() -> str:
-    home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
-    if not home:
-        return ""
-
-    if os.name == "nt":
-        candidate = os.path.join(home, ".tg_agent", ".venv", "Scripts", "python.exe")
-    else:
-        candidate = os.path.join(home, ".tg_agent", ".venv", "bin", "python")
-    return candidate if os.path.exists(candidate) else ""
 
 
 def _is_missing_browser_harness_module(stderr: str) -> bool:

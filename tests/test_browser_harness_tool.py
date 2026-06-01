@@ -134,7 +134,7 @@ async def test_browser_harness_falls_back_when_current_python_lacks_package(
         "_browser_harness_commands",
         lambda: [
             ["current-python", "-m", "browser_harness.run"],
-            ["portable-python", "-m", "browser_harness.run"],
+            ["browser-harness"],
         ],
     )
     monkeypatch.setattr(browser_harness_module.subprocess, "Popen", FakeProcess)
@@ -151,7 +151,7 @@ async def test_browser_harness_falls_back_when_current_python_lacks_package(
     assert payload["stdout"] == "page ok"
     assert captured["args"] == [
         ["current-python", "-m", "browser_harness.run"],
-        ["portable-python", "-m", "browser_harness.run"],
+        ["browser-harness"],
     ]
 
 
@@ -174,3 +174,10 @@ def test_browser_harness_result_replaces_lone_surrogates() -> None:
     assert "\udcff" not in payload["stderr"]
     assert payload["stdout"].startswith("中文")
     assert payload["stderr"].startswith("错误")
+
+
+def test_browser_harness_commands_try_current_python_then_path() -> None:
+    assert browser_harness_module._browser_harness_commands() == [
+        [sys.executable, "-m", "browser_harness.run"],
+        ["browser-harness"],
+    ]
