@@ -12,7 +12,6 @@ from agent_core.llm.base import BaseChatModel, ToolChoice, ToolDefinition
 from agent_core.llm.exceptions import ModelProviderError
 from agent_core.llm.messages import BaseMessage, Function, ToolCall
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk, ChatInvokeUsage
-from cli.worker.auth import load_persisted_auth_result, persist_updated_authorization
 
 
 @dataclass
@@ -83,6 +82,7 @@ class ChatGateway(BaseChatModel):
             return default_authorization
 
         try:
+            from cli.worker.auth import load_persisted_auth_result
             persisted = load_persisted_auth_result(self.base_dir)
         except Exception:
             persisted = None
@@ -129,6 +129,7 @@ class ChatGateway(BaseChatModel):
             return False
 
         self._authorization = response_authorization
+        from cli.worker.auth import persist_updated_authorization
         persist_updated_authorization(
             base_dir=self.base_dir,
             authorization=response_authorization,
