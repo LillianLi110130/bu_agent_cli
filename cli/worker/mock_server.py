@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
+import random
 import sys
 import time
 from typing import Any
@@ -241,15 +242,38 @@ class MockGatewayState:
         self.notify_stream(route_worker_no)
         return message
 
-    def mark_online(self, *, worker_id: str) -> None:
-        self.online_workers[worker_id] = {
+    def mark_online(self, *, worker_id: str, worker_no: str | None = None) -> None:
+        route_worker_no = _resolve_worker_no(worker_id, worker_no)
+        self.online_workers[route_worker_no] = {
+            "worker_id": worker_id,
+            "worker_no": route_worker_no,
             "last_seen_at": time.monotonic(),
             "online": True,
         }
-        self.notify_stream(worker_id)
+        self.notify_stream(route_worker_no)
 
-    def mark_worker_online(self, *, worker_id: str) -> None:
-        self.mark_online(worker_id=worker_id)
+    def mark_worker_online(self, *, worker_id: str, worker_no: str | None = None) -> None:
+        self.mark_online(worker_id=worker_id, worker_no=worker_no)
+
+    def choose_online_worker_no(
+        self,
+        *,
+        worker_id: str,
+        worker_no: str | None = None,
+    ) -> str | None:
+        """Choose one online terminal for a user, preserving explicit debug routing."""
+        if worker_no:
+            route_worker_no = _resolve_worker_no(worker_id, worker_no)
+            return route_worker_no if self.is_online(route_worker_no) else None
+
+        candidates = [
+            route_worker_no
+            for route_worker_no, record in self.online_workers.items()
+            if record.get("worker_id") == worker_id and self.is_online(route_worker_no)
+        ]
+        if not candidates:
+            return None
+        return random.choice(candidates)
 
     def mark_seen(self, *, worker_id: str) -> None:
         record = self.online_workers.get(worker_id)
@@ -960,7 +984,7 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/api/worker/online", tags=["Worker"])
     async def online(request: WorkerRequest) -> dict[str, bool]:
-        state.mark_online(worker_id=request.route_worker_no)
+        state.mark_online(worker_id=request.worker_id, worker_no=request.route_worker_no)
         return {"ok": True}
 
     @app.post("/api/worker/offline", tags=["Worker"])
@@ -1014,15 +1038,18 @@ def create_mock_gateway_app(state: MockGatewayState | None = None) -> FastAPI:
 
     @app.post("/mock/messages", tags=["WorkerDebug"])
     async def enqueue(request: EnqueueRequest):
-        route_worker_no = _resolve_worker_no(request.worker_id, request.worker_no)
-        if not state.is_online(route_worker_no):
+        route_worker_no = state.choose_online_worker_no(
+            worker_id=request.worker_id,
+            worker_no=request.worker_no,
+        )
+        if route_worker_no is None:
             return JSONResponse(
                 status_code=409,
                 content={
                     "ok": False,
                     "error": "no_online_worker",
                     "worker_id": request.worker_id,
-                    "worker_no": route_worker_no,
+                    "worker_no": request.worker_no,
                 },
             )
         message = state.enqueue_message(

@@ -403,12 +403,10 @@ async def test_worker_runner_uses_local_request_id_for_remote_message(workspace_
         state.enqueue_message(worker_id="worker-1", content="remote cached", source="web")
 
         await _wait_until(lambda: store.pending_count() == 1)
-        pending_path = next(store.inbox_pending_dir.glob("*.json"))
-        payload = json.loads(pending_path.read_text(encoding="utf-8"))
-        request_id = str(payload["request_id"])
-        assert payload["source"] == "web"
         claimed = store.claim_next_pending()
         assert claimed is not None
+        request_id = claimed.request_id
+        assert claimed.source == "web"
         store.complete_request(claimed, final_content="cached done")
 
         await _wait_until(lambda: len(state.completions) == 1)
@@ -522,10 +520,50 @@ async def test_mock_gateway_assigns_message_to_worker_queue():
 
 
 @pytest.mark.asyncio
+async def test_mock_gateway_randomly_routes_user_message_to_one_online_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    state = MockGatewayState()
+    app = create_mock_gateway_app(state)
+    transport = httpx.ASGITransport(app=app)
+    monkeypatch.setattr("cli.worker.mock_server.random.choice", lambda candidates: candidates[-1])
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as http_client:
+        await http_client.post(
+            "/api/worker/online",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-a"},
+        )
+        await http_client.post(
+            "/api/worker/online",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-b"},
+        )
+        response = await http_client.post(
+            "/mock/messages",
+            json={
+                "worker_id": "user-1",
+                "content": "hello random terminal",
+            },
+        )
+        poll_a = await http_client.post(
+            "/api/worker/poll",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-a"},
+        )
+        poll_b = await http_client.post(
+            "/api/worker/poll",
+            json={"worker_id": "user-1", "worker_no": "worker-terminal-b"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["worker_no"] == "worker-terminal-b"
+    assert poll_a.json() == {"messages": []}
+    assert poll_b.json()["messages"][0]["content"] == "hello random terminal"
+
+
+@pytest.mark.asyncio
 async def test_mock_gateway_routes_messages_by_worker_no():
     state = MockGatewayState()
-    state.mark_online(worker_id="worker-terminal-a")
-    state.mark_online(worker_id="worker-terminal-b")
+    state.mark_online(worker_id="user-1", worker_no="worker-terminal-a")
+    state.mark_online(worker_id="user-1", worker_no="worker-terminal-b")
     app = create_mock_gateway_app(state)
     transport = httpx.ASGITransport(app=app)
 

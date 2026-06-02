@@ -13,7 +13,7 @@ import httpx
 
 from agent_core import Agent
 from agent_core.bootstrap.agent_factory import create_agent
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.im_bridge import SqliteBridgeStore, resolve_session_binding_id
 from config.model_config import ModelPreset, load_model_presets
 from cron.jobs import CronJobStore
 from cron.models import CronHostContext, CronJob
@@ -55,7 +55,7 @@ class WorkerRunner:
             Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         )
         self.root_path = resolved_root_dir
-        self.bridge_store = FileBridgeStore(
+        self.bridge_store = SqliteBridgeStore(
             root_dir=resolved_root_dir,
             session_binding_id=resolve_session_binding_id(self.worker_no),
         )
@@ -64,6 +64,7 @@ class WorkerRunner:
         self._cron_next_tick_at: float | None = None
         self._stop_event = asyncio.Event()
         self._completion_tasks: set[asyncio.Task[Any]] = set()
+        self._worker_touch_task: asyncio.Task[Any] | None = None
 
     def stop(self) -> None:
         """Request the worker loop to stop."""
@@ -73,6 +74,8 @@ class WorkerRunner:
         """Run the worker loop until explicitly stopped."""
         if not await self._call_gateway("online", worker_id=self.worker_id, worker_no=self.worker_no):
             raise RuntimeError(f"Failed to mark worker online for worker_id={self.worker_id}")
+        self.bridge_store.touch_worker(force=True)
+        self._worker_touch_task = asyncio.create_task(self._touch_worker_loop())
 
         try:
             if self.gateway_transport == "sse":
@@ -81,10 +84,26 @@ class WorkerRunner:
                 await self._run_poll_loop()
         finally:
             self._stop_event.set()
+            if self._worker_touch_task is not None:
+                await self._worker_touch_task
             if self._completion_tasks:
                 await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
             await self.cron_scheduler.wait_background_tasks()
             await self._call_gateway("offline", worker_id=self.worker_id, worker_no=self.worker_no)
+
+    async def _touch_worker_loop(self) -> None:
+        """Refresh local worker activity while an idle SSE connection is open."""
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=self.bridge_store.WORKER_TOUCH_INTERVAL_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    self.bridge_store.touch_worker(force=True)
+                except Exception:
+                    logger.exception("Failed to refresh local bridge worker activity")
 
     def _gateway_kwargs(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
         """Keep old test doubles working while passing worker_no to real clients."""
@@ -118,9 +137,11 @@ class WorkerRunner:
                 )
                 continue
             if not messages:
+                self.bridge_store.touch_worker()
                 await asyncio.sleep(self.empty_poll_sleep_seconds)
                 continue
 
+            self.bridge_store.touch_worker()
             for message in messages:
                 self._schedule_message_processing(message)
 
@@ -140,6 +161,7 @@ class WorkerRunner:
                         stream_iter=stream_iter,
                         deadline=stream_session_deadline,
                     )
+                    self.bridge_store.touch_worker()
                     await self._drain_outbound_events()
                     await self._maybe_tick_cron()
                     if self._stop_event.is_set():

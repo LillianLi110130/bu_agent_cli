@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,6 +9,7 @@ import pytest
 from cron.jobs import CronJobStore
 from cron.models import CronHostContext
 from cron.scheduler import CronScheduler
+from cli.im_bridge import SqliteBridgeStore
 
 
 def _host_context(workspace_root: Path) -> CronHostContext:
@@ -137,15 +137,14 @@ async def test_enqueue_current_session_writes_cron_source_meta(tmp_path: Path) -
         now=now,
     )
 
-    pending_dir = tmp_path / ".tg_agent" / "im_bridge" / "worker-1" / "inbox" / "pending"
-    pending_files = list(pending_dir.glob("*.json"))
-    assert len(pending_files) == 1
-    payload = json.loads(pending_files[0].read_text(encoding="utf-8"))
-    assert payload["content"] == "Run remote queue"
-    assert payload["remote_response_required"] is True
-    assert payload["request_id"].startswith("req_run_")
-    assert payload["source_meta"]["kind"] == "cron"
-    assert payload["source_meta"]["job_id"] == job.id
+    bridge_store = SqliteBridgeStore(tmp_path, session_binding_id="worker-1")
+    request = bridge_store.claim_next_pending()
+    assert request is not None
+    assert request.content == "Run remote queue"
+    assert request.remote_response_required is True
+    assert request.request_id.startswith("req_run_")
+    assert request.source_meta["kind"] == "cron"
+    assert request.source_meta["job_id"] == job.id
 
 
 @pytest.mark.asyncio

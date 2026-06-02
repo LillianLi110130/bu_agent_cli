@@ -107,7 +107,7 @@ from cli.image_input import (
 )
 from cli.cron_handler import CronSlashHandler
 from cli.init_agent import build_init_agent, build_init_user_prompt, validate_init_output
-from cli.im_bridge import BridgeRequest, FileBridgeStore
+from cli.im_bridge import BridgeRequest, SqliteBridgeStore
 from cli.interactive_input import InteractivePrompter
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
@@ -506,7 +506,7 @@ class TGAgentCLI:
         plugin_manager: PluginManager | None = None,
         system_prompt_builder: Callable[[], str] | None = None,
         skill_runtime_service: SkillRuntimeService | None = None,
-        bridge_store: FileBridgeStore | None = None,
+        bridge_store: SqliteBridgeStore | None = None,
         session_runtime: CLISessionRuntime | None = None,
         im_worker_id: str | None = None,
         im_worker_no: str | None = None,
