@@ -176,10 +176,10 @@ public class WebConsoleService implements DisposableBean {
                 );
             } else {
                 logger.warn(
-                        "Web SSE stream closed with error. workerId={}, sessionId={}",
+                        "Web SSE stream closed with error. workerId={}, sessionId={}, reason={}",
                         sessionKey,
                         streamSession.getSessionId(),
-                        throwable
+                        throwable == null ? "unknown" : throwable.getMessage()
                 );
             }
             removeStreamSession(sessionKey, streamSession);

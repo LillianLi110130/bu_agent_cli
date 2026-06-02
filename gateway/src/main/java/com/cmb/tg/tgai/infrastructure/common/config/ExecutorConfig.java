@@ -48,5 +48,6 @@ public class ExecutorConfig implements WebMvcConfigurer {
         // StreamingResponseBody is executed by MVC async support; without this Spring falls back
         // to SimpleAsyncTaskExecutor, which creates unbounded threads and is unsafe under load.
         configurer.setTaskExecutor(mvcAsyncTaskExecutor());
+        configurer.setDefaultTimeout(600000);
     }
 }

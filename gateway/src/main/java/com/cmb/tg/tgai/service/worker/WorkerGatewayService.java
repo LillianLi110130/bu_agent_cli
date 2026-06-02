@@ -288,10 +288,10 @@ public class WorkerGatewayService implements DisposableBean {
                     );
                 } else {
                     logger.warn(
-                        "SSE stream closed with error. workerId={}, sessionId={}",
+                        "SSE stream closed with error. workerId={}, sessionId={}, reason={}",
                         workerId,
                         streamSession.getSessionId(),
-                        throwable
+                        throwable == null ? "unknown" : throwable.getMessage()
                     );
                 }
                 removeStreamSession(workerId, streamSession);
