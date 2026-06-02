@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.ChatEmployeeMapper">
+
+    <insert id="batchUpsert">
+        insert into wecom_employee
+        (
+            employee_id,
+            id,
+            gender,
+            mobile,
+            main_dept,
+            telephone,
+            avatar,
+            follow,
+            open_userid,
+            crm_user_id,
+            main_dept_nm,
+            crt_tm,
+            qr_code_url,
+            thumb_avatar,
+            name,
+            bbk_yst_int_id,
+            alias,
+            position,
+            email,
+            status,
+            create_time,
+            update_time
+        )
+        values
+        <foreach collection="list" item="item" separator=",">
+            (
+                #{item.employeeId},
+                #{item.id},
+                #{item.gender},
+                #{item.mobile},
+                #{item.mainDept},
+                #{item.telephone},
+                #{item.avatar},
+                #{item.follow},
+                #{item.openUserid},
+                #{item.crmUserId},
+                #{item.mainDeptNm},
+                #{item.crtTm},
+                #{item.qrCodeUrl},
+                #{item.thumbAvatar},
+                #{item.name},
+                #{item.bbkYstIntId},
+                #{item.alias},
+                #{item.position},
+                #{item.email},
+                #{item.status},
+                now(),
+                now()
+            )
+        </foreach>
+        on duplicate key update
+            id = values(id),
+            gender = values(gender),
+            mobile = values(mobile),
+            main_dept = values(main_dept),
+            telephone = values(telephone),
+            avatar = values(avatar),
+            follow = values(follow),
+            open_userid = values(open_userid),
+            crm_user_id = values(crm_user_id),
+            main_dept_nm = values(main_dept_nm),
+            crt_tm = values(crt_tm),
+            qr_code_url = values(qr_code_url),
+            thumb_avatar = values(thumb_avatar),
+            name = values(name),
+            bbk_yst_int_id = values(bbk_yst_int_id),
+            alias = values(alias),
+            position = values(position),
+            email = values(email),
+            status = values(status),
+            update_time = now()
+    </insert>
+
+    <select id="selectAllEmployeeIds" resultType="java.lang.String">
+        select employee_id
+        from wecom_employee
+        where employee_id is not null
+          and employee_id != ''
+    </select>
+
+</mapper>

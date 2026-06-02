@@ -1,0 +1,20 @@
+CREATE TABLE `wecom_message` (
+  `msg_id` varchar(128) NOT NULL COMMENT '消息ID，对应msgId',
+  `room_id` varchar(128) DEFAULT NULL COMMENT '群编号，对应roomId',
+  `from_user` varchar(128) NOT NULL COMMENT '发送方ID，对应fromUser',
+  `wthr_from_cm` char(1) NOT NULL COMMENT '发送方是否内部员工，对应wthrFromCm，Y/N',
+  `to_list` text COMMENT '接收方列表，对应toList',
+  `single_receiver_id` varchar(128) DEFAULT NULL COMMENT '单聊接收人ID',
+  `msg_body` text COMMENT '消息内容，对应msgBody',
+  `msg_type` varchar(64) DEFAULT NULL COMMENT '消息类型，对应msgType',
+  `acs_key` varchar(256) DEFAULT NULL COMMENT '文件标识，对应acsKey',
+  `msg_time_long` bigint DEFAULT NULL COMMENT '消息时间戳，对应msgTimeLong',
+  `msg_time` datetime DEFAULT NULL COMMENT '消息时间，由msgTimeLong转换得到',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `update_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`msg_id`),
+  KEY `idx_room_id` (`room_id`),
+  KEY `idx_from_user` (`from_user`),
+  KEY `idx_single_receiver_id` (`single_receiver_id`),
+  KEY `idx_msg_time` (`msg_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='企微消息表';
