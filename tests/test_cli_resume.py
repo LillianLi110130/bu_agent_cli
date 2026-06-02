@@ -64,17 +64,30 @@ class FakeLLM:
             yield ChatInvokeCompletionChunk()
 
 
+class FakeGatewayLLM(FakeLLM):
+    session_id: str | None = None
+    session_no: str | None = None
+    worker_no: str | None = None
+    user_id: str | None = None
+    session_callback = None
+
+    @property
+    def provider(self) -> str:
+        return "gateway"
+
+
 def _make_cli(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     workspace: Path | None = None,
+    llm=None,
 ) -> TGAgentCLI:
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
-    agent = Agent(llm=FakeLLM(), tools=[], system_prompt="system prompt")
+    agent = Agent(llm=llm or FakeLLM(), tools=[], system_prompt="system prompt")
     context = SandboxContext.create(workspace or (tmp_path / "workspace"))
     cli = TGAgentCLI(
         agent=agent,
@@ -180,6 +193,28 @@ def test_session_store_round_trips_tool_aware_messages(tmp_path: Path) -> None:
     assert isinstance(loaded_tool, ToolMessage)
     assert loaded_tool.tool_call_id == "call-1"
     assert loaded_tool.tool_name == "read"
+
+
+def test_session_store_renames_session_and_references(tmp_path: Path) -> None:
+    db_path = tmp_path / "sessions.db"
+    workspace = tmp_path / "workspace"
+    store = CLISessionStore(db_path)
+    messages = [
+        UserMessage(content="old user"),
+        AssistantMessage(content="old assistant"),
+    ]
+    _seed_session(store, session_id="local_old", workspace=workspace, messages=messages)
+
+    renamed = store.rename_session("local_old", "server-session-1")
+
+    assert renamed is True
+    assert store.get_session("local_old") is None
+    assert store.get_session("server-session-1") is not None
+    assert store.count_messages("server-session-1") == 2
+    snapshot = store.load_context_snapshot("server-session-1")
+    assert snapshot is not None
+    assert snapshot.session_id == "server-session-1"
+    assert [message.content for message in snapshot.messages] == ["old user", "old assistant"]
 
 
 @pytest.mark.asyncio
@@ -384,6 +419,7 @@ async def test_new_command_does_not_create_empty_session_row(
     _root, workspace_key = workspace_identity(workspace)
     assert handled is True
     assert cli._conversation_session_id != old_conversation_id
+    assert str(cli._conversation_session_id).startswith("local_")
     assert cli._conversation_session_created is False
     assert cli._ctx.session_id == sandbox_session_id
     assert cli._agent.messages == []
@@ -397,7 +433,7 @@ async def test_new_command_clears_session_until_gateway_session_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workspace = tmp_path / "workspace"
-    cli = _make_cli(tmp_path, monkeypatch, workspace=workspace)
+    cli = _make_cli(tmp_path, monkeypatch, workspace=workspace, llm=FakeGatewayLLM())
     cli._im_worker_id = "user@example.com"
     monkeypatch.setattr(app_module.os, "system", lambda command: 0)
 
@@ -409,6 +445,27 @@ async def test_new_command_clears_session_until_gateway_session_event(
     cli._handle_gateway_session_event("server-session-1", is_new=True)
 
     assert cli._conversation_session_id == "server-session-1"
+
+
+def test_gateway_cli_renames_persisted_local_session_on_session_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    cli = _make_cli(tmp_path, monkeypatch, workspace=workspace, llm=FakeGatewayLLM())
+    assert cli._session_store is not None
+    cli._conversation_session_id = "local_existing"
+    cli._conversation_session_created = False
+    cli._agent._context.add_message(UserMessage(content="local user"))
+    cli._agent._context.add_message(AssistantMessage(content="local assistant"))
+    cli._persist_current_session_state()
+
+    cli._handle_gateway_session_event("server-session-1", is_new=True)
+
+    assert cli._conversation_session_id == "server-session-1"
+    assert cli._session_store.get_session("local_existing") is None
+    assert cli._session_store.get_session("server-session-1") is not None
+    assert cli._session_store.count_messages("server-session-1") == 2
 
 
 @pytest.mark.asyncio
@@ -432,7 +489,7 @@ async def test_new_command_keeps_previous_persisted_session_resumable(
         exclude_session_id=cli._conversation_session_id,
     )
     assert [session.id for session in sessions] == [old_conversation_id]
-    assert cli._conversation_session_id is None
+    assert str(cli._conversation_session_id).startswith("local_")
     assert cli._agent.messages == []
 
 
@@ -451,14 +508,13 @@ async def test_new_command_followup_messages_write_to_new_session_only(
     monkeypatch.setattr(app_module.os, "system", lambda command: 0)
 
     await cli._handle_slash_command("/new")
-    cli._handle_gateway_session_event("server-session-new", is_new=True)
     new_conversation_id = cli._conversation_session_id
     cli._agent._context.add_message(UserMessage(content="new user"))
     cli._agent._context.add_message(AssistantMessage(content="new assistant"))
     cli._persist_current_session_state()
 
     assert new_conversation_id != old_conversation_id
-    assert new_conversation_id == "server-session-new"
+    assert str(new_conversation_id).startswith("local_")
     assert cli._session_store.count_messages(old_conversation_id) == 2
     assert cli._session_store.count_messages(new_conversation_id) == 2
     old_rounds = cli._session_store.recent_user_assistant_rounds(

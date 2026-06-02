@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,7 +51,7 @@ async def test_browser_harness_passes_script_to_stdin_without_shell(
     payload = json.loads(result)
     assert payload["ok"] is True
     assert payload["stdout"] == "page ok"
-    assert captured["args"] == ["browser-harness"]
+    assert captured["args"] == [sys.executable, "-m", "browser_harness.run"]
     assert captured["input"] == script
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
@@ -92,6 +93,8 @@ async def test_browser_harness_reports_missing_command(
     monkeypatch: pytest.MonkeyPatch,
     workspace_root: Path,
 ) -> None:
+    monkeypatch.setattr(browser_harness_module, "_browser_harness_commands", lambda: [["missing"]])
+
     def fake_popen(*args: object, **kwargs: object) -> object:
         raise FileNotFoundError
 
@@ -104,7 +107,52 @@ async def test_browser_harness_reports_missing_command(
         _overrides={get_sandbox_context: lambda: ctx},
     )
 
-    assert result == "Error: browser-harness not found on PATH"
+    assert result.startswith("Error: browser-harness is not installed")
+
+
+@pytest.mark.asyncio
+async def test_browser_harness_falls_back_when_current_python_lacks_package(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_root: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        def __init__(self, args: list[str], **kwargs: object) -> None:
+            self.args = args
+            captured.setdefault("args", []).append(args)
+            self.returncode = 1 if args[0] == "current-python" else 0
+
+        def communicate(self, input: str | None = None) -> tuple[str, str]:
+            if self.args[0] == "current-python":
+                return "", "No module named browser_harness"
+            captured["input"] = input
+            return "page ok", ""
+
+    monkeypatch.setattr(
+        browser_harness_module,
+        "_browser_harness_commands",
+        lambda: [
+            ["current-python", "-m", "browser_harness.run"],
+            ["browser-harness"],
+        ],
+    )
+    monkeypatch.setattr(browser_harness_module.subprocess, "Popen", FakeProcess)
+    ctx = SandboxContext.create(workspace_root)
+
+    result = await browser_harness.execute(
+        script="print(page_info())\n",
+        timeout=5,
+        _overrides={get_sandbox_context: lambda: ctx},
+    )
+
+    payload = json.loads(result)
+    assert payload["ok"] is True
+    assert payload["stdout"] == "page ok"
+    assert captured["args"] == [
+        ["current-python", "-m", "browser_harness.run"],
+        ["browser-harness"],
+    ]
 
 
 def test_browser_harness_is_registered() -> None:
@@ -126,3 +174,10 @@ def test_browser_harness_result_replaces_lone_surrogates() -> None:
     assert "\udcff" not in payload["stderr"]
     assert payload["stdout"].startswith("中文")
     assert payload["stderr"].startswith("错误")
+
+
+def test_browser_harness_commands_try_current_python_then_path() -> None:
+    assert browser_harness_module._browser_harness_commands() == [
+        [sys.executable, "-m", "browser_harness.run"],
+        ["browser-harness"],
+    ]

@@ -709,12 +709,19 @@ def create_app(
         async def event_generator():
             try:
                 gateway: LLMGatewayService = app.state.llm_gateway
-                requested_session_id = (request.session_id or "").strip()
+                requested_session_id = (request.session_no or request.session_id or "").strip()
                 session_id = requested_session_id or str(uuid4())
                 yield _serialize_event(
-                    LLMSessionEvent(session_id=session_id, is_new=not requested_session_id)
+                    LLMSessionEvent(
+                        type="session_created" if not requested_session_id else "session",
+                        session_no=session_id,
+                        session_id=session_id,
+                        is_new=not requested_session_id,
+                    )
                 )
-                effective_request = request.model_copy(update={"session_id": session_id})
+                effective_request = request.model_copy(
+                    update={"session_id": session_id, "session_no": session_id}
+                )
                 async for event in gateway.query_stream(effective_request):
                     yield _serialize_event(event)
                 yield ": done\n\n"

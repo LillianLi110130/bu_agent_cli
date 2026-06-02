@@ -1,4 +1,4 @@
-"""Data models for the file-backed IM bridge."""
+"""Data models for the local IM bridge."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def normalize_bridge_source(
 
 @dataclass
 class BridgeRequest:
-    """One queued request in the local file bridge."""
+    """One queued request in the local bridge."""
 
     version: int
     request_id: str
@@ -77,7 +77,7 @@ class BridgeRequest:
     started_at: datetime | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the request for JSON storage."""
+        """Serialize the request for JSON-compatible storage."""
         payload = asdict(self)
         payload["enqueue_time"] = to_iso8601(self.enqueue_time)
         payload["started_at"] = to_iso8601(self.started_at) if self.started_at else None

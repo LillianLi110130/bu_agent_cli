@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from cli.im_bridge.store import FileBridgeStore
+from cli.im_bridge.store import SqliteBridgeStore
 
 
-def get_bridge_store() -> FileBridgeStore:
-    """Return the active file bridge store from runtime dependency overrides."""
+def get_bridge_store() -> SqliteBridgeStore:
+    """Return the active bridge store from runtime dependency overrides."""
     raise RuntimeError("get_bridge_store() must be overridden via dependency_overrides")

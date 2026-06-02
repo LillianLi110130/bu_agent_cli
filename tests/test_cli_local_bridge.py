@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import io
 import shutil
+import sqlite3
 import sys
 import uuid
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -882,7 +883,9 @@ async def test_local_exit_is_not_enqueued_in_bridge_mode(workspace_root, monkeyp
     await cli.run()
 
     assert store.pending_count() == 0
-    assert not list(store.results_completed_dir.glob("*.json"))
+    with closing(sqlite3.connect(store.db_path)) as conn:
+        request_count = conn.execute("SELECT COUNT(*) FROM bridge_requests").fetchone()[0]
+    assert request_count == 0
 
 
 @pytest.mark.asyncio

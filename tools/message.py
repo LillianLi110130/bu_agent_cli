@@ -8,7 +8,7 @@ from typing import Annotated, Literal
 
 from agent_core.tools import Depends, tool
 from cli.im_bridge import get_bridge_store
-from cli.im_bridge.store import FileBridgeStore
+from cli.im_bridge.store import SqliteBridgeStore
 from tools.sandbox import SandboxContext, get_sandbox_context
 
 _MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024
@@ -54,7 +54,7 @@ _MIME_OVERRIDES = {
 async def message(
     action: Literal["text", "attachment"],
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
-    bridge_store: Annotated[FileBridgeStore | None, Depends(get_bridge_store)],
+    bridge_store: Annotated[SqliteBridgeStore | None, Depends(get_bridge_store)],
     text: str = "",
     file_path: str = "",
 ) -> str:

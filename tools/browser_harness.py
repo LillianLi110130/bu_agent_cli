@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
 from typing import Annotated
 
 from agent_core.tools import Depends, tool
@@ -34,8 +35,8 @@ async def browser_harness(
             cwd=str(ctx.working_dir),
             timeout=timeout,
         )
-    except FileNotFoundError:
-        return "Error: browser-harness not found on PATH"
+    except BrowserHarnessNotFoundError as exc:
+        return f"Error: {exc}"
     except asyncio.TimeoutError:
         return _format_browser_harness_result(
             returncode=None,
@@ -58,6 +59,10 @@ class _BrowserHarnessResult:
         self.stderr = stderr
 
 
+class BrowserHarnessNotFoundError(RuntimeError):
+    pass
+
+
 async def _run_browser_harness(*, script: str, cwd: str, timeout: int) -> _BrowserHarnessResult:
     popen_kwargs: dict[str, object] = {
         "stdin": subprocess.PIPE,
@@ -75,7 +80,45 @@ async def _run_browser_harness(*, script: str, cwd: str, timeout: int) -> _Brows
     else:
         popen_kwargs["start_new_session"] = True
 
-    process = subprocess.Popen(["browser-harness"], **popen_kwargs)
+    missing_errors: list[str] = []
+    for command in _browser_harness_commands():
+        try:
+            result = await _communicate_with_browser_harness(
+                command=command,
+                popen_kwargs=popen_kwargs,
+                script=script,
+                timeout=timeout,
+            )
+        except FileNotFoundError as exc:
+            missing_errors.append(str(exc))
+            continue
+
+        if _is_missing_browser_harness_module(result.stderr):
+            missing_errors.append(result.stderr)
+            continue
+
+        return result
+
+    details = "; ".join(error.strip() for error in missing_errors if error.strip())
+    if details:
+        raise BrowserHarnessNotFoundError(
+            "browser-harness is not installed in the active crab Python environment "
+            f"or available on PATH. Details: {details}"
+        )
+    raise BrowserHarnessNotFoundError(
+        "browser-harness is not installed in the active crab Python environment "
+        "or available on PATH"
+    )
+
+
+async def _communicate_with_browser_harness(
+    *,
+    command: list[str],
+    popen_kwargs: dict[str, object],
+    script: str,
+    timeout: int,
+) -> _BrowserHarnessResult:
+    process = subprocess.Popen(command, **popen_kwargs)
     communicate_task = asyncio.create_task(asyncio.to_thread(process.communicate, script))
 
     try:
@@ -93,6 +136,29 @@ async def _run_browser_harness(*, script: str, cwd: str, timeout: int) -> _Brows
         returncode=process.returncode or 0,
         stdout=stdout or "",
         stderr=stderr or "",
+    )
+
+
+def _browser_harness_commands() -> list[list[str]]:
+    commands: list[list[str]] = []
+
+    def add_python_command(python_exe: str) -> None:
+        if not python_exe:
+            return
+        command = [python_exe, "-m", "browser_harness.run"]
+        if command not in commands:
+            commands.append(command)
+
+    add_python_command(sys.executable)
+    commands.append(["browser-harness"])
+    return commands
+
+
+def _is_missing_browser_harness_module(stderr: str) -> bool:
+    normalized = stderr.replace("_", "-").lower()
+    return (
+        "no module named browser-harness" in normalized
+        or "no module named browser-harness.run" in normalized
     )
 
 

@@ -188,7 +188,15 @@ assert_build_backend_available() {
     fi
 }
 
-assert_python_311_plus() {
+assert_python_310_plus() {
+    local python_exe="$1"
+    if ! "${python_exe}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+        echo "tg-agent-cli requires Python >= 3.10. Current Python is: $("${python_exe}" -c 'import sys; print(sys.version)')" >&2
+        exit 1
+    fi
+}
+
+assert_browser_harness_python_311_plus() {
     local python_exe="$1"
     if ! "${python_exe}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
         echo "browser-harness requires Python >= 3.11. Current Python is: $("${python_exe}" -c 'import sys; print(sys.version)')" >&2
@@ -548,7 +556,11 @@ if ((update_mode)); then
     done
     echo "[portable] backup created: ${backup_dir}"
 fi
-rm -rf "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"
+if ((update_mode)); then
+    rm -rf "${venv_dir}" "${legacy_runtime_dir}"
+else
+    rm -rf "${venv_dir}" "${bin_dir}" "${legacy_runtime_dir}"
+fi
 mkdir -p "${bin_dir}"
 
 venv_python="${venv_dir}/bin/python"
@@ -565,6 +577,7 @@ if __name__ == "__main__":
     cli_main()
 PY
 
+if ! ((update_mode)) || [[ ! -f "${command_shim}" ]]; then
 cat > "${command_shim}" <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -600,8 +613,10 @@ fi
 
 exec "${venv_python}" -u "${entry_shim}" "$@"
 SH
-chmod +x "${command_shim}"
+    chmod +x "${command_shim}"
+fi
 
+if ! ((update_mode)) || [[ ! -f "${browser_harness_shim}" ]]; then
 cat > "${browser_harness_shim}" <<'SH'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -618,7 +633,8 @@ fi
 
 exec "${venv_python}" -m browser_harness.run "$@"
 SH
-chmod +x "${browser_harness_shim}"
+    chmod +x "${browser_harness_shim}"
+fi
 
 cat > "${protocol_launcher}" <<'SH'
 #!/usr/bin/env bash
@@ -930,8 +946,10 @@ if ! runtime_probe="$(find_runtime_python "${resolved_runtime_source}")"; then
 fi
 
 assert_build_backend_available "${resolved_python_exe}"
-assert_python_311_plus "${resolved_python_exe}"
-assert_python_311_plus "${runtime_probe}"
+assert_python_310_plus "${resolved_python_exe}"
+assert_python_310_plus "${runtime_probe}"
+assert_browser_harness_python_311_plus "${resolved_python_exe}"
+assert_browser_harness_python_311_plus "${runtime_probe}"
 
 bundle_name="tg-agent-linux-x64-v${version}-portable"
 bundle_dir="${resolved_output_root}/${bundle_name}"

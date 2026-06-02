@@ -360,7 +360,10 @@ def _safe_extract_tar(archive: Path, target_dir: Path) -> None:
             member_path = (target_dir / member.name).resolve()
             if root not in (member_path, *member_path.parents):
                 raise ValueError(f"unsafe archive path: {member.name}")
-        tar.extractall(target_dir)
+        if sys.version_info >= (3, 12):
+            tar.extractall(target_dir, filter="data")
+        else:
+            tar.extractall(target_dir)
 
 
 def _extract_archive(archive: Path, target_dir: Path) -> None:
