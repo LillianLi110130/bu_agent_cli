@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.ChatGroupMapper">
+
+    <insert id="batchUpsert">
+        insert into wecom_group
+        (
+            room_id,
+            group_name,
+            group_owner_id,
+            group_owner_yst_user_id,
+            group_owner_name,
+            create_time,
+            update_time
+        )
+        values
+        <foreach collection="list" item="item" separator=",">
+            (
+                #{item.roomId},
+                #{item.groupName},
+                #{item.groupOwnerId},
+                #{item.groupOwnerYstUserId},
+                #{item.groupOwnerName},
+                now(),
+                now()
+            )
+        </foreach>
+        on duplicate key update
+            group_name = values(group_name),
+            group_owner_id = values(group_owner_id),
+            group_owner_yst_user_id = values(group_owner_yst_user_id),
+            group_owner_name = values(group_owner_name),
+            update_time = now()
+    </insert>
+
+    <select id="searchGroups" resultType="com.cmb.tg.tgai.infrastructure.wecom.po.ChatGroupSearchPO">
+        select
+            g.room_id as roomId,
+            g.group_name as groupName,
+            g.group_owner_name as groupOwnerName,
+            m.last_msg_time as lastMsgTime
+        from wecom_group g
+        left join (
+            select room_id, max(msg_time) as last_msg_time
+            from wecom_message
+            where room_id is not null
+              and room_id != ''
+            group by room_id
+        ) m on g.room_id = m.room_id
+        where 1 = 1
+        <if test="groupName != null and groupName != ''">
+            and g.group_name like concat('%', #{groupName}, '%')
+        </if>
+        <if test="groupOwnerName != null and groupOwnerName != ''">
+            and g.group_owner_name like concat('%', #{groupOwnerName}, '%')
+        </if>
+        order by m.last_msg_time desc, g.room_id desc
+    </select>
+
+    <select id="selectByRoomId" resultType="com.cmb.tg.tgai.infrastructure.wecom.po.ChatGroupPO">
+        select
+            room_id as roomId,
+            group_name as groupName,
+            group_owner_id as groupOwnerId,
+            group_owner_yst_user_id as groupOwnerYstUserId,
+            group_owner_name as groupOwnerName
+        from wecom_group
+        where room_id = #{roomId}
+    </select>
+
+</mapper>

@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.ChatMessageMapper">
+
+    <insert id="batchInsertIgnore">
+        insert ignore into wecom_message
+        (
+            msg_id,
+            room_id,
+            from_user,
+            wthr_from_cm,
+            to_list,
+            single_receiver_id,
+            msg_body,
+            msg_type,
+            acs_key,
+            msg_time_long,
+            msg_time,
+            create_time,
+            update_time
+        )
+        values
+        <foreach collection="list" item="item" separator=",">
+            (
+                #{item.msgId},
+                #{item.roomId},
+                #{item.fromUser},
+                #{item.wthrFromCm},
+                #{item.toList},
+                #{item.singleReceiverId},
+                #{item.msgBody},
+                #{item.msgType},
+                #{item.acsKey},
+                #{item.msgTimeLong},
+                #{item.msgTime},
+                now(),
+                now()
+            )
+        </foreach>
+    </insert>
+
+    <select id="selectActiveRoomIds" resultType="java.lang.String">
+        select distinct room_id
+        from wecom_message
+        where room_id is not null
+          and room_id != ''
+          and msg_time &gt;= #{activeFromTime}
+    </select>
+
+    <select id="selectSingleCustomerFromUserIds" resultType="java.lang.String">
+        select distinct from_user
+        from wecom_message
+        where (room_id is null or room_id = '')
+          and wthr_from_cm = 'N'
+          and msg_time &gt;= #{activeFromTime}
+    </select>
+
+    <select id="selectSingleEmployeeFromUserIds" resultType="java.lang.String">
+        select distinct from_user
+        from wecom_message
+        where (room_id is null or room_id = '')
+          and wthr_from_cm = 'Y'
+          and msg_time &gt;= #{activeFromTime}
+    </select>
+
+    <select id="selectSingleReceiverIds" resultType="java.lang.String">
+        select distinct single_receiver_id
+        from wecom_message
+        where (room_id is null or room_id = '')
+          and single_receiver_id is not null
+          and single_receiver_id != ''
+          and msg_time &gt;= #{activeFromTime}
+    </select>
+
+    <select id="selectReplayMessages" resultType="com.cmb.tg.tgai.infrastructure.wecom.po.ChatConversationMessagePO">
+        select
+            m.msg_id as msgId,
+            m.msg_type as msgType,
+            m.msg_time as msgTime,
+            m.from_user as fromUser,
+            case
+                when m.wthr_from_cm = 'Y' then e.name
+                else c.cust_name
+            end as fromUserName,
+            case
+                when m.wthr_from_cm = 'Y' then 'EMPLOYEE'
+                else 'CUSTOMER'
+            end as fromUserType,
+            m.msg_body as msgBody
+        from wecom_message m
+        left join wecom_employee e on m.from_user = e.employee_id and m.wthr_from_cm = 'Y'
+        left join wecom_customer c on m.from_user = c.cust_id and m.wthr_from_cm = 'N'
+        where m.room_id = #{roomId}
+          and m.msg_time &gt;= #{startTime}
+          and m.msg_time &lt;= #{endTime}
+        order by m.msg_time asc, m.msg_id asc
+    </select>
+
+</mapper>
