@@ -15,7 +15,7 @@ import threading
 import time
 import hashlib
 import uuid
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from html import escape as html_escape
@@ -468,15 +468,6 @@ class _HistoryConsole:
         self._record_print(args, dict(kwargs))
         self._primary.print(*args, **kwargs)
 
-    @contextmanager
-    def use_primary(self, primary: Console):
-        previous = self._primary
-        self._primary = primary
-        try:
-            yield
-        finally:
-            self._primary = previous
-
     def __getattr__(self, name: str):
         return getattr(self._primary, name)
 
@@ -533,8 +524,6 @@ class TGAgentCLI:
         self._is_replaying_output_history = False
         self._output_history_limit = 1000
         self._output_history_hidden_count = 0
-        self._terminal_stdout = sys.stdout
-        self._direct_terminal_console = Console(file=self._terminal_stdout)
         self._console = _HistoryConsole(Console(), self._record_console_print)
         self._agent = agent
         self._ctx = context
@@ -1835,11 +1824,8 @@ class TGAgentCLI:
     def _panel_width(self) -> int:
         return self._console.width
 
-    def _clear_terminal_screen(self, *, direct_terminal_output: bool = False) -> None:
-        if direct_terminal_output and os.name == "nt":
-            os.system("cls")
-            return
-        if not direct_terminal_output and sys.stdout.isatty():
+    def _clear_terminal_screen(self) -> None:
+        if sys.stdout.isatty():
             sys.stdout.write("\033[H\033[2J\033[3J")
             sys.stdout.flush()
         self._console.clear()
@@ -1884,32 +1870,21 @@ class TGAgentCLI:
         self._output_history_hidden_count += hidden_now
         self._output_history = pinned_entries + self._output_history[trim_end:]
 
-    def _repaint_output_history(
-        self,
-        *,
-        preserve_activity: bool = False,
-        direct_terminal_output: bool = False,
-    ) -> None:
+    def _repaint_output_history(self, *, preserve_activity: bool = False) -> None:
         if not self._output_history or self._terminal_approval_prompt is not None:
             return
         if not preserve_activity:
             self._stop_loading(self._loading)
             self._loading = None
-        direct_output_context = (
-            self._console.use_primary(self._direct_terminal_console)
-            if direct_terminal_output
-            else nullcontext()
-        )
-        with direct_output_context:
-            self._clear_terminal_screen(direct_terminal_output=direct_terminal_output)
-            self._is_replaying_output_history = True
-            try:
-                for entry in self._output_history:
-                    self._render_output_entry(entry)
-                    if entry.kind == "welcome" and self._output_history_hidden_count:
-                        self._render_output_history_hidden_notice()
-            finally:
-                self._is_replaying_output_history = False
+        self._clear_terminal_screen()
+        self._is_replaying_output_history = True
+        try:
+            for entry in self._output_history:
+                self._render_output_entry(entry)
+                if entry.kind == "welcome" and self._output_history_hidden_count:
+                    self._render_output_history_hidden_notice()
+        finally:
+            self._is_replaying_output_history = False
         self._invalidate_terminal_ui()
 
     def _render_output_history_hidden_notice(self) -> None:

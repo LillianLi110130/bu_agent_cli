@@ -318,10 +318,7 @@ class TGAgentTUI:
         try:
             if self._is_legacy_windows_console():
                 self._erase_prompt_renderer()
-                self._cli._repaint_output_history(
-                    preserve_activity=True,
-                    direct_terminal_output=True,
-                )
+            self._cli._repaint_output_history(preserve_activity=True)
             self._invalidate_prompt()
         finally:
             self._resize_repaint_in_progress = False
@@ -334,11 +331,7 @@ class TGAgentTUI:
 
     @staticmethod
     def _is_legacy_windows_console() -> bool:
-        return (
-            os.name == "nt"
-            and not os.environ.get("WT_SESSION")
-            and os.environ.get("TERM_PROGRAM", "").lower() != "vscode"
-        )
+        return os.name == "nt" and not os.environ.get("WT_SESSION")
 
     def _erase_prompt_renderer(self) -> None:
         app = getattr(self._session, "app", None)
