@@ -37,6 +37,8 @@ class SqliteBridgeStore:
     DEFAULT_PROCESSING_TIMEOUT_SECONDS = 24 * 60 * 60
     WORKER_TOUCH_INTERVAL_SECONDS = 60.0
     LEASE_RECOVERY_INTERVAL_SECONDS = 60.0
+    DEFAULT_WORKER_LOG_RETENTION_SECONDS = 7 * 24 * 60 * 60
+    DEFAULT_MAX_WORKER_LOG_DIRS_PER_CLEANUP = 100
 
     def __init__(
         self,
@@ -44,19 +46,23 @@ class SqliteBridgeStore:
         session_binding_id: str = "local-cli",
         *,
         processing_timeout_seconds: float = DEFAULT_PROCESSING_TIMEOUT_SECONDS,
+        worker_log_retention_seconds: float = DEFAULT_WORKER_LOG_RETENTION_SECONDS,
+        max_worker_log_dirs_per_cleanup: int = DEFAULT_MAX_WORKER_LOG_DIRS_PER_CLEANUP,
     ) -> None:
         resolved_root = Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         self.workspace_root = resolved_root
         self.session_binding_id = session_binding_id
         self.worker_no = session_binding_id
         self.processing_timeout_seconds = processing_timeout_seconds
+        self.worker_log_retention_seconds = worker_log_retention_seconds
+        self.max_worker_log_dirs_per_cleanup = max_worker_log_dirs_per_cleanup
         self.bridge_dir = self.workspace_root / ".tg_agent" / "im_bridge"
         self.db_path = self.bridge_dir / "bridge.sqlite3"
         self.migration_path = self.bridge_dir / "migration.json"
         self.legacy_cleanup_lock_dir = self.bridge_dir / "legacy-cleanup.lock"
-        self.logs_dir = (
-            self.workspace_root / ".tg_agent" / "logs" / "workers" / self.session_binding_id
-        )
+        self.worker_logs_root = self.workspace_root / ".tg_agent" / "logs" / "workers"
+        self.logs_dir = self.worker_logs_root / self.session_binding_id
+        self.worker_logs_cleanup_lock_dir = self.worker_logs_root / ".cleanup.lock"
         self._initialize_lock = threading.Lock()
         self._initialized = False
         self._last_worker_touch_monotonic: float | None = None
@@ -71,6 +77,7 @@ class SqliteBridgeStore:
                 return
             self.bridge_dir.mkdir(parents=True, exist_ok=True)
             self.logs_dir.mkdir(parents=True, exist_ok=True)
+            self._cleanup_old_worker_log_dirs()
             self._cleanup_legacy_worker_dirs()
             with self._connection() as conn:
                 conn.execute("PRAGMA journal_mode = WAL")
@@ -649,6 +656,50 @@ class SqliteBridgeStore:
                 self.legacy_cleanup_lock_dir.rmdir()
             except OSError:
                 logger.warning("Failed to remove bridge cleanup lock: %s", self.legacy_cleanup_lock_dir)
+
+    def _cleanup_old_worker_log_dirs(self) -> None:
+        if self.max_worker_log_dirs_per_cleanup <= 0:
+            return
+        try:
+            self.worker_logs_cleanup_lock_dir.mkdir(exist_ok=False)
+        except FileExistsError:
+            return
+
+        try:
+            logs_root = self.worker_logs_root.resolve()
+            cutoff = time.time() - self.worker_log_retention_seconds
+            candidates: list[tuple[float, Path]] = []
+            for path in self.worker_logs_root.iterdir():
+                if not path.is_dir() or path == self.worker_logs_cleanup_lock_dir:
+                    continue
+                if path.name == self.session_binding_id or not path.name.startswith("worker-"):
+                    continue
+                try:
+                    modified_at = path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if modified_at < cutoff:
+                    candidates.append((modified_at, path))
+
+            for _modified_at, path in sorted(candidates)[: self.max_worker_log_dirs_per_cleanup]:
+                resolved_path = path.resolve()
+                if resolved_path.parent != logs_root:
+                    logger.warning("Skipping unsafe worker log cleanup target: %s", path)
+                    continue
+                try:
+                    shutil.rmtree(resolved_path)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    logger.warning("Failed to remove stale worker log directory: %s", path)
+        finally:
+            try:
+                self.worker_logs_cleanup_lock_dir.rmdir()
+            except OSError:
+                logger.warning(
+                    "Failed to remove worker log cleanup lock: %s",
+                    self.worker_logs_cleanup_lock_dir,
+                )
 
     def _write_migration_marker(self) -> None:
         payload = {
