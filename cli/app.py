@@ -3884,6 +3884,8 @@ class TGAgentCLI:
         if release_notes and release_notes.published_at:
             version_label = f" v{current_version}  {release_notes.published_at} "
         version_header.append(version_label, style="bold #ffeb82 on #332313")
+        version_header.append("  安装与使用文档：", style="#e5e7eb")
+        version_header.append("https://example.com", style="bold #ffeb82")
 
         version_content: list[Any] = [version_header]
         if release_notes and release_notes.notes:
