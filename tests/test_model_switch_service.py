@@ -7,6 +7,7 @@ import pytest
 
 from agent_core.agent import Agent
 from agent_core.agent.service import ModelSwitchPreflightResult
+from agent_core.llm.gateway.chat import ChatGateway
 from agent_core.llm.messages import (
     BaseMessage,
     ContentPartImageParam,
@@ -185,6 +186,70 @@ async def test_ensure_model_for_turn_auto_switches_to_vision_and_back():
     assert auto_state.auto_from_preset is None
     assert any("自动切换到视觉预设：vision" in message for message in console.messages)
     assert any("自动切回文本预设：text" in message for message in console.messages)
+
+
+@pytest.mark.asyncio
+async def test_gateway_auto_switch_preserves_request_attribution():
+    session_events: list[tuple[str, bool]] = []
+    llm = ChatGateway(
+        model="text-gateway",
+        api_key="Bearer token",
+        base_url="https://gateway.example.com",
+        worker_no="worker-terminal-1",
+        session_id="session-local-1",
+        session_no="session-local-1",
+        user_id="user-1",
+        session_callback=lambda session_id, is_new: session_events.append(
+            (session_id, is_new)
+        ),
+    )
+    agent = Agent(llm=llm, tools=[])
+    service = ModelSwitchService(
+        agent=agent,
+        model_presets={
+            "text": {
+                "provider": "gateway",
+                "model": "text-gateway",
+                "base_url": "https://gateway.example.com",
+                "vision": False,
+            },
+            "vision": {
+                "provider": "gateway",
+                "model": "vision-gateway",
+                "base_url": "https://gateway.example.com",
+                "vision": True,
+            },
+        },
+        default_model_preset="text",
+        auto_vision_preset="vision",
+        image_summary_preset="vision",
+    )
+
+    async def fake_preflight(model: str) -> ModelSwitchPreflightResult:
+        return ModelSwitchPreflightResult(
+            ok=True,
+            target_model=model,
+            estimated_tokens=10,
+            threshold=100,
+            context_limit=1000,
+            threshold_utilization=0.1,
+        )
+
+    agent.preflight_model_switch = fake_preflight  # type: ignore[method-assign]
+
+    switched = await service.ensure_model_for_turn(
+        has_image=True,
+        auto_state=ModelAutoState(sticky_preset="text"),
+    )
+
+    assert switched is True
+    assert isinstance(agent.llm, ChatGateway)
+    payload = agent.llm._build_payload([UserMessage(content="hi")], None, None)
+    assert payload["model"] == "vision-gateway"
+    assert payload["worker_no"] == "worker-terminal-1"
+    assert payload["session_no"] == "session-local-1"
+    assert payload["user_id"] == "user-1"
+    assert agent.llm.session_callback is llm.session_callback
 
 
 @pytest.mark.asyncio
