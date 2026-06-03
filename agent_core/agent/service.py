@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from agent_core.agent.compaction import CompactionConfig
-from agent_core.agent.context import ContextManager
+from agent_core.agent.context import ContextManager, MICROCOMPACTED_TOOL_RESULT_HEADER
 from agent_core.agent.context_store import ArtifactStore, CheckpointStore, WorkingStateStore
 from agent_core.agent.hitl import HumanInLoopConfig, HumanInLoopHandler
 from agent_core.agent.config import AgentConfig
@@ -955,6 +955,7 @@ class Agent:
             content=raw_result,
             is_error=is_error,
             ephemeral=is_ephemeral,
+            context_policy=normalized_policy,
         )
         if self._should_bypass_artifact_persistence(tool=tool, execution_args=execution_args):
             return raw_message
@@ -971,6 +972,12 @@ class Agent:
             normalized_policy=normalized_policy,
             max_inline_chars=tool.context_config.max_inline_chars,
             summary_text=artifact_summary,
+        )
+        raw_message = raw_message.model_copy(
+            update={
+                "context_artifact_path": artifact_path,
+                "context_summary": artifact_summary,
+            }
         )
 
         if not isinstance(raw_result, str):
@@ -1228,6 +1235,137 @@ class Agent:
             max_inline_chars=max_inline_chars,
         )
 
+    @staticmethod
+    def _extract_prefixed_line(text: str, prefix: str) -> str | None:
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(prefix):
+                continue
+            return stripped[len(prefix) :].strip() or None
+        return None
+
+    @staticmethod
+    def _first_signal_line(text: str, *, max_chars: int = 180) -> str:
+        for raw_line in text.splitlines():
+            line = " ".join(raw_line.split())
+            if line:
+                return line[:max_chars].rstrip()
+        return "(empty)"
+
+    def _microcompact_bash_tool_message(
+        self,
+        message: ToolMessage,
+        artifact_path: str,
+    ) -> str:
+        text = message.text
+        payload = self._parse_json_tool_output(text)
+        if payload is not None:
+            command = str(payload.get("command", "") or "(unknown command)")
+            cwd = str(payload.get("cwd", "") or "(unknown cwd)")
+            returncode = payload.get("returncode")
+            exit_text = str(returncode if returncode is not None else "timeout")
+            timed_out = bool(payload.get("timed_out", False))
+            stdout = str(payload.get("stdout", "") or "")
+            stderr = str(payload.get("stderr", "") or "")
+            summary = (
+                f"{command} in {cwd} exited {exit_text}"
+                f"{' (timed out)' if timed_out else ''}; "
+                f"stdout={len(stdout)} chars, stderr={len(stderr)} chars."
+            )
+        else:
+            command = self._extract_prefixed_line(text, "Bash command:") or "(unknown command)"
+            cwd = self._extract_prefixed_line(text, "Cwd:") or "(unknown cwd)"
+            exit_code = self._extract_prefixed_line(text, "Exit code:") or "(unknown exit)"
+            status = self._extract_prefixed_line(text, "Status:")
+            summary = f"{command} in {cwd} exited {exit_code}."
+            if status:
+                summary = f"{summary} Status: {status}."
+        return "\n".join(
+            [
+                MICROCOMPACTED_TOOL_RESULT_HEADER,
+                "Tool: bash",
+                f"Call ID: {message.tool_call_id}",
+                f"Summary: {summary}",
+                f"Artifact: {artifact_path}",
+            ]
+        )
+
+    def _microcompact_read_tool_message(
+        self,
+        message: ToolMessage,
+        artifact_path: str,
+    ) -> str:
+        text = message.text
+        header = self._extract_prefixed_line(text, "Read result:")
+        body_lines = self._extract_prefixed_line(text, "Body lines:")
+        if header is None:
+            first_line = self._first_signal_line(text, max_chars=220)
+            header = first_line if first_line != "(empty)" else "(unknown read result)"
+        summary = header
+        if body_lines:
+            summary = f"{summary}; body_lines={body_lines}."
+        return "\n".join(
+            [
+                MICROCOMPACTED_TOOL_RESULT_HEADER,
+                "Tool: read",
+                f"Call ID: {message.tool_call_id}",
+                f"Summary: {summary}",
+                f"Artifact: {artifact_path}",
+            ]
+        )
+
+    def _microcompact_excel_tool_message(
+        self,
+        message: ToolMessage,
+        artifact_path: str,
+    ) -> str:
+        text = message.text
+        payload = self._parse_json_tool_output(text)
+        if payload is not None:
+            workbook = str(payload.get("resolved_path", "") or "(unknown workbook)")
+            sheet = str(payload.get("selected_sheet", "") or "(unknown sheet)")
+            matches = payload.get("matches", [])
+            summary = f"{workbook}; sheet={sheet}; matches={len(matches)}."
+        else:
+            workbook = self._extract_prefixed_line(text, "Excel workbook:")
+            sheet = self._extract_prefixed_line(text, "Selected sheet:")
+            parts = [part for part in (workbook, f"sheet={sheet}" if sheet else None) if part]
+            summary = "; ".join(parts) or self._first_signal_line(text, max_chars=220)
+        return "\n".join(
+            [
+                MICROCOMPACTED_TOOL_RESULT_HEADER,
+                "Tool: read_excel",
+                f"Call ID: {message.tool_call_id}",
+                f"Summary: {summary}",
+                f"Artifact: {artifact_path}",
+            ]
+        )
+
+    def _microcompact_generic_tool_message(
+        self,
+        message: ToolMessage,
+        artifact_path: str,
+    ) -> str:
+        preview = self._first_signal_line(message.text, max_chars=220)
+        return "\n".join(
+            [
+                MICROCOMPACTED_TOOL_RESULT_HEADER,
+                f"Tool: {message.tool_name}",
+                f"Call ID: {message.tool_call_id}",
+                f"Summary: {message.tool_name} produced {len(message.text)} chars. {preview}",
+                f"Artifact: {artifact_path}",
+            ]
+        )
+
+    def _microcompact_tool_message(self, message: ToolMessage, artifact_path: str) -> str:
+        if message.tool_name == "bash":
+            return self._microcompact_bash_tool_message(message, artifact_path)
+        if message.tool_name == "read":
+            return self._microcompact_read_tool_message(message, artifact_path)
+        if message.tool_name == "read_excel":
+            return self._microcompact_excel_tool_message(message, artifact_path)
+        return self._microcompact_generic_tool_message(message, artifact_path)
+
     async def _execute_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         """Execute a single tool call and return the result as a ToolMessage."""
         tool_name = tool_call.function.name
@@ -1376,6 +1514,7 @@ class Agent:
                 raise asyncio.CancelledError("LLM invocation cancelled by user")
 
             try:
+                self._context.snip_redundant_runtime_context()
                 prompt_messages = self._context.get_messages()
 
                 # 根据配置选择使用流式调用或同步调用
@@ -1648,6 +1787,10 @@ Keep the summary brief but informative."""
 
     async def _maintain_context_from_budget(self, *, trigger: str | None = None) -> None:
         """Run sliding-window cleanup and compaction from the shared budget engine."""
+        self._context.snip_redundant_runtime_context()
+        self._context.microcompact_tool_messages(
+            summarize_tool_message=self._microcompact_tool_message,
+        )
         assessment = await self._context.maintain_budget(self.llm, trigger=trigger)
         if assessment.trigger == "post_compaction":
             self._inject_active_todos_after_compaction()
@@ -1965,7 +2108,7 @@ Keep the summary brief but informative."""
             self._context.add_message(SystemMessage(content=self.system_prompt, cache=True))
 
         # Add the user message
-        self._context.add_message(UserMessage(content=message))
+        self._context.add_message(UserMessage(content=message), new_user_round=True)
 
         iterations = 0
         incomplete_todos_prompted = False
@@ -1975,6 +2118,7 @@ Keep the summary brief but informative."""
 
             # Destroy ephemeral messages
             self._destroy_ephemeral_messages()
+            self._context.snip_redundant_runtime_context()
 
             # ========== 流式调用（工具调用参数已完整累积） ==========
             accumulated_tool_calls: list[ToolCall] = []
