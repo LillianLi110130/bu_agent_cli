@@ -12,8 +12,8 @@ public class SendTextRequest {
     @JsonProperty("session_key")
     private String sessionKey;
 
-    @JsonProperty("worker_id")
-    private String workerId;
+    @JsonProperty("worker_no")
+    private String workerNo;
 
     private String text;
 }

@@ -53,13 +53,13 @@ public class WorkerController {
     public SimpleOkResponse complete(@RequestBody CompleteRequest request) {
         logger.info(
             "Received complete request. workerId={}, finalStatus={}, errorCode={}, finalContentLength={}",
-            request.getWorkerId(),
+            request.getWorkerNo(),
             request.getFinalStatus(),
             request.getErrorCode(),
             request.getFinalContent() == null ? 0 : request.getFinalContent().length()
         );
         SimpleOkResponse response = workerGatewayService.complete(request);
-        logger.info("Completed complete request. workerId={}, ok={}", request.getWorkerId(), response.getOk());
+        logger.info("Completed complete request. workerId={}, ok={}", request.getWorkerNo(), response.getOk());
         return response;
     }
 
@@ -67,7 +67,7 @@ public class WorkerController {
     public SimpleOkResponse progress(@RequestBody ProgressRequest request) {
         logger.info(
             "Received progress request. workerId={}, contentLength={}",
-            request.getWorkerId(),
+            request.getWorkerNo(),
             request.getContent() == null ? 0 : request.getContent().length()
         );
         return workerGatewayService.progress(request);

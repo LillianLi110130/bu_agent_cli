@@ -26,11 +26,11 @@ public class MockController {
     public SimpleOkResponse messages(@RequestBody MessageRequest request) {
         logger.info(
             "Received mock message request. workerId={}, contentLength={}",
-            request.getWorkerId(),
+            request.getWorkerNo(),
             request.getContent() == null ? 0 : request.getContent().length()
         );
         SimpleOkResponse response = workerGatewayService.acceptMockMessage(request);
-        logger.info("Completed mock message request. workerId={}, ok={}", request.getWorkerId(), response.getOk());
+        logger.info("Completed mock message request. workerId={}, ok={}", request.getWorkerNo(), response.getOk());
         return response;
     }
 }

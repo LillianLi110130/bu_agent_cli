@@ -12,8 +12,8 @@ public class CompleteRequest {
     @JsonProperty("session_key")
     private String sessionKey;
 
-    @JsonProperty("worker_id")
-    private String workerId;
+    @JsonProperty("worker_no")
+    private String workerNo;
 
     @JsonProperty("delivery_id")
     private String deliveryId;

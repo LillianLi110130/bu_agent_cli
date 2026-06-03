@@ -74,27 +74,27 @@ public class WorkerGatewayService implements DisposableBean {
     }
 
     public SimpleOkResponse online(WorkerRequest request) {
-        upsertWorkerStatus(buildWorkerIdByUserNoPrefix("userNo", request.getWorkerId()), STATUS_ONLINE);
-        logger.info("Worker marked online. workerId={}", request.getWorkerId());
+        upsertWorkerStatus(buildWorkerIdByUserNoPrefix("userNo", request.getWorkerNo()), STATUS_ONLINE);
+        logger.info("Worker marked online. workerId={}", request.getWorkerNo());
         return new SimpleOkResponse(true);
     }
 
     public SimpleOkResponse offline(WorkerRequest request) {
-        upsertWorkerStatus(buildWorkerIdByUserNoPrefix("userNo", request.getWorkerId()), STATUS_OFFLINE);
-        StreamSession streamSession = streamSessions.get(request.getWorkerId());
-        if (removeStreamSession(request.getWorkerId(), streamSession)) {
+        upsertWorkerStatus(buildWorkerIdByUserNoPrefix("userNo", request.getWorkerNo()), STATUS_OFFLINE);
+        StreamSession streamSession = streamSessions.get(request.getWorkerNo());
+        if (removeStreamSession(request.getWorkerNo(), streamSession)) {
             // Offline is an application-level close signal. Complete the emitter here instead
             // of relying on the next heartbeat to discover a dead client socket.
             streamSession.complete();
         }
-        logger.info("Worker marked offline. workerId={}", request.getWorkerId());
+        logger.info("Worker marked offline. workerId={}", request.getWorkerNo());
         return new SimpleOkResponse(true);
     }
 
     public SimpleOkResponse acceptMockMessage(MessageRequest request) {
-        validateWorkerIsOnline(request.getWorkerId());
+        validateWorkerIsOnline("userNo" + request.getWorkerNo());
         InboundMessageEntity inboundMessageEntity = new InboundMessageEntity();
-        inboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        inboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerNo()));
         inboundMessageEntity.setSource(SOURCE_IM);
         inboundMessageEntity.setContent(request.getContent());
         inboundMessageEntity.setStatus(STATUS_RECEIVED);
@@ -102,11 +102,11 @@ public class WorkerGatewayService implements DisposableBean {
         inboundMessageMapper.insert(inboundMessageEntity);
         logger.info(
             "Accepted inbound mock message. workerId={}, messageId={}, contentLength={}",
-            request.getWorkerId(),
+            request.getWorkerNo(),
             inboundMessageEntity.getId(),
             request.getContent() == null ? 0 : request.getContent().length()
         );
-        dispatchPendingMessages(request.getWorkerId(), false);
+        dispatchPendingMessages(request.getWorkerNo(), false);
         return new SimpleOkResponse(true);
     }
 
@@ -166,7 +166,7 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SimpleOkResponse complete(CompleteRequest request) {
         if ("web".equalsIgnoreCase(request.getSource())) {
-            String sessionKey = buildSessionKey(request.getWorkerId());
+            String sessionKey = buildSessionKey(request.getWorkerNo());
             OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
             outboundMessageEntity.setSessionKey(sessionKey);
             if ("failed".equalsIgnoreCase(request.getFinalStatus())) {
@@ -185,7 +185,7 @@ public class WorkerGatewayService implements DisposableBean {
         }
 
         OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerNo()));
         outboundMessageEntity.setContent(request.getFinalContent());
         outboundMessageEntity.setStatus("SENT");
         outboundMessageEntity.setCreatedAt(LocalDateTime.now());
@@ -193,7 +193,7 @@ public class WorkerGatewayService implements DisposableBean {
         logger.info(
             "Accepted outbound completion. workerId={}, outboundMessageId={}, finalStatus={}, "
                 + "errorCode={}, finalContentLength={}",
-            request.getWorkerId(),
+            request.getWorkerNo(),
             outboundMessageEntity.getId(),
             request.getFinalStatus(),
             request.getErrorCode(),
@@ -204,7 +204,7 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SimpleOkResponse progress(ProgressRequest request) {
         if ("web".equalsIgnoreCase(request.getSource())) {
-            String sessionKey = buildSessionKey(request.getWorkerId());
+            String sessionKey = buildSessionKey(request.getWorkerNo());
             OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
             outboundMessageEntity.setSessionKey(sessionKey);
             outboundMessageEntity.setContent(request.getContent());
@@ -216,14 +216,14 @@ public class WorkerGatewayService implements DisposableBean {
         }
 
         OutboundMessageEntity outboundMessageEntity = new OutboundMessageEntity();
-        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerId()));
+        outboundMessageEntity.setSessionKey(buildSessionKey(request.getWorkerNo()));
         outboundMessageEntity.setContent(request.getContent());
         outboundMessageEntity.setStatus("SENT");
         outboundMessageEntity.setCreatedAt(LocalDateTime.now());
         outboundMessageMapper.insert(outboundMessageEntity);
         logger.info(
             "Accepted outbound progress. workerId={}, outboundMessageId={}, finalContentLength={}",
-            request.getWorkerId(),
+            request.getWorkerNo(),
             outboundMessageEntity.getId(),
             request.getContent() == null ? 0 : request.getContent().length()
         );
@@ -306,7 +306,7 @@ public class WorkerGatewayService implements DisposableBean {
         if (currentSession != streamSession) {
             return;
         }
-        if (!isWorkerOnline(workerId)) {
+        if (!isWorkerOnline("userNo" + workerId)) {
             logger.info("Closing local SSE stream because worker is offline in database. workerId={}", workerId);
             removeStreamSession(workerId, streamSession);
             streamSession.complete();

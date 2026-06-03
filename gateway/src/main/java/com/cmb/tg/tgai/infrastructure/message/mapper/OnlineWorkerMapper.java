@@ -8,6 +8,8 @@ import org.apache.ibatis.annotations.Param;
 public interface OnlineWorkerMapper {
     OnlineWorkerEntity findByWorkerId(@Param("workerId") String workerId);
 
+    OnlineWorkerEntity findByWorkerIdPrefix(@Param("workerIdPrefix") String workerIdPrefix);
+
     int insert(OnlineWorkerEntity entity);
 
     int updateStatus(@Param("workerId") String workerId, @Param("status") String status);

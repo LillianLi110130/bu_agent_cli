@@ -15,6 +15,16 @@
         WHERE worker_id = #{workerId}
     </select>
 
+    <select id="findByWorkerIdPrefix" resultMap="OnlineWorkerResultMap">
+        SELECT worker_id, status, create_time, update_time
+        FROM online_worker
+        WHERE worker_id like concat(#{workerIdPrefix}, '%')
+        and status = 'online'
+        order by update_time desc
+        limit 1
+    </select>
+
+
     <insert id="insert" parameterType="com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorkerEntity">
         INSERT INTO online_worker (
             worker_id,
