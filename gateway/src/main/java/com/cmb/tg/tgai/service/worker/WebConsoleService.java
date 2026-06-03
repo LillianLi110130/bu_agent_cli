@@ -56,24 +56,31 @@ public class WebConsoleService implements DisposableBean {
     @Value("${gateway.stream-emitter-timeout-ms:0}")
     private long streamEmitterTimeoutMillis;
 
+    private String buildWorkerIdByUserNoPrefix(String userNo, String rawWorkerId){
+        return userNo + '-' + rawWorkerId;
+    }
+
     private boolean isWorkerOnline(String workerId) {
         OnlineWorkerEntity onlineWorker = onlineWorkerMapper.findByWorkerId(workerId);
         return onlineWorker != null && onlineWorker.getStatus().equals("online");
     }
 
-    public WebWorkerSummaryResponse getWorkerSummary() {
-        String workerId = "ystId";
+    public WebWorkerSummaryResponse getWorkerSummary(String rawWorkerId) {
+        String userNo = "userNo";
+        String workerId = buildWorkerIdByUserNoPrefix(userNo, rawWorkerId);
 
         return new WebWorkerSummaryResponse(
-                workerId,
+                rawWorkerId,
                 isWorkerOnline(workerId)
         );
     }
 
     public SubmitWebMessageResponse submitMessage(SubmitWebMessageRequest request) {
-        if (!isWorkerOnline("ystId")) {
-            logger.warn("Rejecting web request because worker is offline. workerId={}", "ystId");
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "no_online_worker:" + "ystId");
+        String userNo = "userNo";
+        String workerId = buildWorkerIdByUserNoPrefix(userNo, request.getWorkerId());
+        if (!isWorkerOnline(workerId)) {
+            logger.warn("Rejecting web request because worker is offline. workerId={}", workerId);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "no_online_worker:" + request.getWorkerId());
         }
 
         String sessionKey = "openId";
@@ -87,15 +94,16 @@ public class WebConsoleService implements DisposableBean {
         return new SubmitWebMessageResponse(true);
     }
 
-    public SseEmitter stream() {
-        String workerId = "ystId";
+    public SseEmitter stream(String rawWorkerId) {
+        String userNo = "userNo";
+        String workerId = buildWorkerIdByUserNoPrefix(userNo, rawWorkerId);
         String sessionKey = "openId";
 
         SseEmitter emitter = createEmitter(streamEmitterTimeoutMillis);
-        StreamSession streamSession = new StreamSession("ystId", sessionKey, emitter);
+        StreamSession streamSession = new StreamSession(userNo, rawWorkerId, sessionKey, emitter);
         logger.info(
-                "Opening web SSE stream. sessionKey={}, sessionId={}, ystId={}, timeoutMillis={}",
-                sessionKey,
+                "Opening web SSE stream. workerId={}, sessionId={}, ystId={}, timeoutMillis={}",
+                workerId,
                 streamSession.getSessionId(),
                 "ystId",
                 streamEmitterTimeoutMillis
@@ -191,7 +199,7 @@ public class WebConsoleService implements DisposableBean {
         if (currentSession != streamSession) {
             return;
         }
-        String workerId = currentSession.getYstId();
+        String workerId = buildWorkerIdByUserNoPrefix(currentSession.getUserNo(), currentSession.getRawWorkerId());
         if (!isWorkerOnline(workerId)) {
             logger.info("Closing web SSE stream because worker is offline in database. workerId={}", workerId);
             removeStreamSession(sessionKey, streamSession);
@@ -212,12 +220,12 @@ public class WebConsoleService implements DisposableBean {
         InboundMessageEntity inboundMessagePO = inboundMessageMapper.fetchInboundMessage(sessionKey);
         if (inboundMessagePO != null) {
             delivered = true;
-            String workerId = streamSession.getYstId();
+            String rawWorkerId = streamSession.getRawWorkerId();
             if ("RECEIVED".equalsIgnoreCase(inboundMessagePO.getStatus())) {
                 sendEventSafely(
                         streamSession,
                         "submitted",
-                        buildEventPayload("submitted", workerId, inboundMessagePO.getCreatedAt(), null)
+                        buildEventPayload("submitted", rawWorkerId, inboundMessagePO.getCreatedAt(), null)
                 );
             } else if (
                     "CONSUMED".equalsIgnoreCase(inboundMessagePO.getStatus())
@@ -225,7 +233,7 @@ public class WebConsoleService implements DisposableBean {
                 sendEventSafely(
                         streamSession,
                         "processing",
-                        buildEventPayload("processing", workerId, inboundMessagePO.getCreatedAt(), null)
+                        buildEventPayload("processing", rawWorkerId, inboundMessagePO.getCreatedAt(), null)
                 );
             }
         }
@@ -294,7 +302,7 @@ public class WebConsoleService implements DisposableBean {
                 eventType,
                 buildEventPayload(
                         eventType,
-                        streamSession.getYstId(),
+                        streamSession.getRawWorkerId(),
                         outboundMessageEntity.getCreatedAt(),
                         outboundMessageEntity.getContent()
                 )
@@ -443,21 +451,27 @@ public class WebConsoleService implements DisposableBean {
 
     private static final class StreamSession {
 
-        private final String ystId;
+        private final String userNo;
+        private final String rawWorkerId;
         private final String sessionId;
         private final String sessionKey;
         private final SseEmitter emitter;
         private volatile ScheduledFuture<?> heartbeatFuture;
 
-        private StreamSession(String ystId, String sessionKey, SseEmitter emitter) {
-            this.ystId = ystId;
+        private StreamSession(String userNo, String rawWorkerId, String sessionKey, SseEmitter emitter) {
+            this.userNo = userNo;
+            this.rawWorkerId = rawWorkerId;
             this.sessionId = UUID.randomUUID().toString();
             this.sessionKey = sessionKey;
             this.emitter = emitter;
         }
 
-        private String getYstId() {
-            return ystId;
+        private String getUserNo() {
+            return userNo;
+        }
+
+        private String getRawWorkerId(){
+            return rawWorkerId;
         }
 
         private String getSessionId() {

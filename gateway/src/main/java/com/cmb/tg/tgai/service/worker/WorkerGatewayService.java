@@ -69,14 +69,18 @@ public class WorkerGatewayService implements DisposableBean {
     @Value("${gateway.stream-emitter-timeout-ms:1500000}")
     private long streamEmitterTimeoutMillis;
 
+    private String buildWorkerIdByUserNoPrefix(String userNo, String rawWorkerId){
+        return userNo + '-' + rawWorkerId;
+    }
+
     public SimpleOkResponse online(WorkerRequest request) {
-        upsertWorkerStatus(request.getWorkerId(), STATUS_ONLINE);
+        upsertWorkerStatus(buildWorkerIdByUserNoPrefix("userNo", request.getWorkerId()), STATUS_ONLINE);
         logger.info("Worker marked online. workerId={}", request.getWorkerId());
         return new SimpleOkResponse(true);
     }
 
     public SimpleOkResponse offline(WorkerRequest request) {
-        upsertWorkerStatus(request.getWorkerId(), STATUS_OFFLINE);
+        upsertWorkerStatus(buildWorkerIdByUserNoPrefix("userNo", request.getWorkerId()), STATUS_OFFLINE);
         StreamSession streamSession = streamSessions.get(request.getWorkerId());
         if (removeStreamSession(request.getWorkerId(), streamSession)) {
             // Offline is an application-level close signal. Complete the emitter here instead
@@ -107,8 +111,6 @@ public class WorkerGatewayService implements DisposableBean {
     }
 
     public SseEmitter stream(String workerId) {
-        upsertWorkerStatus(workerId, STATUS_ONLINE);
-
         SseEmitter emitter = createEmitter(streamEmitterTimeoutMillis);
         StreamSession streamSession = new StreamSession(workerId, emitter);
         logger.info(

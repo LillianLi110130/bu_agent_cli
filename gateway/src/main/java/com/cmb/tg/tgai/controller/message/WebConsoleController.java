@@ -23,7 +23,7 @@ public class WebConsoleController {
 
     @GetMapping("/workers/{workerId}")
     public WebWorkerSummaryResponse workerSummary(@PathVariable("workerId") String workerId) {
-        return webConsoleService.getWorkerSummary();
+        return webConsoleService.getWorkerSummary(workerId);
     }
 
     @PostMapping("/messages")
@@ -33,6 +33,6 @@ public class WebConsoleController {
 
     @GetMapping(path = "/workers/{workerId}/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter workerEvents(@PathVariable("workerId") String workerId) {
-        return webConsoleService.stream();
+        return webConsoleService.stream(workerId);
     }
 }
