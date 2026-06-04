@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS inbound_message (
 
 CREATE TABLE IF NOT EXISTS outbound_message (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    source VARCHAR(32) NOT NULL,
     session_key VARCHAR(255) NOT NULL,
     content TEXT NOT NULL,
     status VARCHAR(32) NOT NULL,

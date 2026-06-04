@@ -189,15 +189,7 @@ public class WebConsoleService implements DisposableBean {
 
     private void sendHeartbeat(String sessionKey, StreamSession streamSession) {
         StreamSession currentSession = streamSessions.get(sessionKey);
-        String workerIdPrefix = currentSession.getUserNo();
         if (currentSession != streamSession) {
-            return;
-        }
-
-        if (!isWorkerOnline(workerIdPrefix)) {
-            logger.info("Closing web SSE stream because worker is offline in database. workerIdPrefix={}", workerIdPrefix);
-            removeStreamSession(sessionKey, streamSession);
-            streamSession.complete();
             return;
         }
         dispatchPendingWebEvents(sessionKey, true);
@@ -311,7 +303,7 @@ public class WebConsoleService implements DisposableBean {
 
     private String toWebEventType(String outboundStatus) {
         if (STATUS_PROGRESS.equalsIgnoreCase(outboundStatus)) {
-            return "processing";
+            return "progress";
         }
         if (STATUS_COMPLETED.equalsIgnoreCase(outboundStatus)) {
             return "completed";

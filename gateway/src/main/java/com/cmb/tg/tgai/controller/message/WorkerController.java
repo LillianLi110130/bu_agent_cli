@@ -45,8 +45,8 @@ public class WorkerController {
     }
 
     @GetMapping(path = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream(@RequestParam("worker_id") String workerId) {
-        return workerGatewayService.stream(workerId);
+    public SseEmitter stream(@RequestParam("worker_no") String workerNo) {
+        return workerGatewayService.stream(workerNo);
     }
 
     @PostMapping("/complete")
