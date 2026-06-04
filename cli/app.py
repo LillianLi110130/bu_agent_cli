@@ -253,13 +253,7 @@ class _CLIContextBudgetHook(BaseAgentHook):
     on_compaction_status: Callable[[str], None] | None = None
 
     async def before_event(self, event, ctx):
-        if isinstance(event, ContextMaintenanceRequested):
-            assessment = await ctx.agent._context.assess_budget(
-                model=ctx.agent.llm.model,
-                trigger=None,
-            )
-            if self._will_attempt_compaction(ctx, assessment):
-                self._emit_compaction_status("Compaction start")
+        del event, ctx
         return None
 
     async def after_event(self, event, ctx, emitted_events):
@@ -277,29 +271,6 @@ class _CLIContextBudgetHook(BaseAgentHook):
     def _emit_compaction_status(self, message: str) -> None:
         if self.on_compaction_status is not None:
             self.on_compaction_status(message)
-
-    @staticmethod
-    def _will_attempt_compaction(ctx, assessment) -> bool:
-        if not getattr(assessment, "needs_compaction", False):
-            return False
-        context = ctx.agent._context
-        compaction_service = getattr(context, "_compaction_service", None)
-        if compaction_service is None:
-            return False
-        if not compaction_service.config.enabled:
-            return False
-        messages = context.get_messages()
-        countable_indices = context._countable_indices_from(
-            messages,
-            start_index=context.summarized_boundary,
-        )
-        keep_indices = context._build_recent_keep_indices(
-            messages,
-            countable_indices,
-            compaction_service.config.preserve_recent_messages,
-            token_budget=context._recent_keep_token_budget(assessment),
-        )
-        return any(index not in keep_indices for index in countable_indices)
 
     @staticmethod
     async def _emit_budget(ctx, trigger: str | None) -> _CLIContextBudgetSnapshot:
@@ -1051,10 +1022,15 @@ class TGAgentCLI:
 
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)
+        agent.context_compaction_status_handler = lambda message: self._print_compaction_status(
+            message
+        )
         if key in self._context_budget_hook_agents:
             return
         agent.register_hook(
-            _CLIContextBudgetHook(on_compaction_status=self._print_compaction_status)
+            _CLIContextBudgetHook(
+                on_compaction_status=lambda message: self._print_compaction_status(message)
+            )
         )
         self._context_budget_hook_agents.add(key)
 

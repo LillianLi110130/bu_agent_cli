@@ -57,7 +57,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -193,6 +193,11 @@ class Agent:
     """Optional runtime handler used by hooks to request approval from a human."""
     hooks: list[AgentHook] = field(default_factory=list, repr=False)
     """Runtime hooks executed around internal loop events."""
+    context_compaction_status_handler: Callable[[str], None] | None = field(
+        default=None,
+        repr=False,
+    )
+    """Optional callback for user-visible context compaction status messages."""
     use_streaming: bool = True
     """是否使用流式调用解决90s超时问题（默认开启）"""
 
@@ -235,7 +240,12 @@ class Agent:
             llm=self.llm,
             token_cost=self._token_cost,
         )
+        self._context.compaction_start_handler = self._emit_context_compaction_status
         self._hook_manager = HookManager([FinishGuardHook(), *self.hooks])
+
+    def _emit_context_compaction_status(self, message: str) -> None:
+        if self.context_compaction_status_handler is not None:
+            self.context_compaction_status_handler(message)
 
     @property
     def tool_definitions(self) -> list[ToolDefinition]:

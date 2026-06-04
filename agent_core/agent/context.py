@@ -89,6 +89,7 @@ class ContextManager:
         self._conversation_round: int = 0
         self._message_rounds: dict[int, int] = {}
         self._message_seen_by_model: set[int] = set()
+        self.compaction_start_handler: Callable[[str], None] | None = None
         if messages:
             self.replace_messages(messages)
 
@@ -978,6 +979,8 @@ class ContextManager:
             start_index=self._summarized_boundary,
             keep_indices=keep_indices,
         )
+        if self.compaction_start_handler is not None:
+            self.compaction_start_handler("Compaction start")
         result = await self.compact_messages(
             [self._messages[i] for i in compacted_indices],
             llm,
