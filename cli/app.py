@@ -3178,22 +3178,22 @@ class TGAgentCLI:
 
         # Handle numbered resume picker mode before normal command dispatch.
         if self._resume_handler.pick_active:
-            self._resume_handler.bind_console(self._console)
-            pick_result = self._resume_handler.handle_pick_input(user_input)
-            if pick_result.selected_session_id is not None:
-                original_console = self._console
-                original_model_console = self._model_switch_service._console
-                mirror = _ConsoleMirror(original_console)
-                self._console = mirror
-                self._model_switch_service._console = mirror
-                try:
+            original_console = self._console
+            original_model_console = self._model_switch_service._console
+            mirror = _ConsoleMirror(original_console)
+            self._console = mirror
+            self._model_switch_service._console = mirror
+            try:
+                self._resume_handler.bind_console(self._console)
+                pick_result = self._resume_handler.handle_pick_input(user_input)
+                if pick_result.selected_session_id is not None:
                     await self._switch_resume_session(pick_result.selected_session_id)
-                finally:
-                    self._console = original_console
-                    self._model_switch_service._console = original_model_console
-                return _ExecutionOutcome(final_content=mirror.export_text())
+            finally:
+                self._console = original_console
+                self._model_switch_service._console = original_model_console
+
             if pick_result.handled:
-                return _ExecutionOutcome()
+                return _ExecutionOutcome(final_content=mirror.export_text())
 
         if self._settings_handler.active:
             self._settings_handler.bind_console(self._console)
