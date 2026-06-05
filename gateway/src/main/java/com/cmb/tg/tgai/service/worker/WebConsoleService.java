@@ -5,7 +5,7 @@ import com.cmb.tg.tgai.service.message.dto.SubmitWebMessageRequest;
 import com.cmb.tg.tgai.service.message.dto.SubmitWebMessageResponse;
 import com.cmb.tg.tgai.service.message.dto.WebWorkerSummaryResponse;
 import com.cmb.tg.tgai.infrastructure.message.entity.InboundMessageEntity;
-import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorkerEntity;
+import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorker;
 import com.cmb.tg.tgai.infrastructure.message.entity.OutboundMessageEntity;
 import com.cmb.tg.tgai.infrastructure.message.mapper.InboundMessageMapper;
 import com.cmb.tg.tgai.infrastructure.message.mapper.OnlineWorkerMapper;
@@ -58,7 +58,7 @@ public class WebConsoleService implements DisposableBean {
     private long streamEmitterTimeoutMillis;
 
     private boolean isWorkerOnline(String workerIdPrefix) {
-        OnlineWorkerEntity onlineWorker = onlineWorkerMapper.findByWorkerIdPrefix(workerIdPrefix);
+        OnlineWorker onlineWorker = onlineWorkerMapper.findByWorkerIdPrefix(workerIdPrefix);
         return onlineWorker != null && onlineWorker.getStatus().equals("online");
     }
 

@@ -8,7 +8,7 @@ import com.cmb.tg.tgai.service.message.dto.SendTextRequest;
 import com.cmb.tg.tgai.service.message.dto.SimpleOkResponse;
 import com.cmb.tg.tgai.service.message.dto.WorkerRequest;
 import com.cmb.tg.tgai.infrastructure.message.entity.InboundMessageEntity;
-import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorkerEntity;
+import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorker;
 import com.cmb.tg.tgai.infrastructure.message.entity.OutboundMessageEntity;
 import com.cmb.tg.tgai.infrastructure.message.mapper.InboundMessageMapper;
 import com.cmb.tg.tgai.infrastructure.message.mapper.OnlineWorkerMapper;
@@ -92,9 +92,8 @@ public class WorkerGatewayService implements DisposableBean {
     }
 
     public SimpleOkResponse acceptMockMessage(MessageRequest request) {
-        String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
         InboundMessageEntity inboundMessageEntity = new InboundMessageEntity();
-        inboundMessageEntity.setSessionKey(sessionKey);
+        inboundMessageEntity.setSessionKey(request.getOpenId());
         inboundMessageEntity.setSource(SOURCE_IM);
         inboundMessageEntity.setContent(request.getContent());
         inboundMessageEntity.setStatus(STATUS_RECEIVED);
@@ -102,11 +101,11 @@ public class WorkerGatewayService implements DisposableBean {
         inboundMessageMapper.insert(inboundMessageEntity);
         logger.info(
             "Accepted inbound mock message. sessionKey={}, messageId={}, contentLength={}",
-                sessionKey,
+                request.getOpenId(),
             inboundMessageEntity.getId(),
             request.getContent() == null ? 0 : request.getContent().length()
         );
-        dispatchPendingMessages(null, TokenContextHolder.getOpenIdOfCurrentUser(), false);
+        dispatchPendingMessages(null, request.getOpenId(), null, false);
         return new SimpleOkResponse(true);
     }
 
@@ -140,13 +139,13 @@ public class WorkerGatewayService implements DisposableBean {
             EVENT_READY,
             Collections.<String, Object>singletonMap("sessionKey", sessionKey)
         );
-        dispatchPendingMessages(sessionKey, openId, false);
+        dispatchPendingMessages(sessionKey, openId, userNo, false);
 
         ScheduledFuture<?> heartbeatFuture = heartbeatExecutorService.scheduleAtFixedRate(
             new Runnable() {
                 @Override
                 public void run() {
-                    sendHeartbeat(workerNo, openId, sessionKey, streamSession);
+                    sendHeartbeat(workerNo, sessionKey, openId, userNo, streamSession);
                 }
             },
             streamHeartbeatIntervalMillis,
@@ -304,8 +303,7 @@ public class WorkerGatewayService implements DisposableBean {
         });
     }
 
-    private void sendHeartbeat(String workerNo, String openId, String sessionKey, StreamSession streamSession) {
-        String userNo = TokenContextHolder.getUserIdOfCurrentUser();
+    private void sendHeartbeat(String workerNo, String sessionKey, String openId, String userNo, StreamSession streamSession) {
         StreamSession currentSession = streamSessions.get(sessionKey);
         if (currentSession != streamSession) {
             return;
@@ -316,11 +314,11 @@ public class WorkerGatewayService implements DisposableBean {
             streamSession.complete();
             return;
         }
-        dispatchPendingMessages(sessionKey, openId,true);
+        dispatchPendingMessages(sessionKey, openId, userNo, true);
     }
 
-    private void dispatchPendingMessages(String sessionKey, String openId, boolean emitHeartbeatWhenEmpty) {
-        String targetSessionKey = getTargetSessionKey(sessionKey, openId, emitHeartbeatWhenEmpty);
+    private void dispatchPendingMessages(String sessionKey, String openId, String userNo, boolean emitHeartbeatWhenEmpty) {
+        String targetSessionKey = resolveLatestTargetSessionKey(sessionKey, openId, userNo, emitHeartbeatWhenEmpty);
         if (targetSessionKey == null) return;
 
         StreamSession streamSession = streamSessions.get(targetSessionKey);
@@ -346,7 +344,7 @@ public class WorkerGatewayService implements DisposableBean {
             if (updated != 1) {
                 logger.warn(
                     "Failed to update inbound message status before SSE dispatch. sessionKey={}, messageId={}",
-                    sessionKey,
+                    targetSessionKey,
                     inboundMessageEntity.getId()
                 );
                 break;
@@ -375,19 +373,13 @@ public class WorkerGatewayService implements DisposableBean {
         }
     }
 
-    private String getTargetSessionKey(String sessionKey, String openId, boolean emitHeartbeatWhenEmpty) {
-        OnlineWorkerEntity onlineWorkerEntity = onlineWorkerMapper.findByWorkerIdPrefix(TokenContextHolder.getUserIdOfCurrentUser());
-        if (onlineWorkerEntity == null) {
+    private String resolveLatestTargetSessionKey(String sessionKey, String openId, String userNo, boolean emitHeartbeatWhenEmpty) {
+        String targetSessionKey = userNo == null || userNo.trim().isEmpty()
+            ? resolveTargetSessionKeyByOpenId(openId)
+            : resolveTargetSessionKeyByUserNo(openId, userNo);
+        if (targetSessionKey == null) {
             return null;
         }
-        String workerId = onlineWorkerEntity.getWorkerId();
-        int separatorIndex = workerId.lastIndexOf('-');
-        if (separatorIndex < 0 || separatorIndex == workerId.length() - 1) {
-            logger.warn("Invalid workerId format when dispatching inbound message. workerId={}", workerId);
-            return null;
-        }
-        String workerNo = workerId.substring(separatorIndex + 1);
-        String targetSessionKey = buildSessionKey(openId, workerNo);
 
         if (sessionKey != null && !targetSessionKey.equals(sessionKey)) {
             StreamSession currentStreamSession = streamSessions.get(sessionKey);
@@ -401,6 +393,38 @@ public class WorkerGatewayService implements DisposableBean {
             return null;
         }
         return targetSessionKey;
+    }
+
+    private String resolveTargetSessionKeyByOpenId(String openId) {
+        String sessionKeyPrefix = openId + "-";
+        String latestSessionKey = null;
+        long latestConnectedAt = Long.MIN_VALUE;
+        for (Map.Entry<String, StreamSession> entry : streamSessions.entrySet()) {
+            String candidateSessionKey = entry.getKey();
+            if (candidateSessionKey.startsWith(sessionKeyPrefix)) {
+                StreamSession candidateSession = entry.getValue();
+                if (candidateSession != null && candidateSession.getConnectedAt() > latestConnectedAt) {
+                    latestSessionKey = candidateSessionKey;
+                    latestConnectedAt = candidateSession.getConnectedAt();
+                }
+            }
+        }
+        return latestSessionKey;
+    }
+
+    private String resolveTargetSessionKeyByUserNo(String openId, String userNo) {
+        OnlineWorker onlineWorker = onlineWorkerMapper.findByWorkerIdPrefix(userNo);
+        if (onlineWorker == null) {
+            return null;
+        }
+        String workerId = onlineWorker.getWorkerId();
+        String workerIdPrefix = userNo + "-";
+        if (!workerId.startsWith(workerIdPrefix) || workerId.length() == workerIdPrefix.length()) {
+            logger.warn("Invalid workerId format when dispatching inbound message. workerId={}", workerId);
+            return null;
+        }
+        String workerNo = workerId.substring(workerIdPrefix.length());
+        return buildSessionKey(openId, workerNo);
     }
 
     private void sendEventSafely(StreamSession streamSession, String eventName, Map<String, Object> payload) {
@@ -469,15 +493,15 @@ public class WorkerGatewayService implements DisposableBean {
 
 
     private boolean isWorkerOnline(String workerId) {
-        OnlineWorkerEntity onlineWorkerEntity = onlineWorkerMapper.findByWorkerId(workerId);
-        return onlineWorkerEntity != null && STATUS_ONLINE.equalsIgnoreCase(onlineWorkerEntity.getStatus());
+        OnlineWorker onlineWorker = onlineWorkerMapper.findByWorkerId(workerId);
+        return onlineWorker != null && STATUS_ONLINE.equalsIgnoreCase(onlineWorker.getStatus());
     }
 
     private void upsertWorkerStatus(String workerId, String status) {
-        OnlineWorkerEntity onlineWorkerEntity = onlineWorkerMapper.findByWorkerId(workerId);
-        if (onlineWorkerEntity == null) {
+        OnlineWorker onlineWorker = onlineWorkerMapper.findByWorkerId(workerId);
+        if (onlineWorker == null) {
             try {
-                onlineWorkerMapper.insert(new OnlineWorkerEntity(workerId, status, null, null));
+                onlineWorkerMapper.insert(new OnlineWorker(workerId, status, null, null));
                 logger.info("Inserted online worker state. workerId={}, status={}", workerId, status);
                 return;
             } catch (DuplicateKeyException exception) {
@@ -517,6 +541,7 @@ public class WorkerGatewayService implements DisposableBean {
 
         private final String userNo;
         private final String workerNo;
+        private final long connectedAt;
         private final String sessionId;
         private final String sessionKey;
         private final SseEmitter emitter;
@@ -525,6 +550,7 @@ public class WorkerGatewayService implements DisposableBean {
         private StreamSession(String userNo, String workerNo, String sessionKey, SseEmitter emitter) {
             this.userNo = userNo;
             this.workerNo = workerNo;
+            this.connectedAt = System.currentTimeMillis();
             this.sessionId = UUID.randomUUID().toString();
             this.sessionKey = sessionKey;
             this.emitter = emitter;
@@ -536,6 +562,10 @@ public class WorkerGatewayService implements DisposableBean {
 
         private String getWorkerNo() {
             return workerNo;
+        }
+
+        private long getConnectedAt() {
+            return connectedAt;
         }
 
         private String getSessionId() {

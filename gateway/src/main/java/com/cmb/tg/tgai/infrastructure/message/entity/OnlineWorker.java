@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class OnlineWorkerEntity {
+public class OnlineWorker {
     private String workerId;
     private String status;
     private LocalDateTime createTime;
