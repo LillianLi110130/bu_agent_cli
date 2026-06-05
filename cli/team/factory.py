@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_core import Agent
+from agent_core.lsp import attach_lsp_manager
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
 from agent_core.skill.runtime_service import SkillRuntimeService
@@ -142,6 +143,7 @@ def create_team_member_agent(
     """Create an independent team member agent through the CLI bootstrap path."""
     bootstrap = _bootstrap_module()
     ctx = SandboxContext.create(root_dir)
+    attach_lsp_manager(ctx)
     base_llm = bootstrap.create_llm(model)
     runtime = runtime_registries or bootstrap.create_runtime_registries(
         workspace_root=ctx.working_dir,

@@ -10,6 +10,7 @@ from typing import Any
 
 from agent_core import Agent
 from agent_core.agent.config import AgentConfig
+from agent_core.lsp import attach_lsp_manager
 from agent_core.llm.base import BaseChatModel
 from agent_core.llm.factory import create_chat_model
 from agent_core.task import SubagentTaskManager
@@ -190,6 +191,7 @@ def create_agent(
     from agent_core.agent.registry import get_agent_registry
 
     ctx = SandboxContext.create(root_dir)
+    attach_lsp_manager(ctx)
     llm = create_llm(model)
     system_prompt = build_system_prompt(ctx.working_dir)
     registry = get_agent_registry(ctx.working_dir)
