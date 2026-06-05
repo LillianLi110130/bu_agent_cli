@@ -1,5 +1,6 @@
 package com.cmb.tg.tgai.service.worker;
 
+import com.cmb.tg.tgai.infrastructure.common.holder.TokenContextHolder;
 import com.cmb.tg.tgai.service.message.dto.SubmitWebMessageRequest;
 import com.cmb.tg.tgai.service.message.dto.SubmitWebMessageResponse;
 import com.cmb.tg.tgai.service.message.dto.WebWorkerSummaryResponse;
@@ -62,7 +63,7 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public WebWorkerSummaryResponse getWorkerSummary(String workerId) {
-        String workerIdPrefix = "userNo";
+        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
 
         return new WebWorkerSummaryResponse(
                 workerIdPrefix,
@@ -71,13 +72,13 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public SubmitWebMessageResponse submitMessage(SubmitWebMessageRequest request) {
-        String workerIdPrefix = "userNo";
+        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
         if (!isWorkerOnline(workerIdPrefix)) {
             logger.warn("Rejecting web request because worker is offline. workerIdPrefix={}", workerIdPrefix);
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "no_online_worker:" + workerIdPrefix);
         }
 
-        String sessionKey = "openId";
+        String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
         InboundMessageEntity inboundMessagePO = new InboundMessageEntity();
         inboundMessagePO.setSessionKey(sessionKey);
         inboundMessagePO.setSource("web");
@@ -89,16 +90,17 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public SseEmitter stream(String workerId) {
-        String workerIdPrefix = "userNo";
-        String sessionKey = "openId";
+        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
+        String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
+        String ystId = TokenContextHolder.getYstIdOfCurrentUser();
 
         SseEmitter emitter = createEmitter(streamEmitterTimeoutMillis);
-        StreamSession streamSession = new StreamSession("userNo", sessionKey, emitter);
+        StreamSession streamSession = new StreamSession(workerIdPrefix, sessionKey, emitter);
         logger.info(
                 "Opening web SSE stream. workerIdPrefix={}, sessionId={}, ystId={}, timeoutMillis={}",
                 workerIdPrefix,
                 streamSession.getSessionId(),
-                "ystId",
+                ystId,
                 streamEmitterTimeoutMillis
         );
 
@@ -127,7 +129,7 @@ public class WebConsoleService implements DisposableBean {
                 "SSE stream opened. workerIdPrefix={}, sessionId={}, ystId={}, heartbeatIntervalMillis={}",
                 workerIdPrefix,
                 streamSession.getSessionId(),
-                "ystId",
+                ystId,
                 streamHeartbeatIntervalMillis
         );
         return emitter;
