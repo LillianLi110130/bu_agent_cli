@@ -714,6 +714,56 @@ async def test_remote_resume_selection_returns_recent_history_preview(
     assert "turn-11-assistant" in result.final_content
 
 
+@pytest.mark.asyncio
+async def test_remote_resume_next_page_returns_session_list(
+    workspace_root,
+    monkeypatch,
+):
+    monkeypatch.setenv("HOME", str(workspace_root / "home"))
+    cli, store = _create_cli(workspace_root, monkeypatch)
+    assert cli._session_store is not None
+    for index in range(25):
+        _seed_session(
+            cli._session_store,
+            session_id=f"old-session-{index:02d}",
+            workspace=workspace_root,
+            messages=[UserMessage(content=f"old-session-{index:02d} user")],
+            now=1000.0 + index,
+        )
+
+    store.enqueue_text(
+        "/resume",
+        source="web",
+        remote_response_required=True,
+        request_id="remote-resume-page-1",
+    )
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    first_page = store.find_result("remote-resume-page-1")
+    assert first_page is not None
+    assert "第 1 页" in first_page.final_content
+    assert "1. old-session-24 user" in first_page.final_content
+    assert "20. old-session-05 user" in first_page.final_content
+    assert "old-session-04 user" not in first_page.final_content
+
+    store.enqueue_text(
+        "n",
+        source="web",
+        remote_response_required=True,
+        request_id="remote-resume-page-2",
+    )
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    second_page = store.find_result("remote-resume-page-2")
+    assert second_page is not None
+    assert second_page.final_status == "completed"
+    assert "第 2 页" in second_page.final_content
+    assert "21. old-session-04 user" in second_page.final_content
+    assert "25. old-session-00 user" in second_page.final_content
+
+
 def test_team_inbox_submits_messages_to_lead_agent(workspace_root, monkeypatch):
     cli, _store = _create_cli(workspace_root, monkeypatch)
     runtime = TeamRuntime(

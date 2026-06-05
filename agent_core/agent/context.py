@@ -48,6 +48,7 @@ INVALID_TOOL_CALL_RECOVERY_PREFIX = (
 )
 COMPACTED_WORKING_SET_HEADER = "[Compacted Working Set]"
 MICROCOMPACTED_TOOL_RESULT_HEADER = "[Previous tool result microcompacted]"
+DEFAULT_MICROCOMPACT_EXCLUDED_TOOL_NAMES = frozenset({"skill_view"})
 
 
 @dataclass(slots=True)
@@ -89,6 +90,7 @@ class ContextManager:
         self._conversation_round: int = 0
         self._message_rounds: dict[int, int] = {}
         self._message_seen_by_model: set[int] = set()
+        self.compaction_start_handler: Callable[[str], None] | None = None
         if messages:
             self.replace_messages(messages)
 
@@ -555,8 +557,11 @@ class ContextManager:
         *,
         min_chars: int,
         preserve_recent_rounds: int,
+        excluded_tool_names: frozenset[str],
     ) -> bool:
         if message.destroyed or message.microcompacted:
+            return False
+        if message.tool_name in excluded_tool_names:
             return False
         if not isinstance(message.content, str):
             return False
@@ -575,8 +580,9 @@ class ContextManager:
         self,
         *,
         summarize_tool_message: Callable[[ToolMessage, str], str],
-        min_chars: int = 1600,
+        min_chars: int = 1200,
         preserve_recent_rounds: int = 3,
+        excluded_tool_names: frozenset[str] = DEFAULT_MICROCOMPACT_EXCLUDED_TOOL_NAMES,
     ) -> ToolMicrocompactResult:
         """Replace aged tool results with micro summaries plus artifact refs."""
         result = ToolMicrocompactResult()
@@ -589,6 +595,7 @@ class ContextManager:
                 message,
                 min_chars=min_chars,
                 preserve_recent_rounds=preserve_recent_rounds,
+                excluded_tool_names=excluded_tool_names,
             ):
                 continue
 
@@ -978,6 +985,8 @@ class ContextManager:
             start_index=self._summarized_boundary,
             keep_indices=keep_indices,
         )
+        if self.compaction_start_handler is not None:
+            self.compaction_start_handler("Compaction start")
         result = await self.compact_messages(
             [self._messages[i] for i in compacted_indices],
             llm,

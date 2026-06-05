@@ -57,7 +57,7 @@ import json
 import logging
 import random
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -193,6 +193,11 @@ class Agent:
     """Optional runtime handler used by hooks to request approval from a human."""
     hooks: list[AgentHook] = field(default_factory=list, repr=False)
     """Runtime hooks executed around internal loop events."""
+    context_compaction_status_handler: Callable[[str], None] | None = field(
+        default=None,
+        repr=False,
+    )
+    """Optional callback for user-visible context compaction status messages."""
     use_streaming: bool = True
     """是否使用流式调用解决90s超时问题（默认开启）"""
 
@@ -235,7 +240,12 @@ class Agent:
             llm=self.llm,
             token_cost=self._token_cost,
         )
+        self._context.compaction_start_handler = self._emit_context_compaction_status
         self._hook_manager = HookManager([FinishGuardHook(), *self.hooks])
+
+    def _emit_context_compaction_status(self, message: str) -> None:
+        if self.context_compaction_status_handler is not None:
+            self.context_compaction_status_handler(message)
 
     @property
     def tool_definitions(self) -> list[ToolDefinition]:
@@ -1358,13 +1368,12 @@ class Agent:
         )
 
     def _microcompact_tool_message(self, message: ToolMessage, artifact_path: str) -> str:
-        if message.tool_name == "bash":
-            return self._microcompact_bash_tool_message(message, artifact_path)
-        if message.tool_name == "read":
-            return self._microcompact_read_tool_message(message, artifact_path)
-        if message.tool_name == "read_excel":
-            return self._microcompact_excel_tool_message(message, artifact_path)
-        return self._microcompact_generic_tool_message(message, artifact_path)
+        return "\n".join(
+            [
+                f"[Previous: used {message.tool_name}]",
+                f"Artifact: {artifact_path}",
+            ]
+        )
 
     async def _execute_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         """Execute a single tool call and return the result as a ToolMessage."""

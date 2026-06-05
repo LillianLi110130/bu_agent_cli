@@ -225,7 +225,7 @@ def _render_grep_results(
 @tool(
     "Find files or directories matching a glob pattern",
     context_policy="trim",
-    context_max_inline_chars=6400,
+    context_max_inline_chars=12800,
 )
 async def glob_search(
     pattern: str,
@@ -262,7 +262,7 @@ async def glob_search(
         return f"Error: {e}"
 
 
-@tool("Search file contents with regex", context_policy="trim", context_max_inline_chars=6400)
+@tool("Search file contents with regex", context_policy="trim", context_max_inline_chars=12800)
 async def grep(
     pattern: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
