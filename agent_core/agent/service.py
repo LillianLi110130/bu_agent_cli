@@ -1368,13 +1368,12 @@ class Agent:
         )
 
     def _microcompact_tool_message(self, message: ToolMessage, artifact_path: str) -> str:
-        if message.tool_name == "bash":
-            return self._microcompact_bash_tool_message(message, artifact_path)
-        if message.tool_name == "read":
-            return self._microcompact_read_tool_message(message, artifact_path)
-        if message.tool_name == "read_excel":
-            return self._microcompact_excel_tool_message(message, artifact_path)
-        return self._microcompact_generic_tool_message(message, artifact_path)
+        return "\n".join(
+            [
+                f"[Previous: used {message.tool_name}]",
+                f"Artifact: {artifact_path}",
+            ]
+        )
 
     async def _execute_tool_call(self, tool_call: ToolCall) -> ToolMessage:
         """Execute a single tool call and return the result as a ToolMessage."""
