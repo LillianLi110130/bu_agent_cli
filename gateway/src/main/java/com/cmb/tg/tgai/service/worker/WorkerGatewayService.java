@@ -20,7 +20,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
-import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
@@ -109,8 +108,9 @@ public class WorkerGatewayService implements DisposableBean {
 
     public SseEmitter stream(String workerNo) {
         String sessionKey = buildSessionKey("openId", workerNo);
+        upsertWorkerStatus(buildWorkerId("userNo", workerNo), STATUS_ONLINE);
         SseEmitter emitter = createEmitter(streamEmitterTimeoutMillis);
-        StreamSession streamSession = new StreamSession("userNo", sessionKey, emitter);
+        StreamSession streamSession = new StreamSession("userNo", workerNo, sessionKey, emitter);
         logger.info(
             "Opening SSE stream. sessionKey={}, sessionId={}, timeoutMillis={}",
             sessionKey,
@@ -124,11 +124,6 @@ public class WorkerGatewayService implements DisposableBean {
                 sessionKey,
                 previousSession.getSessionId(),
                 streamSession.getSessionId()
-            );
-            sendEventSafely(
-                previousSession,
-                EVENT_ERROR,
-                Collections.<String, Object>singletonMap("message", "connection replaced by newer stream")
             );
             previousSession.complete();
         }
@@ -276,7 +271,7 @@ public class WorkerGatewayService implements DisposableBean {
                     sessionKey,
                     streamSession.getSessionId()
                 );
-                removeStreamSession(sessionKey, streamSession);
+                disconnectStreamSession(sessionKey, streamSession);
                 streamSession.getEmitter().complete();
             }
         });
@@ -298,7 +293,7 @@ public class WorkerGatewayService implements DisposableBean {
                         throwable == null ? "unknown" : throwable.getMessage()
                     );
                 }
-                removeStreamSession(sessionKey, streamSession);
+                disconnectStreamSession(sessionKey, streamSession);
             }
         });
     }
@@ -318,30 +313,8 @@ public class WorkerGatewayService implements DisposableBean {
     }
 
     private void dispatchPendingMessages(String sessionKey, boolean emitHeartbeatWhenEmpty) {
-        OnlineWorkerEntity onlineWorkerEntity = onlineWorkerMapper.findByWorkerIdPrefix("userNo");
-        if (onlineWorkerEntity == null) {
-            return;
-        }
-        String workerId = onlineWorkerEntity.getWorkerId();
-        int separatorIndex = workerId.lastIndexOf('-');
-        if (separatorIndex < 0 || separatorIndex == workerId.length() - 1) {
-            logger.warn("Invalid workerId format when dispatching inbound message. workerId={}", workerId);
-            return;
-        }
-        String workerNo = workerId.substring(separatorIndex + 1);
-        String targetSessionKey = buildSessionKey("openId", workerNo);
-
-        if (sessionKey != null && !targetSessionKey.equals(sessionKey)) {
-            StreamSession currentStreamSession = streamSessions.get(sessionKey);
-            if (currentStreamSession != null && emitHeartbeatWhenEmpty) {
-                sendEventSafely(
-                    currentStreamSession,
-                    EVENT_HEARTBEAT,
-                    Collections.<String, Object>singletonMap("ts", System.currentTimeMillis())
-                );
-            }
-            return;
-        }
+        String targetSessionKey = getTargetSessionKey(sessionKey, emitHeartbeatWhenEmpty);
+        if (targetSessionKey == null) return;
 
         StreamSession streamSession = streamSessions.get(targetSessionKey);
         if (streamSession == null) {
@@ -395,6 +368,34 @@ public class WorkerGatewayService implements DisposableBean {
         }
     }
 
+    private String getTargetSessionKey(String sessionKey, boolean emitHeartbeatWhenEmpty) {
+        OnlineWorkerEntity onlineWorkerEntity = onlineWorkerMapper.findByWorkerIdPrefix("userNo");
+        if (onlineWorkerEntity == null) {
+            return null;
+        }
+        String workerId = onlineWorkerEntity.getWorkerId();
+        int separatorIndex = workerId.lastIndexOf('-');
+        if (separatorIndex < 0 || separatorIndex == workerId.length() - 1) {
+            logger.warn("Invalid workerId format when dispatching inbound message. workerId={}", workerId);
+            return null;
+        }
+        String workerNo = workerId.substring(separatorIndex + 1);
+        String targetSessionKey = buildSessionKey("openId", workerNo);
+
+        if (sessionKey != null && !targetSessionKey.equals(sessionKey)) {
+            StreamSession currentStreamSession = streamSessions.get(sessionKey);
+            if (currentStreamSession != null && emitHeartbeatWhenEmpty) {
+                sendEventSafely(
+                    currentStreamSession,
+                    EVENT_HEARTBEAT,
+                    Collections.singletonMap("ts", System.currentTimeMillis())
+                );
+            }
+            return null;
+        }
+        return targetSessionKey;
+    }
+
     private void sendEventSafely(StreamSession streamSession, String eventName, Map<String, Object> payload) {
         try {
             streamSession.getEmitter().send(
@@ -418,7 +419,7 @@ public class WorkerGatewayService implements DisposableBean {
                     exception
                 );
             }
-            removeStreamSession(streamSession.getSessionKey(), streamSession);
+            disconnectStreamSession(streamSession.getSessionKey(), streamSession);
             streamSession.getEmitter().completeWithError(exception);
         }
     }
@@ -444,6 +445,21 @@ public class WorkerGatewayService implements DisposableBean {
         logger.info("Removed local SSE stream session. sessionKey={}, sessionId={}", sessionKey, expectedSession.getSessionId());
         return true;
     }
+
+    private void disconnectStreamSession(String sessionKey, StreamSession expectedSession) {
+        boolean removed = removeStreamSession(sessionKey, expectedSession);
+        if (!removed) {
+            return;
+        }
+        upsertWorkerStatus(buildWorkerId(expectedSession.getUserNo(), expectedSession.getWorkerNo()), STATUS_OFFLINE);
+        logger.info(
+                "Marked worker offline after SSE disconnect. sessionKey={}, sessionId={}, workerNo={}",
+                sessionKey,
+                expectedSession.getSessionId(),
+                expectedSession.getWorkerNo()
+        );
+    }
+
 
     private boolean isWorkerOnline(String workerId) {
         OnlineWorkerEntity onlineWorkerEntity = onlineWorkerMapper.findByWorkerId(workerId);
@@ -493,13 +509,15 @@ public class WorkerGatewayService implements DisposableBean {
     private static final class StreamSession {
 
         private final String userNo;
+        private final String workerNo;
         private final String sessionId;
         private final String sessionKey;
         private final SseEmitter emitter;
         private volatile ScheduledFuture<?> heartbeatFuture;
 
-        private StreamSession(String userNo, String sessionKey, SseEmitter emitter) {
+        private StreamSession(String userNo, String workerNo, String sessionKey, SseEmitter emitter) {
             this.userNo = userNo;
+            this.workerNo = workerNo;
             this.sessionId = UUID.randomUUID().toString();
             this.sessionKey = sessionKey;
             this.emitter = emitter;
@@ -507,6 +525,10 @@ public class WorkerGatewayService implements DisposableBean {
 
         private String getUserNo() {
             return userNo;
+        }
+
+        private String getWorkerNo() {
+            return workerNo;
         }
 
         private String getSessionId() {
@@ -528,7 +550,7 @@ public class WorkerGatewayService implements DisposableBean {
         private void cancelHeartbeat() {
             ScheduledFuture<?> currentHeartbeatFuture = heartbeatFuture;
             if (currentHeartbeatFuture != null) {
-                currentHeartbeatFuture.cancel(true);
+                currentHeartbeatFuture.cancel(false);
             }
         }
 
