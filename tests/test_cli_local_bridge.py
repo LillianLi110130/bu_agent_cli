@@ -1048,6 +1048,40 @@ async def test_run_agent_disables_interactive_loading_for_remote_execution(works
 
 
 @pytest.mark.asyncio
+async def test_run_agent_shows_fixed_tui_status_for_remote_execution(workspace_root, monkeypatch):
+    cli, _ = _create_cli(workspace_root, monkeypatch)
+    cli._fixed_input_tui_enabled = True
+    activity_statuses: list[str | None] = []
+    indicator_start_calls: list[str] = []
+    printed_messages: list[str] = []
+
+    def fake_indicator_start(self):
+        indicator_start_calls.append(self.message)
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del user_input, cancel_event
+        assert activity_statuses[-1] == "思考中"
+        yield FinalResponseEvent(content="done")
+
+    monkeypatch.setattr(_SafeLoadingIndicator, "start", fake_indicator_start)
+    monkeypatch.setattr(cli, "_set_terminal_activity_status", activity_statuses.append)
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+    monkeypatch.setattr(
+        cli._console,
+        "print",
+        lambda *args, **kwargs: printed_messages.append(" ".join(str(arg) for arg in args)),
+    )
+
+    result = await cli._run_agent("remote question", enable_interactive_terminal_ui=False)
+
+    assert result == "done"
+    assert indicator_start_calls == []
+    assert activity_statuses[0] == "思考中"
+    assert activity_statuses[-1] is None
+    assert not any("思考中..." in message for message in printed_messages)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_uses_plain_stdout_for_remote_text_deltas(workspace_root, monkeypatch):
     cli, _ = _create_cli(workspace_root, monkeypatch)
     written_chunks: list[str] = []

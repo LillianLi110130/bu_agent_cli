@@ -1681,10 +1681,10 @@ class TGAgentCLI:
 
     def _start_loading(self, message: str = "思考中") -> _SafeLoadingIndicator:
         """Start a loading animation."""
-        if not self._interactive_terminal_ui_enabled:
-            return None
         if self._fixed_input_tui_enabled:
             self._set_terminal_activity_status(message)
+            return None
+        if not self._interactive_terminal_ui_enabled:
             return None
         loading = _SafeLoadingIndicator(message)
         loading.start()
@@ -2733,7 +2733,7 @@ class TGAgentCLI:
         # Start loading animation
         self._loading = self._start_loading("思考中")
 
-        if not enable_interactive_terminal_ui:
+        if not enable_interactive_terminal_ui and not self._fixed_input_tui_enabled:
             self._console.print("[dim]思考中...[/dim]")
 
         run_cancel_event = cancel_event or asyncio.Event()
