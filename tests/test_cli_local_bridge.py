@@ -16,7 +16,12 @@ import pytest
 
 import cli.app as app_module
 from agent_core import Agent
-from agent_core.agent.events import FinalResponseEvent, TextDeltaEvent
+from agent_core.agent.events import (
+    FinalResponseEvent,
+    TextDeltaEvent,
+    ToolCallEvent,
+    ToolResultEvent,
+)
 from agent_core.llm.messages import AssistantMessage, BaseMessage, UserMessage
 from agent_core.llm.views import ChatInvokeCompletion
 from agent_core.team import TeamRuntime
@@ -1051,34 +1056,70 @@ async def test_run_agent_disables_interactive_loading_for_remote_execution(works
 async def test_run_agent_shows_fixed_tui_status_for_remote_execution(workspace_root, monkeypatch):
     cli, _ = _create_cli(workspace_root, monkeypatch)
     cli._fixed_input_tui_enabled = True
-    activity_statuses: list[str | None] = []
+    activity_statuses: list[tuple[str | None, float | None]] = []
     indicator_start_calls: list[str] = []
     printed_messages: list[str] = []
 
     def fake_indicator_start(self):
         indicator_start_calls.append(self.message)
 
+    def record_activity_status(status: str | None, *, started_at: float | None = None):
+        activity_statuses.append((status, started_at))
+
     async def fake_query_stream(user_input, cancel_event=None):
         del user_input, cancel_event
-        assert activity_statuses[-1] == "思考中"
+        assert activity_statuses[-1][0] == "思考中"
+        assert activity_statuses[-1][1] is not None
         yield FinalResponseEvent(content="done")
 
     monkeypatch.setattr(_SafeLoadingIndicator, "start", fake_indicator_start)
-    monkeypatch.setattr(cli, "_set_terminal_activity_status", activity_statuses.append)
+    monkeypatch.setattr(cli, "_set_terminal_activity_status", record_activity_status)
     monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
     monkeypatch.setattr(
         cli._console,
         "print",
-        lambda *args, **kwargs: printed_messages.append(" ".join(str(arg) for arg in args)),
+        lambda *args, **kwargs: printed_messages.append(
+            " ".join(str(arg) for arg in args)
+        ),
     )
 
     result = await cli._run_agent("remote question", enable_interactive_terminal_ui=False)
 
     assert result == "done"
     assert indicator_start_calls == []
-    assert activity_statuses[0] == "思考中"
-    assert activity_statuses[-1] is None
+    assert activity_statuses[0][0] == "思考中"
+    assert activity_statuses[0][1] is not None
+    assert activity_statuses[-1] == (None, None)
     assert not any("思考中..." in message for message in printed_messages)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_keeps_thinking_status_during_tool_execution(workspace_root, monkeypatch):
+    cli, _ = _create_cli(workspace_root, monkeypatch)
+    cli._fixed_input_tui_enabled = True
+    activity_statuses: list[tuple[str | None, float | None]] = []
+
+    def record_activity_status(status: str | None, *, started_at: float | None = None):
+        activity_statuses.append((status, started_at))
+
+    async def fake_query_stream(user_input, cancel_event=None):
+        del user_input, cancel_event
+        yield ToolCallEvent(tool="grep", args={"pattern": "x"}, tool_call_id="call-1")
+        yield ToolResultEvent(tool="grep", result="matched", tool_call_id="call-1")
+        yield FinalResponseEvent(content="done")
+
+    monkeypatch.setattr(cli, "_set_terminal_activity_status", record_activity_status)
+    monkeypatch.setattr(cli._agent, "query_stream", fake_query_stream)
+
+    result = await cli._run_agent("complex request", enable_interactive_terminal_ui=True)
+
+    assert result == "done"
+    non_empty_statuses = [status for status, _ in activity_statuses if status is not None]
+    assert non_empty_statuses
+    assert set(non_empty_statuses) == {"思考中"}
+    started_values = [started_at for status, started_at in activity_statuses if status is not None]
+    assert len(set(started_values)) == 1
+    assert activity_statuses[-1] == (None, None)
 
 
 @pytest.mark.asyncio
@@ -1119,7 +1160,7 @@ def test_safe_loading_and_console_output_do_not_emit_ansi(workspace_root, monkey
 
     rendered = output.getvalue()
     assert "\x1b" not in rendered
-    assert "- 思考中..." in rendered
+    assert "- 思考中 (0s)..." in rendered
 
     with cli._console.capture() as capture:
         cli._console.print("[yellow]再见！[/yellow]")
