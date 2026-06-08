@@ -38,7 +38,6 @@ class WorkerRunner:
         result_poll_interval_seconds: float = 0.5,
         empty_poll_sleep_seconds: float = 0.1,
         cron_tick_interval_seconds: float = 60.0,
-        agent: Agent | None = None,
     ) -> None:
         self.worker_id = worker_id
         self.worker_no = worker_no or worker_id
@@ -50,7 +49,6 @@ class WorkerRunner:
         self.result_poll_interval_seconds = result_poll_interval_seconds
         self.empty_poll_sleep_seconds = empty_poll_sleep_seconds
         self.cron_tick_interval_seconds = cron_tick_interval_seconds
-        self._main_agent = agent
         resolved_root_dir = (
             Path(root_dir).resolve() if root_dir is not None else Path.cwd().resolve()
         )
@@ -365,61 +363,53 @@ class WorkerRunner:
 
     async def _run_cron_fresh_agent(self, job: CronJob) -> str:
         """Execute one scheduled job in a clean worker Agent session."""
-        main_agent = self._resolve_main_agent()
-        cron_agent = self._build_cron_background_agent(main_agent, job)
+        base_agent, _ = create_agent(
+            model=self._resolve_cron_agent_model(),
+            root_dir=self.root_path,
+        )
+        cron_agent = self._build_cron_background_agent(base_agent, job)
         prompt = self._build_cron_background_prompt(job)
         return await cron_agent.query(prompt)
 
-    def _resolve_main_agent(self) -> Agent:
-        if self._main_agent is None:
-            self._main_agent, _ = create_agent(
-                model=self._resolve_main_agent_model(),
-                root_dir=self.root_path,
-            )
-        return self._main_agent
-
-    def _resolve_main_agent_model(self) -> str | None:
-        """Resolve the worker main agent model with a config-based fallback."""
-        if self.model is not None:
-            return self.model
+    def _resolve_cron_agent_model(self) -> str:
+        """Resolve the fresh cron agent model from configured presets only."""
         return self._select_fallback_model(load_model_presets())
 
     @staticmethod
     def _select_fallback_model(presets: dict[str, ModelPreset]) -> str:
-        for keyword in ("Qwen3.6", "minimax"):
-            keyword_lower = keyword.lower()
+        for keyword in ("qwen", "minimax", "glm"):
             for name, preset in presets.items():
                 preset_model = str(preset.get("model", ""))
-                if keyword_lower in name.lower() or keyword_lower in preset_model.lower():
+                if keyword in name.lower() or keyword in preset_model.lower():
                     return name
         return "small"
 
-    def _build_cron_background_agent(self, main_agent: Agent, job: CronJob) -> Agent:
-        dependency_overrides = dict(main_agent.dependency_overrides or {})
-        tools = self._cron_background_tools(main_agent, job)
+    def _build_cron_background_agent(self, base_agent: Agent, job: CronJob) -> Agent:
+        dependency_overrides = dict(base_agent.dependency_overrides or {})
+        tools = self._cron_background_tools(base_agent, job)
         cron_agent = Agent(
-            llm=main_agent.llm,
+            llm=base_agent.llm,
             tools=tools,
-            system_prompt=main_agent.system_prompt,
-            max_iterations=main_agent.max_iterations,
-            tool_choice=main_agent.tool_choice,
-            compaction=main_agent.compaction,
+            system_prompt=base_agent.system_prompt,
+            max_iterations=base_agent.max_iterations,
+            tool_choice=base_agent.tool_choice,
+            compaction=base_agent.compaction,
             dependency_overrides=dependency_overrides,
             runtime_role="primary",
             llm_session_role="cron",
             hooks=[],
-            use_streaming=main_agent.use_streaming,
+            use_streaming=base_agent.use_streaming,
         )
         cron_agent.dependency_overrides[get_current_agent] = lambda: cron_agent
         return cron_agent
 
     @staticmethod
-    def _cron_background_tools(main_agent: Agent, job: CronJob) -> list[Any]:
+    def _cron_background_tools(base_agent: Agent, job: CronJob) -> list[Any]:
         # 禁止cron_agent使用 定时任务，subagent，agent-team，web相关工具
-        blocked_tools = {"cronjob", "delegate", "delegate_parallel"}
+        blocked_tools = {"cronjob", "delegate", "delegate_parallel", "message"}
         tools = [
             tool
-            for tool in main_agent.tools
+            for tool in base_agent.tools
             if tool.name not in blocked_tools
             and not tool.name.startswith("team_")
             and not tool.name.startswith("task_")
@@ -435,7 +425,7 @@ class WorkerRunner:
         return (
             "You are running an unattended scheduled cron job.\n"
             "Execute the prompt directly. Do not ask follow-up questions. "
-            "Do not send outbound messages; return the final result as your response.\n\n"
+            "The model's final response will be automatically sent to the user. \n\n"
             f"Job ID: {job.id}\n"
             f"Job Name: {job.name}\n\n"
             "Prompt:\n"

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -10,14 +12,17 @@ import httpx
 import pytest
 
 from agent_core import Agent
-from agent_core.llm.messages import BaseMessage
+from agent_core.llm.messages import BaseMessage, Function, ToolCall
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
 from agent_core.tools import tool
-from cli.im_bridge import FileBridgeStore, resolve_session_binding_id
+from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
 from cli.worker.gateway_client import WorkerGatewayClient, WorkerMessage, WorkerStreamEvent
 from cli.worker.mock_server import MockGatewayState, create_mock_gateway_app
+from cli.worker import runner as runner_module
 from cli.worker.runner import WorkerRunner
 from cron.jobs import CronJobStore
+from tools import SandboxContext, get_sandbox_context
+from tools.message import message as real_message_tool
 
 
 class _RecordingCronScheduler:
@@ -39,6 +44,7 @@ class _CapturingLLM:
         self.model = "capture-model"
         self.tool_names: list[str] = []
         self.last_user_content = ""
+        self.metadata: list[dict | None] = []
 
     async def ainvoke(
         self,
@@ -47,7 +53,8 @@ class _CapturingLLM:
         tool_choice=None,
         **kwargs,
     ) -> ChatInvokeCompletion:
-        del tool_choice, kwargs
+        del tool_choice
+        self.metadata.append(kwargs.get("metadata"))
         self.tool_names = [tool_def.name for tool_def in tools or []]
         for message in reversed(messages):
             if getattr(message, "role", None) == "user":
@@ -64,6 +71,24 @@ class _CapturingLLM:
     ):
         del messages, tools, tool_choice, kwargs
         yield ChatInvokeCompletionChunk(delta="stream")
+
+
+def _make_runner_for_model_resolution(workspace_root: Path, model: str | None) -> WorkerRunner:
+    class FakeGatewayClient:
+        pass
+
+    return WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=model,
+        root_dir=workspace_root,
+    )
+
+
+def test_worker_runner_constructor_does_not_accept_agent_parameter() -> None:
+    signature = inspect.signature(WorkerRunner)
+
+    assert "agent" not in signature.parameters
 
 
 @tool("Cron management", name="cronjob")
@@ -86,9 +111,185 @@ async def _fake_delegate_parallel_tool() -> str:
     return "delegate_parallel"
 
 
+@tool("Web fetch", name="web_fetch")
+async def _fake_web_fetch_tool() -> str:
+    return "web_fetch"
+
+
+@tool("Task output", name="task_output")
+async def _fake_task_output_tool() -> str:
+    return "task_output"
+
+
+@tool("Task status", name="task_status")
+async def _fake_task_status_tool() -> str:
+    return "task_status"
+
+
+@tool("Task cancel", name="task_cancel")
+async def _fake_task_cancel_tool() -> str:
+    return "task_cancel"
+
+
+@tool("Team create", name="team_create")
+async def _fake_team_create_tool() -> str:
+    return "team_create"
+
+
+@tool("Team status", name="team_status")
+async def _fake_team_status_tool() -> str:
+    return "team_status"
+
+
 @tool("Allowed tool", name="allowed_tool")
 async def _fake_allowed_tool() -> str:
     return "allowed"
+
+
+def test_worker_runner_fresh_cron_agent_blocks_team_task_and_web_tools() -> None:
+    class MainAgent:
+        tools = [
+            _fake_cronjob_tool,
+            _fake_delegate_tool,
+            _fake_delegate_parallel_tool,
+            _fake_web_fetch_tool,
+            _fake_task_output_tool,
+            _fake_task_status_tool,
+            _fake_task_cancel_tool,
+            _fake_team_create_tool,
+            _fake_team_status_tool,
+            _fake_message_tool,
+            _fake_allowed_tool,
+        ]
+
+    class Job:
+        enabled_toolsets = None
+
+    tool_names = [
+        tool.name for tool in WorkerRunner._cron_background_tools(MainAgent(), Job())
+    ]
+
+    assert tool_names == ["message", "allowed_tool"]
+
+
+def test_worker_runner_resolve_cron_agent_model_prefers_qwen_preset_when_model_is_none(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "load_model_presets",
+        lambda: {
+            "MiniMax-M2.7": {"model": "MiniMax-M2.7"},
+            "prefix-Qwen-Coder": {"model": "qwen-coder-latest"},
+        },
+    )
+    runner = _make_runner_for_model_resolution(workspace_root, model=None)
+
+    assert runner._resolve_cron_agent_model() == "prefix-Qwen-Coder"
+
+
+def test_worker_runner_resolve_cron_agent_model_prefers_minimax_when_qwen_missing(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "load_model_presets",
+        lambda: {
+            "GLM-5.1": {"model": "GLM-5.1"},
+            "MiniMax-M2.7": {"model": "MiniMax-M2.7"},
+        },
+    )
+    runner = _make_runner_for_model_resolution(workspace_root, model=None)
+
+    assert runner._resolve_cron_agent_model() == "MiniMax-M2.7"
+
+
+def test_worker_runner_resolve_cron_agent_model_prefers_glm_when_qwen_and_minimax_missing(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "load_model_presets",
+        lambda: {
+            "GLM-5.1": {"model": "GLM-5.1"},
+        },
+    )
+    runner = _make_runner_for_model_resolution(workspace_root, model=None)
+
+    assert runner._resolve_cron_agent_model() == "GLM-5.1"
+
+
+def test_worker_runner_resolve_cron_agent_model_uses_small_when_no_keyword_matches(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        runner_module,
+        "load_model_presets",
+        lambda: {
+            "deepseek": {"model": "DeepSeek-Coder"},
+        },
+    )
+    runner = _make_runner_for_model_resolution(workspace_root, model="custom-model")
+
+    assert runner._resolve_cron_agent_model() == "small"
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_fresh_cron_agent_creates_agent_from_selected_preset(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeGatewayClient:
+        pass
+
+    monkeypatch.setattr(
+        runner_module,
+        "load_model_presets",
+        lambda: {
+            "prefix-Qwen-Coder": {"model": "qwen-coder-latest"},
+        },
+    )
+    created_models: list[str | None] = []
+    cron_llm = _CapturingLLM()
+
+    def fake_create_agent(model, root_dir):  # noqa: ANN001
+        assert Path(root_dir) == workspace_root
+        created_models.append(model)
+        cron_agent = Agent(
+            llm=cron_llm,
+            tools=[_fake_allowed_tool],
+            system_prompt="cron system",
+            hooks=[object()],
+            use_streaming=False,
+        )
+        return cron_agent, object()
+
+    monkeypatch.setattr(runner_module, "create_agent", fake_create_agent)
+    store = CronJobStore(base_dir=workspace_root / "cron")
+    job = store.create_job(
+        name="Fresh",
+        prompt="do scheduled work",
+        schedule_text="every 30m",
+        workspace_root=workspace_root,
+        session_binding_id="worker-1",
+        execution_mode="fresh_agent_background",
+    )
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+    )
+
+    result = await runner._run_cron_fresh_agent(job)
+
+    assert result == "cron final"
+    assert created_models == ["prefix-Qwen-Coder"]
+    assert "do scheduled work" in cron_llm.last_user_content
 
 
 async def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.01) -> None:
@@ -102,7 +303,8 @@ async def _wait_until(predicate, *, timeout: float = 2.0, interval: float = 0.01
 
 @pytest.fixture
 def workspace_root() -> Path:
-    root = Path(".pytest_tmp") / f"worker-runner-{uuid.uuid4().hex}"
+    base_tmp = Path(os.environ.get("PYTEST_WORKSPACE_TMP", ".pytest_tmp"))
+    root = base_tmp / f"worker-runner-{uuid.uuid4().hex}"
     if root.exists():
         shutil.rmtree(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -272,6 +474,218 @@ async def test_worker_runner_bridges_remote_message_and_completes_via_sse(worksp
     assert gateway_client.offline_calls == ["worker-1"]
     assert gateway_client.completions == [
         {"worker_id": "worker-1", "final_content": "remote done sse", "source": "web"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_forwards_progress_before_final_completion(workspace_root: Path):
+    class FakeSSEGatewayClient:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[WorkerStreamEvent] = asyncio.Queue()
+            self.completions: list[dict[str, str]] = []
+
+        async def online(self, worker_id: str) -> bool:
+            return True
+
+        async def offline(self, worker_id: str) -> bool:
+            return True
+
+        async def complete(self, worker_id: str, final_content: str) -> bool:
+            self.completions.append(
+                {"worker_id": worker_id, "final_content": final_content}
+            )
+            return True
+
+        async def stream_events(self, worker_id: str):
+            yield WorkerStreamEvent(event="ready", payload={"worker_id": worker_id})
+            while True:
+                event = await self.queue.get()
+                yield event
+
+    gateway_client = FakeSSEGatewayClient()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=gateway_client,
+        model=None,
+        root_dir=workspace_root,
+        gateway_transport="sse",
+        result_poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(runner.run_forever())
+
+    store = FileBridgeStore(
+        workspace_root,
+        session_binding_id=resolve_session_binding_id("worker-1"),
+    )
+
+    await gateway_client.queue.put(
+        WorkerStreamEvent(
+            event="message",
+            message=WorkerMessage(content="remote hello sse"),
+            payload={"content": "remote hello sse"},
+        )
+    )
+    await _wait_until(lambda: store.pending_count() == 1)
+    claimed = store.claim_next_pending()
+    assert claimed is not None
+
+    store.record_progress(claimed, "partial answer")
+    await _wait_until(lambda: len(gateway_client.completions) == 1)
+    assert store.list_progress(claimed.request_id) == []
+    store.complete_request(claimed, final_content="final answer")
+    await _wait_until(lambda: len(gateway_client.completions) == 2)
+
+    runner.stop()
+    await gateway_client.queue.put(WorkerStreamEvent(event="heartbeat", payload={"ts": 1}))
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert gateway_client.completions == [
+        {"worker_id": "worker-1", "final_content": "partial answer"},
+        {"worker_id": "worker-1", "final_content": "final answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_reports_failed_bridge_result_via_complete(workspace_root: Path):
+    class FakeSSEGatewayClient:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[WorkerStreamEvent] = asyncio.Queue()
+            self.completions: list[dict[str, str | None]] = []
+
+        async def online(self, worker_id: str) -> bool:
+            return True
+
+        async def offline(self, worker_id: str) -> bool:
+            return True
+
+        async def complete(
+            self,
+            worker_id: str,
+            final_content: str,
+            final_status: str = "completed",
+            error_code: str | None = None,
+            error_message: str | None = None,
+        ) -> bool:
+            self.completions.append(
+                {
+                    "worker_id": worker_id,
+                    "final_content": final_content,
+                    "final_status": final_status,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                }
+            )
+            return True
+
+        async def stream_events(self, worker_id: str):
+            yield WorkerStreamEvent(event="ready", payload={"worker_id": worker_id})
+            while True:
+                event = await self.queue.get()
+                yield event
+
+    gateway_client = FakeSSEGatewayClient()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=gateway_client,
+        model=None,
+        root_dir=workspace_root,
+        gateway_transport="sse",
+        result_poll_interval_seconds=0.01,
+    )
+    task = asyncio.create_task(runner.run_forever())
+
+    store = FileBridgeStore(
+        workspace_root,
+        session_binding_id=resolve_session_binding_id("worker-1"),
+    )
+
+    await gateway_client.queue.put(
+        WorkerStreamEvent(
+            event="message",
+            message=WorkerMessage(content="remote failure"),
+            payload={"content": "remote failure"},
+        )
+    )
+    await _wait_until(lambda: store.pending_count() == 1)
+    claimed = store.claim_next_pending()
+    assert claimed is not None
+    store.fail_request(
+        claimed,
+        final_content="执行失败：boom",
+        error_code="LOCAL_BRIDGE_EXECUTION_ERROR",
+        error_message="boom",
+    )
+
+    await _wait_until(lambda: len(gateway_client.completions) == 1)
+    runner.stop()
+    await gateway_client.queue.put(WorkerStreamEvent(event="heartbeat", payload={"ts": 1}))
+    await asyncio.wait_for(task, timeout=1.0)
+
+    assert gateway_client.completions == [
+        {
+            "worker_id": "worker-1",
+            "final_content": "执行失败：boom",
+            "final_status": "failed",
+            "error_code": "LOCAL_BRIDGE_EXECUTION_ERROR",
+            "error_message": "boom",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_reports_request_processing_exception_via_complete(
+    workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeGatewayClient:
+        def __init__(self) -> None:
+            self.completions: list[dict[str, str | None]] = []
+
+        async def complete(
+            self,
+            worker_id: str,
+            final_content: str,
+            final_status: str = "completed",
+            error_code: str | None = None,
+            error_message: str | None = None,
+        ) -> bool:
+            self.completions.append(
+                {
+                    "worker_id": worker_id,
+                    "final_content": final_content,
+                    "final_status": final_status,
+                    "error_code": error_code,
+                    "error_message": error_message,
+                }
+            )
+            return True
+
+    gateway_client = FakeGatewayClient()
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=gateway_client,
+        model=None,
+        root_dir=workspace_root,
+        gateway_transport="poll",
+        result_poll_interval_seconds=0.01,
+    )
+
+    def fail_enqueue(*args, **kwargs):
+        del args, kwargs
+        raise RuntimeError("bridge write failed")
+
+    monkeypatch.setattr(runner.bridge_store, "enqueue_text", fail_enqueue)
+
+    await runner._process_message(WorkerMessage(content="remote hello"))
+
+    assert gateway_client.completions == [
+        {
+            "worker_id": "worker-1",
+            "final_content": "Execution failed: bridge write failed",
+            "final_status": "failed",
+            "error_code": "WORKER_REQUEST_PROCESSING_ERROR",
+            "error_message": "bridge write failed",
+        }
     ]
 
 
@@ -686,27 +1100,50 @@ async def test_worker_runner_cron_tick_error_does_not_raise(workspace_root: Path
 
 
 @pytest.mark.asyncio
-async def test_worker_runner_fresh_cron_agent_reuses_main_agent_llm_and_query(
+async def test_worker_runner_fresh_cron_agent_uses_created_agent_config_and_query(
     workspace_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     class FakeGatewayClient:
         pass
 
     llm = _CapturingLLM()
-    main_agent = Agent(
+    created_agent = Agent(
         llm=llm,
         tools=[
             _fake_cronjob_tool,
             _fake_message_tool,
             _fake_delegate_tool,
             _fake_delegate_parallel_tool,
+            _fake_web_fetch_tool,
+            _fake_task_output_tool,
+            _fake_task_status_tool,
+            _fake_task_cancel_tool,
+            _fake_team_create_tool,
+            _fake_team_status_tool,
             _fake_allowed_tool,
         ],
-        system_prompt="main system",
+        system_prompt="created system",
         max_iterations=37,
-        hooks=[],
+        hooks=[object()],
         use_streaming=False,
     )
+    created_models: list[str | None] = []
+
+    monkeypatch.setattr(
+        runner_module,
+        "load_model_presets",
+        lambda: {
+            "prefix-Qwen-Coder": {"model": "qwen-coder-latest"},
+        },
+    )
+
+    def fake_create_agent(model, root_dir):  # noqa: ANN001
+        assert Path(root_dir) == workspace_root
+        created_models.append(model)
+        return created_agent, object()
+
+    monkeypatch.setattr(runner_module, "create_agent", fake_create_agent)
     store = CronJobStore(base_dir=workspace_root / "cron")
     job = store.create_job(
         name="Fresh",
@@ -721,21 +1158,87 @@ async def test_worker_runner_fresh_cron_agent_reuses_main_agent_llm_and_query(
         gateway_client=FakeGatewayClient(),
         model=None,
         root_dir=workspace_root,
-        agent=main_agent,
     )
 
-    cron_agent = runner._build_cron_background_agent(main_agent, job)
+    cron_agent = runner._build_cron_background_agent(created_agent, job)
     result = await runner._run_cron_fresh_agent(job)
 
     assert result == "cron final"
-    assert cron_agent.llm is main_agent.llm
-    assert cron_agent.system_prompt == "main system"
+    assert created_models == ["prefix-Qwen-Coder"]
+    assert cron_agent.llm is created_agent.llm
+    assert cron_agent.system_prompt == "created system"
     assert cron_agent.max_iterations == 37
     assert cron_agent.runtime_role == "primary"
+    assert cron_agent.llm_session_role == "cron"
     assert cron_agent.hooks == []
-    assert "message" in llm.tool_names
+    assert llm.metadata == [
+        {
+            "runtime_role": "primary",
+            "session_role": "cron",
+        }
+    ]
+    assert "message" not in llm.tool_names
     assert "allowed_tool" in llm.tool_names
     assert "cronjob" not in llm.tool_names
     assert "delegate" not in llm.tool_names
     assert "delegate_parallel" not in llm.tool_names
+    assert "web_fetch" not in llm.tool_names
+    assert "task_output" not in llm.tool_names
+    assert "task_status" not in llm.tool_names
+    assert "task_cancel" not in llm.tool_names
+    assert "team_create" not in llm.tool_names
+    assert "team_status" not in llm.tool_names
     assert "do scheduled work" in llm.last_user_content
+
+
+@pytest.mark.asyncio
+async def test_worker_runner_fresh_cron_agent_message_tool_uses_worker_bridge_store(
+    workspace_root: Path,
+):
+    class FakeGatewayClient:
+        pass
+
+    llm = _CapturingLLM()
+    ctx = SandboxContext.create(workspace_root)
+    main_agent = Agent(
+        llm=llm,
+        tools=[real_message_tool],
+        system_prompt="main system",
+        dependency_overrides={get_sandbox_context: lambda: ctx},
+        hooks=[],
+        use_streaming=False,
+    )
+    store = CronJobStore(base_dir=workspace_root / "cron")
+    job = store.create_job(
+        name="Fresh",
+        prompt="send a scheduled message",
+        schedule_text="every 30m",
+        workspace_root=workspace_root,
+        session_binding_id="worker-1",
+        execution_mode="fresh_agent_background",
+    )
+    runner = WorkerRunner(
+        worker_id="worker-1",
+        gateway_client=FakeGatewayClient(),
+        model=None,
+        root_dir=workspace_root,
+    )
+
+    cron_agent = runner._build_cron_background_agent(main_agent, job)
+    assert cron_agent.dependency_overrides[get_bridge_store]() is runner.bridge_store
+    tool_result = await cron_agent._execute_tool_call(
+        ToolCall(
+            id="call-message",
+            function=Function(
+                name="message",
+                arguments=json.dumps({"action": "text", "text": "scheduled hello"}),
+            ),
+        )
+    )
+
+    assert not tool_result.is_error, tool_result.text
+    assert "scheduled hello" in tool_result.text
+    event = runner.bridge_store.claim_next_pending_outbound()
+    assert event is not None
+    assert event.action == "text"
+    assert event.text == "scheduled hello"
