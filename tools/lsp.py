@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, Field
 
 from agent_core.lsp.client import LSPError
 from agent_core.lsp.formatter import (
@@ -17,6 +19,131 @@ from agent_core.lsp.formatter import (
 from agent_core.tools import Depends, tool
 from tools.path_resolution import AmbiguousPathError, PathNotFoundError, resolve_target_path
 from tools.sandbox import SandboxContext, get_sandbox_context
+
+LSPOperation = Literal[
+    "status",
+    "diagnostics",
+    "definition",
+    "references",
+    "hover",
+    "document_symbols",
+    "workspace_symbols",
+]
+
+
+class LSPParams(BaseModel):
+    """Arguments for the unified LSP tool."""
+
+    operation: LSPOperation = Field(
+        description=(
+            "LSP operation to run. Use status for server state; diagnostics for errors; "
+            "definition/references/hover are editor cursor-position operations for the symbol "
+            "under file_path + line + character; "
+            "document_symbols for a stable symbol outline of one file; workspace_symbols "
+            "to search indexed workspace symbols by query."
+        ),
+    )
+    file_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to a concrete source file, not '.' and not a directory. Required for "
+            "definition, references, hover, document_symbols, and workspace_symbols. Optional "
+            "for diagnostics. Not used for status. For workspace_symbols, pass an actual file "
+            "such as 'agent_core/agent/service.py'; this selects the language server "
+            "and workspace root."
+        ),
+    )
+    line: int | None = Field(
+        default=None,
+        description=(
+            "1-based line number. Required only for definition, references, and hover. "
+            "It must be the exact editor line containing the target symbol."
+        ),
+    )
+    character: int | None = Field(
+        default=None,
+        description=(
+            "1-based character column. Required only for definition, references, and hover. "
+            "It must point inside the target symbol text, not merely to the start of the line. "
+            "Do not set this to 1 unless the symbol actually starts at column 1. If unsure, "
+            "read the file line first and count the 1-based column of the symbol."
+        ),
+    )
+    query: str | None = Field(
+        default=None,
+        description=(
+            "Search text for workspace_symbols only. Ignored by status, diagnostics, "
+            "definition, references, hover, and document_symbols. This is symbol-index search, not grep."
+        ),
+    )
+
+
+@tool(
+    (
+        "Run Language Server Protocol code intelligence operations. "
+        "Use status to inspect configured servers and active clients. "
+        "Use diagnostics to return language-server diagnostics. "
+        "Use definition as Go to Definition: given a concrete source file and an exact cursor "
+        "position inside a symbol, return where an editor would jump. "
+        "Use references to find usages of the symbol at an exact cursor position. "
+        "Use hover to get type, signature, or documentation for the symbol at an exact cursor "
+        "position. "
+        "Use document_symbols to list the stable symbol outline declared in one file. "
+        "Do not call document_symbols repeatedly for the same file unless the file changed "
+        "or the previous call failed; repeated calls return the same snapshot. If truncated "
+        "is true, it is not pagination and another call will return the same first results; "
+        "use read or grep for code details instead. "
+        "Use workspace_symbols to search indexed workspace symbols by query, with file_path "
+        "selecting the language server. file_path must be a real source file, not '.' or a "
+        "directory. Lines and characters are 1-based. "
+        "For definition/references/hover, character must point inside the target symbol text; "
+        "do not set character to 1 unless the symbol starts at column 1. If you only know a "
+        "symbol name, use workspace_symbols first. If you know the line but not the character, "
+        "read the file line first and count the 1-based column. query is only used by "
+        "workspace_symbols."
+    ),
+    context_policy="trim",
+    context_max_inline_chars=6400,
+    args_schema=LSPParams,
+)
+async def lsp(
+    operation: LSPOperation,
+    ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
+    file_path: str | None = None,
+    line: int | None = None,
+    character: int | None = None,
+    query: str | None = None,
+) -> str:
+    if operation == "status":
+        return await lsp_status.func(ctx=ctx)
+    if operation == "diagnostics":
+        return await lsp_diagnostics.func(ctx=ctx, file_path=file_path)
+    if operation == "document_symbols":
+        if file_path is None:
+            return error_payload("lsp", "operation document_symbols requires file_path.")
+        return await lsp_document_symbols.func(file_path=file_path, ctx=ctx)
+    if operation == "workspace_symbols":
+        if query is None or not str(query).strip():
+            return error_payload("lsp", "operation workspace_symbols requires query.")
+        if file_path is None:
+            return error_payload("lsp", "operation workspace_symbols requires file_path.")
+        return await lsp_workspace_symbols.func(query=query, ctx=ctx, file_path=file_path)
+    if operation in {"definition", "references", "hover"}:
+        missing = []
+        if file_path is None:
+            missing.append("file_path")
+        if line is None:
+            missing.append("line")
+        if character is None:
+            missing.append("character")
+        if missing:
+            return error_payload("lsp", f"operation {operation} requires {', '.join(missing)}.")
+        if operation == "definition":
+            return await lsp_definition.func(file_path, line, character, ctx=ctx)
+        if operation == "references":
+            return await lsp_references.func(file_path, line, character, ctx=ctx)
+        return await lsp_hover.func(file_path, line, character, ctx=ctx)
+    return error_payload("lsp", f"Unsupported LSP operation: {operation}")
 
 
 @tool("Show LSP server configuration and currently running clients.", context_policy="trim")
@@ -51,7 +178,8 @@ async def lsp_diagnostics(
 
 
 @tool(
-    "Find the semantic definition for the symbol at a 1-based file line and character.",
+    "Go to Definition for the symbol under an exact 1-based cursor position. The character "
+    "must point inside the target symbol text; this is not name-based search.",
     context_policy="trim",
     context_max_inline_chars=6400,
 )
@@ -72,7 +200,8 @@ async def lsp_definition(
 
 
 @tool(
-    "Find semantic references for the symbol at a 1-based file line and character.",
+    "Find references for the symbol under an exact 1-based cursor position. The character "
+    "must point inside the target symbol text; this is not name-based search.",
     context_policy="trim",
     context_max_inline_chars=6400,
 )
@@ -93,7 +222,8 @@ async def lsp_references(
 
 
 @tool(
-    "Return hover/type information for the symbol at a 1-based file line and character.",
+    "Return hover/type information for the symbol under an exact 1-based cursor position. "
+    "The character must point inside the target symbol text; this is not name-based search.",
     context_policy="trim",
     context_max_inline_chars=6400,
 )
@@ -116,7 +246,13 @@ async def lsp_hover(
         return error_payload("lsp_hover", _error_message(exc))
 
 
-@tool("Return symbols declared in one source file using LSP.", context_policy="trim")
+@tool(
+    "Return a stable symbol outline declared in one source file using LSP. Do not call this "
+    "repeatedly for the same file unless the file changed or the previous call failed. If "
+    "truncated is true, repeated calls return the same first results; use read or grep for "
+    "code details instead.",
+    context_policy="trim",
+)
 async def lsp_document_symbols(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
@@ -133,9 +269,13 @@ async def lsp_document_symbols(
         return error_payload("lsp_document_symbols", _error_message(exc))
 
 
-@tool("Search workspace symbols using started/configured LSP servers.", context_policy="trim")
+@tool(
+    "Search workspace symbols using file_path to choose one language server.",
+    context_policy="trim",
+)
 async def lsp_workspace_symbols(
     query: str,
+    file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],
 ) -> str:
     manager = _get_manager(ctx)
@@ -146,16 +286,9 @@ async def lsp_workspace_symbols(
             raise LSPError(
                 "LSP is disabled by settings. Set settings.lsp.enabled to true in ~/.tg_agent/settings.json."
             )
-        results = []
-        for server in manager.config.servers.values():
-            probe = _find_probe_file(ctx.root_dir, server.extensions)
-            if probe is None:
-                continue
-            client = await manager.for_file(probe)
-            raw = await client.workspace_symbols(query)
-            results.append(raw)
-        flattened = [item for raw in results if isinstance(raw, list) for item in raw]
-        return format_symbols("lsp_workspace_symbols", flattened, workspace_root=ctx.root_dir)
+        path = _resolve_file(file_path, ctx)
+        raw = await manager.workspace_symbols(query, path)
+        return format_symbols("lsp_workspace_symbols", raw, workspace_root=ctx.root_dir)
     except Exception as exc:
         return error_payload("lsp_workspace_symbols", _error_message(exc))
 
@@ -194,8 +327,25 @@ def _resolve_optional_file(file_path: str | None, ctx: SandboxContext) -> Path |
 
 
 def _resolve_file(file_path: str, ctx: SandboxContext) -> Path:
+    stripped = file_path.strip()
+    if stripped in {".", "./"} or stripped.endswith(("/", "\\")):
+        raise LSPError(
+            "file_path must be a concrete source file, not '.' or a directory. "
+            "For workspace_symbols, pass a file for the target language, e.g. "
+            "'agent_core/agent/service.py'."
+        )
     try:
-        return resolve_target_path(file_path, ctx, kind="file")
+        direct = ctx.resolve_path(stripped)
+    except Exception:
+        direct = None
+    if direct is not None and direct.exists() and direct.is_dir():
+        raise LSPError(
+            "file_path must be a concrete source file, not a directory. "
+            "For workspace_symbols, pass a file for the target language, e.g. "
+            "'agent_core/agent/service.py'."
+        )
+    try:
+        return resolve_target_path(stripped, ctx, kind="file")
     except (PathNotFoundError, AmbiguousPathError):
         raise
     except Exception as exc:
@@ -206,16 +356,6 @@ def _to_lsp_position(line: int, character: int) -> tuple[int, int]:
     if line <= 0 or character <= 0:
         raise LSPError("line and character must be positive 1-based integers")
     return line - 1, character - 1
-
-
-def _find_probe_file(root: Path, extensions: list[str]) -> Path | None:
-    try:
-        for path in root.rglob("*"):
-            if path.is_file() and path.suffix.lower() in extensions:
-                return path
-    except OSError:
-        return None
-    return None
 
 
 def _error_message(exc: Exception) -> str:

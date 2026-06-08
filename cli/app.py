@@ -109,6 +109,7 @@ from cli.cron_handler import CronSlashHandler
 from cli.init_agent import build_init_agent, build_init_user_prompt, validate_init_output
 from cli.im_bridge import BridgeRequest, SqliteBridgeStore
 from cli.interactive_input import InteractivePrompter
+from cli.lsp_handler import LspSlashHandler
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
 from cli.plugins_handler import PluginSlashHandler
@@ -2342,6 +2343,12 @@ class TGAgentCLI:
             self._settings_handler.bind_console(self._console)
             self._settings_handler.start()
             return True
+
+        if command_name == "lsp":
+            return await LspSlashHandler(
+                manager=self._ctx.lsp_manager,
+                console=self._console,
+            ).handle(args)
 
         if command_name == "update":
             return await UpdateSlashHandler(console=self._console).handle(args)

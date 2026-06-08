@@ -23,6 +23,20 @@ _DEFAULT_SERVERS: dict[str, dict[str, Any]] = {
         "languageId": "typescript",
         "rootMarkers": ["tsconfig.json", "package.json", ".git"],
     },
+    "java": {
+        "command": "jdtls",
+        "args": [],
+        "extensions": [".java"],
+        "languageId": "java",
+        "rootMarkers": [
+            "pom.xml",
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+            ".git",
+        ],
+    },
 }
 
 _DEFAULT_LSP: dict[str, Any] = {

@@ -229,6 +229,13 @@ SandboxContext
         "extensions": [".ts", ".tsx", ".js", ".jsx"],
         "languageId": "typescript",
         "rootMarkers": ["tsconfig.json", "package.json", ".git"]
+      },
+      "java": {
+        "command": "jdtls",
+        "args": [],
+        "extensions": [".java"],
+        "languageId": "java",
+        "rootMarkers": ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", ".git"]
       }
     }
   }
@@ -276,6 +283,13 @@ SandboxContext
       "extensions": [".ts", ".tsx", ".js", ".jsx"],
       "languageId": "typescript",
       "rootMarkers": ["tsconfig.json", "package.json", ".git"]
+    },
+    "java": {
+      "command": "jdtls",
+      "args": [],
+      "extensions": [".java"],
+      "languageId": "java",
+      "rootMarkers": ["pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts", ".git"]
     }
   }
 }
@@ -648,8 +662,10 @@ lsp_definition(file_path: str, line: int, character: int)
 lsp_references(file_path: str, line: int, character: int)
 lsp_hover(file_path: str, line: int, character: int)
 lsp_document_symbols(file_path: str)
-lsp_workspace_symbols(query: str)
+lsp_workspace_symbols(query: str, file_path: str)
 ```
+
+`workspace_symbols` 使用 `file_path` 选择对应的 language server 和 workspace root，因此不会因为仓库中存在多种语言而启动所有 server。
 
 ### 5.6.1 行列号约定
 
@@ -891,6 +907,7 @@ LSP 工具必须遵守现有 sandbox：
 
 - `.py` 选择 python server
 - `.ts` 选择 typescript server
+- `.java` 选择 java server
 - 未配置后缀返回错误
 - root marker 不能越过 workspace root
 - 同一 server + root 复用 client
@@ -910,6 +927,7 @@ LSP 工具必须遵守现有 sandbox：
 ```text
 pyright-langserver --stdio
 typescript-language-server --stdio
+jdtls
 ```
 
 手动验证：
@@ -918,6 +936,8 @@ typescript-language-server --stdio
 - Python definition
 - TypeScript 文件 diagnostics
 - TypeScript references
+- Java 文件 diagnostics
+- Java references
 
 ## 11. 实现顺序
 

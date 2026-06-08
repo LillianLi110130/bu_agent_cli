@@ -6,15 +6,7 @@ from tools.bash import bash
 from tools.browser_harness import browser_harness
 from tools.files import edit, read, write
 from tools.image_analysis import analyze_image
-from tools.lsp import (
-    lsp_definition,
-    lsp_diagnostics,
-    lsp_document_symbols,
-    lsp_hover,
-    lsp_references,
-    lsp_status,
-    lsp_workspace_symbols,
-)
+from tools.lsp import lsp
 from tools.message import message
 from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, SecurityError, get_sandbox_context
@@ -44,13 +36,7 @@ ALL_TOOLS = [
     read,
     read_excel,
     analyze_image,
-    lsp_status,
-    lsp_diagnostics,
-    lsp_definition,
-    lsp_references,
-    lsp_hover,
-    lsp_document_symbols,
-    lsp_workspace_symbols,
+    lsp,
     # read_excel,
     write,
     edit,
@@ -89,13 +75,7 @@ __all__ = [
     "read",
     "read_excel",
     "analyze_image",
-    "lsp_status",
-    "lsp_diagnostics",
-    "lsp_definition",
-    "lsp_references",
-    "lsp_hover",
-    "lsp_document_symbols",
-    "lsp_workspace_symbols",
+    "lsp",
     "write",
     "edit",
     "glob_search",

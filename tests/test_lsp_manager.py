@@ -26,7 +26,20 @@ def test_manager_resolves_root_marker_without_crossing_workspace(tmp_path: Path)
     (package / "package.json").write_text("{}", encoding="utf-8")
     target = source / "App.tsx"
     target.write_text("export const App = () => null\n", encoding="utf-8")
-    config = parse_lsp_config({"enabled": True})
+    config = parse_lsp_config(
+        {
+            "enabled": True,
+            "servers": {
+                "typescript": {
+                    "command": "typescript-language-server",
+                    "args": ["--stdio"],
+                    "extensions": [".ts", ".tsx", ".js", ".jsx"],
+                    "languageId": "typescript",
+                    "rootMarkers": ["tsconfig.json", "package.json", ".git"],
+                }
+            },
+        }
+    )
     manager = LSPManager(workspace_root=workspace, config=config)
     server = manager._server_for_path(target)  # noqa: SLF001
 
@@ -43,6 +56,16 @@ def test_manager_rejects_unknown_extension(tmp_path: Path) -> None:
         manager._server_for_path(tmp_path / "notes.txt")  # noqa: SLF001
 
 
+def test_manager_selects_default_java_server(tmp_path: Path) -> None:
+    config = parse_lsp_config({"enabled": True})
+    manager = LSPManager(workspace_root=tmp_path, config=config)
+
+    server = manager._server_for_path(tmp_path / "Main.java")  # noqa: SLF001
+
+    assert server.name == "java"
+    assert server.command == "jdtls"
+
+
 @pytest.mark.anyio
 async def test_manager_auto_start_false_blocks_new_client(tmp_path: Path) -> None:
     target = tmp_path / "main.py"
@@ -52,6 +75,37 @@ async def test_manager_auto_start_false_blocks_new_client(tmp_path: Path) -> Non
 
     with pytest.raises(RuntimeError, match="autoStart is disabled"):
         await manager.for_file(target)
+
+
+@pytest.mark.anyio
+async def test_manager_start_server_ignores_auto_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = parse_lsp_config({"enabled": True, "autoStart": False})
+    manager = LSPManager(workspace_root=tmp_path, config=config)
+    starts = 0
+
+    async def fake_start(self: LSPClient) -> None:
+        nonlocal starts
+        starts += 1
+
+    monkeypatch.setattr(LSPClient, "start", fake_start)
+
+    first = await manager.start_server("python")
+    second = await manager.start_server("python")
+
+    assert first is second
+    assert starts == 1
+    assert manager.status()["clients"]
+
+
+@pytest.mark.anyio
+async def test_manager_start_server_rejects_unknown_name(tmp_path: Path) -> None:
+    manager = LSPManager(workspace_root=tmp_path, config=parse_lsp_config({"enabled": True}))
+
+    with pytest.raises(RuntimeError, match="No LSP server configured with name"):
+        await manager.start_server("missing")
 
 
 @pytest.mark.anyio

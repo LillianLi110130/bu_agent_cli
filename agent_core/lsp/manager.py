@@ -68,6 +68,45 @@ class LSPManager:
             for diagnostic in await client.diagnostics(None)
         ]
 
+    async def workspace_symbols(self, query: str, path: Path) -> list[object]:
+        self._ensure_enabled()
+        clients = [await self.for_file(path)]
+
+        results: list[object] = []
+        for client in clients:
+            raw = await client.workspace_symbols(query)
+            if isinstance(raw, list):
+                results.extend(raw)
+            elif raw is not None:
+                results.append(raw)
+        return results
+
+    async def start_server(self, name: str, *, root: Path | None = None) -> LSPClient:
+        """Explicitly start a configured server for a root.
+
+        This is used by manual commands such as ``/lsp start python`` and does not
+        depend on the lazy ``autoStart`` setting.
+        """
+        self._ensure_enabled()
+        server = self._server_by_name(name)
+        resolved_root = (root or self.workspace_root).resolve()
+        key = (server.name, resolved_root)
+        client = self._clients.get(key)
+        if client is not None:
+            return client
+
+        self._broken.discard(key)
+        spawning = self._spawning.get(key)
+        if spawning is not None:
+            return await spawning
+
+        spawning = asyncio.create_task(self._spawn_client(key, server, resolved_root))
+        self._spawning[key] = spawning
+        try:
+            return await spawning
+        finally:
+            self._spawning.pop(key, None)
+
     async def shutdown_all(self) -> None:
         spawning = list(self._spawning.values())
         self._spawning.clear()
@@ -123,6 +162,15 @@ class LSPManager:
             if suffix in server.extensions:
                 return server
         raise LSPError(f"No LSP server configured for extension {suffix or '(none)'}")
+
+    def _server_by_name(self, name: str) -> LSPServerConfig:
+        normalized = name.strip().lower()
+        for server in self.config.servers.values():
+            if server.name.lower() == normalized:
+                if server.disabled:
+                    raise LSPError(f"LSP server is disabled: {server.name}")
+                return server
+        raise LSPError(f"No LSP server configured with name: {name}")
 
     async def _spawn_client(
         self,

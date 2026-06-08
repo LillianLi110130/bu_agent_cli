@@ -153,6 +153,18 @@ class SlashCommandRegistry:
                 category="配置",
             ),
             SlashCommand(
+                name="lsp",
+                description="查看 LSP 状态，或手动启动指定 language server",
+                usage="/lsp [status|start <server>]",
+                examples=[
+                    "/lsp status",
+                    "/lsp start python",
+                    "/lsp start typescript",
+                    "/lsp start java",
+                ],
+                category="配置",
+            ),
+            SlashCommand(
                 name="update",
                 description="检查 Crab CLI 更新状态",
                 usage="/update [check|status]",

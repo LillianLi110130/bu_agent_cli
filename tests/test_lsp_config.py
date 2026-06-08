@@ -14,6 +14,9 @@ def test_parse_lsp_config_defaults_enabled() -> None:
     assert config.enabled is True
     assert config.auto_start is True
     assert ".py" in config.servers["python"].extensions
+    assert ".tsx" in config.servers["typescript"].extensions
+    assert config.servers["java"].command == "jdtls"
+    assert ".java" in config.servers["java"].extensions
 
 
 def test_load_lsp_config_reads_settings_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
