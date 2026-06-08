@@ -201,6 +201,46 @@ DANGEROUS_COMMAND_RULES: tuple[CommandSafetyRule, ...] = (
         "删除 .tg_agent",
     ),
     _rule(
+        "system_power_control",
+        r"(?:^|[;&|]\s*)"
+        r"(?:(?:sudo|doas|cmd(?:\.exe)?\s*/c|powershell(?:\.exe)?\b[^;&|]*|"
+        r"pwsh(?:\.exe)?\b[^;&|]*)\s+)*"
+        r"(?:shutdown(?:\.exe)?|reboot|halt|poweroff)\b"
+        r"|(?:^|[;&|]\s*)(?:(?:sudo|doas)\s+)*init\s+(?:0|6)\b"
+        r"|(?:^|[;&|]\s*)"
+        r"(?:(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^;&|]*\s+)*"
+        r"(?:restart-computer|stop-computer)\b",
+        "Command can shut down or restart the local system.",
+        "system_power",
+        "critical",
+        "block",
+        "system power control",
+    ),
+    _rule(
+        "system_scheduler_command",
+        r"(?:^|[;&|]\s*)"
+        r"(?:(?:sudo|doas|cmd(?:\.exe)?\s*/c|powershell(?:\.exe)?\b[^;&|]*|"
+        r"pwsh(?:\.exe)?\b[^;&|]*)\s+)*"
+        r"(?:crontab|at|batch|schtasks(?:\.exe)?)\b"
+        r"|(?:^|[;&|]\s*)"
+        r"(?:(?:powershell(?:\.exe)?|pwsh(?:\.exe)?)\b[^;&|]*\s+)*"
+        r"(?:new|register|set|unregister|start|stop|enable|disable|get)-scheduledtask\b",
+        "Command reads or changes system scheduled tasks.",
+        "scheduled_task",
+        "critical",
+        "block",
+        "system scheduled task",
+    ),
+    _rule(
+        "git_reset_hard",
+        r"\bgit\b(?=[^;&|]*\breset\s+--hard\b)[^;&|]*\breset\s+--hard\b",
+        "git reset --hard may destroy uncommitted changes.",
+        "source_control",
+        "high",
+        "block",
+        "git reset --hard",
+    ),
+    _rule(
         "rm_recursive",
         r"\brm\b(?=[^;&|]*(?:-[^\s;|&]*r|--recursive\b))[^;&|]*\s+\S+",
         "Recursive deletion can remove user files or project state.",
@@ -236,15 +276,6 @@ DANGEROUS_COMMAND_RULES: tuple[CommandSafetyRule, ...] = (
         "high",
         "ask",
         "xargs rm",
-    ),
-    _rule(
-        "git_reset_hard",
-        r"\bgit\s+reset\s+--hard\b",
-        "git reset --hard may destroy uncommitted changes.",
-        "source_control",
-        "high",
-        "ask",
-        "git reset --hard",
     ),
     _rule(
         "git_clean_force",

@@ -100,7 +100,7 @@ class WriteArgs(BaseModel):
     file_path: str = Field(..., description="Path to the file to write.")
 
 
-@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=6400)
+@tool("Read contents of a file", context_policy="trim", context_max_inline_chars=12800)
 async def read(
     file_path: str,
     ctx: Annotated[SandboxContext, Depends(get_sandbox_context)],

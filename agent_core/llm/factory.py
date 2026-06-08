@@ -32,7 +32,16 @@ def create_chat_model(
             api_key=resolved.api_key,
             base_url=resolved.base_url,
             timeout=timeout,
+            route_path=getattr(fallback_llm, "route_path", "/llm/query-stream"),
             default_headers=default_headers,
+            http_client=getattr(fallback_llm, "http_client", None),
+            base_dir=getattr(fallback_llm, "base_dir", None),
+            stream_line_log_file=getattr(fallback_llm, "stream_line_log_file", "llm.log"),
+            worker_no=getattr(fallback_llm, "worker_no", None),
+            session_id=getattr(fallback_llm, "session_id", None),
+            session_no=getattr(fallback_llm, "session_no", None),
+            user_id=getattr(fallback_llm, "user_id", None),
+            session_callback=getattr(fallback_llm, "session_callback", None),
         )
 
     if isinstance(fallback_llm, ChatOpenAI):

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.SyncJobRecordMapper">
+
+    <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+        insert into sync_job_record
+        (
+            job_name,
+            start_time,
+            run_status,
+            create_time,
+            update_time
+        )
+        values
+        (
+            #{jobName},
+            #{startTime},
+            #{runStatus},
+            now(),
+            now()
+        )
+    </insert>
+
+    <update id="updateStatus">
+        update sync_job_record
+        set end_time = #{endTime},
+            run_status = #{runStatus},
+            error_msg = #{errorMsg},
+            update_time = now()
+        where id = #{id}
+    </update>
+
+</mapper>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.SyncJobControlMapper">
+
+    <update id="acquire">
+        update sync_job_control
+        set lock_until = date_add(now(), interval #{lockMinutes} minute)
+        where job_name = #{jobName}
+          and (lock_until is null or lock_until &lt;= now())
+    </update>
+
+    <update id="release">
+        update sync_job_control
+        set lock_until = now()
+        where job_name = #{jobName}
+    </update>
+
+</mapper>

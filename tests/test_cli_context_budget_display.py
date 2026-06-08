@@ -151,6 +151,24 @@ def test_context_budget_status_keeps_provider_usage_exact(
 
 
 @pytest.mark.asyncio
+async def test_context_budget_hook_does_not_preannounce_compaction() -> None:
+    agent = Agent(llm=FakeLLM([]), tools=[])
+    statuses: list[str] = []
+    hook = _CLIContextBudgetHook(on_compaction_status=statuses.append)
+    ctx = HookContext(agent=agent, state=AgentRunState(query_mode="query", max_iterations=1))
+
+    await hook.before_event(
+        ContextMaintenanceRequested(
+            response=ChatInvokeCompletion(content="done"),
+            iteration=1,
+        ),
+        ctx,
+    )
+
+    assert statuses == []
+
+
+@pytest.mark.asyncio
 async def test_reset_command_restores_context_budget_toolbar_to_100_left(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

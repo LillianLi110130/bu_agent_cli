@@ -386,6 +386,21 @@ class ToolMessage(_MessageBase):
 	The original content remains intact in the message for debugging/logging.
 	"""
 
+	context_policy: str | None = None
+	"""Context policy applied when the tool result entered chat history."""
+
+	context_artifact_path: str | None = None
+	"""Path to a persisted full tool result artifact, when available."""
+
+	context_summary: str | None = None
+	"""Summary produced while applying the tool context policy, when available."""
+
+	microcompacted: bool = False
+	"""Whether this historical tool result has been replaced with a micro summary."""
+
+	microcompacted_at_turn: int | None = None
+	"""Conversation round where the tool result was microcompacted."""
+
 	@property
 	def text(self) -> str:
 		"""Extract text content from the message."""

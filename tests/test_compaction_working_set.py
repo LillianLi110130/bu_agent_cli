@@ -182,9 +182,12 @@ async def test_check_and_compact_injects_working_set_plus_recent_history():
         )
 
     context.assess_budget = MethodType(fake_assess_budget, context)
+    compaction_statuses: list[str] = []
+    context.compaction_start_handler = compaction_statuses.append
     changed = await context.check_and_compact(llm)
 
     assert changed is True
+    assert compaction_statuses == ["Compaction start"]
     contents = [getattr(message, "content", "") for message in context.get_messages()]
     assert "[Compacted Working Set]" in contents[0]
     assert contents[1:] == ["assistant-2", "user-3"]

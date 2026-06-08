@@ -40,6 +40,11 @@ class ResumeSlashHandler:
         self._workspace_dir = workspace_dir
         self._pick_active = False
         self._pick_options: list[SessionMeta] = []
+        self._page_size = 20
+        self._page_index = 0
+        self._current_session_id = ""
+        self._workspace_key = ""
+        self._has_next_page = False
 
     @property
     def pick_active(self) -> bool:
@@ -60,33 +65,54 @@ class ResumeSlashHandler:
             self._console.print("[yellow]会话历史存储不可用，无法使用 /resume。[/yellow]")
             return
 
+        self._pick_active = False
         _workspace_root, workspace_key = workspace_identity(self._workspace_dir)
-        sessions = self._store.list_sessions(
-            workspace_key=workspace_key,
-            exclude_session_id=current_session_id,
-            limit=20,
-        )
-        if not sessions:
+        self._current_session_id = current_session_id
+        self._workspace_key = workspace_key
+        self._page_index = 0
+        if not self._load_pick_page():
             self._console.print("[yellow]当前工作区暂无可恢复的其他会话。[/yellow]")
             return
 
-        self._pick_options = sessions
         self._pick_active = True
+        self._print_pick_page()
 
+    def _load_pick_page(self) -> bool:
+        if self._store is None:
+            return False
+
+        sessions = self._store.list_sessions(
+            workspace_key=self._workspace_key,
+            exclude_session_id=self._current_session_id,
+            limit=self._page_size + 1,
+            offset=self._page_index * self._page_size,
+        )
+        self._has_next_page = len(sessions) > self._page_size
+        self._pick_options = sessions[: self._page_size]
+        return bool(self._pick_options)
+
+    def _print_pick_page(self) -> None:
         self._console.print()
         self._console.print("[bold cyan]选择要恢复的会话：[/bold cyan]")
+        self._console.print(
+            f"[dim]第 {self._page_index + 1} 页 · 输入编号恢复，n 下一页，p 上一页，q 取消。[/dim]"
+        )
         self._console.print()
-        for idx, session in enumerate(sessions, 1):
+        start_number = self._current_page_start_number()
+        for offset, session in enumerate(self._pick_options):
+            display_index = start_number + offset
             title = session.title or "Untitled session"
             title = title.replace("\n", " ").strip()
             if len(title) > 40:
                 title = f"{title[:40]}..."
             age = _format_relative_time(session.updated_at)
             self._console.print(
-                f"  {idx}. [cyan]{rich_escape(title)}[/cyan]   "
+                f"  {display_index}. [cyan]{rich_escape(title)}[/cyan]   "
                 f"[dim]{session.message_count} messages   {age}[/dim]"
             )
-        self._console.print("[dim]输入编号后回车即可恢复，输入 q 可取消。[/dim]")
+
+    def _current_page_start_number(self) -> int:
+        return self._page_index * self._page_size + 1
 
     def handle_pick_input(self, user_input: str) -> ResumePickResult:
         """Handle one line of input while in numbered resume-pick mode."""
@@ -95,7 +121,7 @@ class ResumeSlashHandler:
 
         value = user_input.strip()
         if not value:
-            self._console.print("[dim]请输入编号，或输入 q 取消。[/dim]")
+            self._console.print("[dim]请输入编号，或输入 n/p 翻页，输入 q 取消。[/dim]")
             return ResumePickResult(handled=True)
 
         if value.lower() in {"q", "quit", "cancel", "exit"}:
@@ -103,24 +129,52 @@ class ResumeSlashHandler:
             self._console.print("[yellow]已取消会话恢复。[/yellow]")
             return ResumePickResult(handled=True)
 
+        if value.lower() in {"n", "next"}:
+            if not self._has_next_page:
+                self._console.print("[dim]已经是最后一页。[/dim]")
+                return ResumePickResult(handled=True)
+            self._page_index += 1
+            if self._load_pick_page():
+                self._print_pick_page()
+            else:
+                self._page_index = max(0, self._page_index - 1)
+                self._load_pick_page()
+                self._console.print("[dim]已经是最后一页。[/dim]")
+            return ResumePickResult(handled=True)
+
+        if value.lower() in {"p", "prev", "previous"}:
+            if self._page_index <= 0:
+                self._console.print("[dim]已经是第一页。[/dim]")
+                return ResumePickResult(handled=True)
+            self._page_index -= 1
+            self._load_pick_page()
+            self._print_pick_page()
+            return ResumePickResult(handled=True)
+
         if not value.isdigit():
-            self._console.print("[red]选择无效，请输入编号，或输入 q 取消。[/red]")
+            self._console.print("[red]选择无效，请输入编号、n/p 翻页，或输入 q 取消。[/red]")
             return ResumePickResult(handled=True)
 
         index = int(value)
-        if index < 1 or index > len(self._pick_options):
-            max_index = len(self._pick_options)
+        start_number = self._current_page_start_number()
+        end_number = start_number + len(self._pick_options) - 1
+        if index < start_number or index > end_number:
             self._console.print(
-                f"[red]选择超出范围，请输入 1-{max_index}，或输入 q 取消。[/red]"
+                f"[red]选择超出范围，请输入 {start_number}-{end_number}，"
+                "或输入 n/p 翻页，q 取消。[/red]"
             )
             return ResumePickResult(handled=True)
 
-        session = self._pick_options[index - 1]
+        session = self._pick_options[index - start_number]
         return ResumePickResult(handled=True, selected_session_id=session.id)
 
     def clear_pick(self) -> None:
         self._pick_active = False
         self._pick_options = []
+        self._page_index = 0
+        self._current_session_id = ""
+        self._workspace_key = ""
+        self._has_next_page = False
 
     def print_resume_result(
         self,

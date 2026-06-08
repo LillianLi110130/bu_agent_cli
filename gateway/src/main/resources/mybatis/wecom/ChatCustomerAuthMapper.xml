@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.ChatCustomerAuthMapper">
+
+    <delete id="deleteByCustId">
+        delete from wecom_customer_auth where cust_id = #{custId}
+    </delete>
+
+    <insert id="batchInsert">
+        insert into wecom_customer_auth
+        (
+            cust_id,
+            com_id,
+            com_uid,
+            com_name,
+            com_position,
+            create_time,
+            update_time
+        )
+        values
+        <foreach collection="list" item="item" separator=",">
+            (
+                #{item.custId},
+                #{item.comId},
+                #{item.comUid},
+                #{item.comName},
+                #{item.comPosition},
+                now(),
+                now()
+            )
+        </foreach>
+    </insert>
+
+</mapper>

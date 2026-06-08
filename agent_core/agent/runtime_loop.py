@@ -292,7 +292,7 @@ class AgentRuntimeLoop:
             self.agent._context.add_message(
                 SystemMessage(content=self.agent.system_prompt, cache=True)
             )
-        self.agent._context.add_message(UserMessage(content=event.message))
+        self.agent._context.add_message(UserMessage(content=event.message), new_user_round=True)
         return [IterationStarted(iteration=1)], []
 
     async def _handle_iteration_started(
@@ -491,6 +491,7 @@ class AgentRuntimeLoop:
         return [], []
 
     def _build_llm_call_requested(self, *, iteration: int) -> LLMCallRequested:
+        self.agent._context.snip_redundant_runtime_context()
         return LLMCallRequested(
             messages=self.agent._context.get_messages(),
             tools=self.agent.tool_definitions if self.agent.tools else None,

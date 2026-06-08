@@ -252,14 +252,16 @@ class CLISessionStore:
         workspace_key: str,
         exclude_session_id: str | None = None,
         limit: int = 20,
+        offset: int = 0,
     ) -> list[SessionMeta]:
         query = "SELECT * FROM sessions WHERE workspace_key = ?"
         params: list[object] = [workspace_key]
         if exclude_session_id is not None:
             query += " AND id <> ?"
             params.append(exclude_session_id)
-        query += " ORDER BY updated_at DESC LIMIT ?"
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
         with self._connection() as conn:
             rows = conn.execute(query, params).fetchall()
         return [self._row_to_session(row) for row in rows]

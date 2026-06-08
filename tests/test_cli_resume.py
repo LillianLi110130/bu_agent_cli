@@ -167,6 +167,24 @@ def test_session_store_filters_workspace_and_excludes_current(tmp_path: Path) ->
     assert [session.id for session in sessions] == ["old-a"]
 
 
+def test_session_store_list_sessions_supports_offset_pagination(tmp_path: Path) -> None:
+    store = CLISessionStore(tmp_path / "home" / ".tg_agent" / "sessions.db")
+    workspace = tmp_path / "workspace"
+    for index in range(5):
+        _seed_session(
+            store,
+            session_id=f"session-{index}",
+            workspace=workspace,
+            messages=[UserMessage(content=f"user {index}")],
+            now=1000.0 + index,
+        )
+
+    _root, workspace_key = workspace_identity(workspace)
+    sessions = store.list_sessions(workspace_key=workspace_key, limit=2, offset=2)
+
+    assert [session.id for session in sessions] == ["session-2", "session-1"]
+
+
 def test_session_store_round_trips_tool_aware_messages(tmp_path: Path) -> None:
     store = CLISessionStore(tmp_path / "home" / ".tg_agent" / "sessions.db")
     workspace = tmp_path / "workspace"
@@ -396,6 +414,101 @@ async def test_resume_picker_cancel_inputs_match_model_picker(
         assert result.handled is True
         assert result.selected_session_id is None
         assert cli._resume_handler.pick_active is False
+
+
+def test_resume_picker_paginates_sessions_and_selects_current_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _make_cli(tmp_path, monkeypatch)
+    assert cli._session_store is not None
+    output_buffer = io.StringIO()
+    console = Console(file=output_buffer, force_terminal=False, color_system=None, width=160)
+    handler = ResumeSlashHandler(
+        store=cli._session_store,
+        console=console,
+        workspace_dir=cli._ctx.working_dir,
+    )
+    for index in range(25):
+        _seed_session(
+            cli._session_store,
+            session_id=f"session-{index:02d}",
+            workspace=cli._ctx.working_dir,
+            messages=[UserMessage(content=f"session-{index:02d} user")],
+            now=1000.0 + index,
+        )
+
+    handler.start_pick_mode(current_session_id=cli._conversation_session_id)
+    first_page_output = output_buffer.getvalue()
+
+    assert handler.pick_active is True
+    assert "第 1 页" in first_page_output
+    assert "  1. session-24 user" in first_page_output
+    assert "  20. session-05 user" in first_page_output
+    assert "session-24 user" in first_page_output
+    assert "session-05 user" in first_page_output
+    assert "session-04 user" not in first_page_output
+
+    next_result = handler.handle_pick_input("n")
+    second_page_output = output_buffer.getvalue()
+
+    assert next_result.handled is True
+    assert next_result.selected_session_id is None
+    assert "第 2 页" in second_page_output
+    assert "  21. session-04 user" in second_page_output
+    assert "  25. session-00 user" in second_page_output
+    assert "session-04 user" in second_page_output
+    assert "session-00 user" in second_page_output
+
+    last_page_result = handler.handle_pick_input("n")
+    assert last_page_result.handled is True
+    assert "已经是最后一页" in output_buffer.getvalue()
+
+    previous_page_number = handler.handle_pick_input("1")
+    assert previous_page_number.handled is True
+    assert previous_page_number.selected_session_id is None
+    assert "选择超出范围，请输入 21-25" in output_buffer.getvalue()
+
+    selected = handler.handle_pick_input("21")
+    assert selected.handled is True
+    assert selected.selected_session_id == "session-04"
+
+
+def test_resume_picker_previous_page_navigation_and_first_page_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _make_cli(tmp_path, monkeypatch)
+    assert cli._session_store is not None
+    output_buffer = io.StringIO()
+    console = Console(file=output_buffer, force_terminal=False, color_system=None, width=160)
+    handler = ResumeSlashHandler(
+        store=cli._session_store,
+        console=console,
+        workspace_dir=cli._ctx.working_dir,
+    )
+    for index in range(21):
+        _seed_session(
+            cli._session_store,
+            session_id=f"session-{index:02d}",
+            workspace=cli._ctx.working_dir,
+            messages=[UserMessage(content=f"session-{index:02d} user")],
+            now=1000.0 + index,
+        )
+
+    handler.start_pick_mode(current_session_id=cli._conversation_session_id)
+    handler.handle_pick_input("n")
+    previous_result = handler.handle_pick_input("p")
+    first_page_output = output_buffer.getvalue()
+
+    assert previous_result.handled is True
+    assert previous_result.selected_session_id is None
+    assert "第 1 页" in first_page_output
+    assert "session-20 user" in first_page_output
+
+    first_page_result = handler.handle_pick_input("p")
+    assert first_page_result.handled is True
+    assert "已经是第一页" in output_buffer.getvalue()
 
 
 @pytest.mark.asyncio

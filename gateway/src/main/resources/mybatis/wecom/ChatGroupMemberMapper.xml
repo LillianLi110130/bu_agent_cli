@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.cmb.tg.tgai.infrastructure.wecom.mapper.ChatGroupMemberMapper">
+
+    <delete id="deleteByRoomId">
+        delete from wecom_group_member where room_id = #{roomId}
+    </delete>
+
+    <insert id="batchInsert">
+        insert into wecom_group_member
+        (
+            room_id,
+            member_id,
+            member_remark,
+            user_type,
+            join_time,
+            join_scene,
+            create_time,
+            update_time
+        )
+        values
+        <foreach collection="list" item="item" separator=",">
+            (
+                #{item.roomId},
+                #{item.memberId},
+                #{item.memberRemark},
+                #{item.userType},
+                #{item.joinTime},
+                #{item.joinScene},
+                now(),
+                now()
+            )
+        </foreach>
+    </insert>
+
+    <select id="selectCustomerMemberIdsByActiveRooms" resultType="java.lang.String">
+        select distinct gm.member_id
+        from wecom_group_member gm
+        inner join (
+            select distinct room_id
+            from wecom_message
+            where room_id is not null
+              and room_id != ''
+              and msg_time &gt;= #{activeFromTime}
+        ) m on gm.room_id = m.room_id
+        where gm.user_type = '2'
+    </select>
+
+    <select id="selectEmployeeMemberIdsByActiveRooms" resultType="java.lang.String">
+        select distinct gm.member_id
+        from wecom_group_member gm
+        inner join (
+            select distinct room_id
+            from wecom_message
+            where room_id is not null
+              and room_id != ''
+              and msg_time &gt;= #{activeFromTime}
+        ) m on gm.room_id = m.room_id
+        where gm.user_type = '1'
+    </select>
+
+</mapper>
