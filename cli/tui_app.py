@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import time
 from html import escape as html_escape
 from typing import TYPE_CHECKING, Any
 
@@ -179,7 +180,11 @@ class TGAgentTUI:
             lines.append("")
         if status:
             frame = self._prompt_spinner_frame()
-            lines.append(f'<style fg="#c084fc">{frame} {status}...</style>')
+            started_at = self._cli._get_terminal_activity_started_at()
+            elapsed = 0 if started_at is None else max(0, int(time.monotonic() - started_at))
+            lines.append(
+                f'<style fg="#c084fc">{frame} {html_escape(status)} ({elapsed}s)...</style>'
+            )
             lines.append("")
         lines.append(self._separator_markup())
         lines.append("<ansiblue>>> </ansiblue>")

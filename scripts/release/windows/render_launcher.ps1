@@ -35,7 +35,14 @@ function Decode-Text {
 
 $bundleDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $installRoot = Join-Path $env:USERPROFILE ".tg_agent"
+$activeReleaseFile = Join-Path $installRoot "active-release.txt"
 $venvPython = Join-Path $installRoot ".venv\Scripts\python.exe"
+if (Test-Path -LiteralPath $activeReleaseFile) {
+    $activeRelease = (Get-Content -LiteralPath $activeReleaseFile -Raw -Encoding ASCII).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($activeRelease)) {
+        $venvPython = Join-Path $installRoot "releases\$activeRelease\.venv\Scripts\python.exe"
+    }
+}
 $entryShim = Join-Path $installRoot "bin\crab-entry.py"
 $settingsPath = Join-Path $installRoot "settings.json"
 $workspace = (Get-Location).Path

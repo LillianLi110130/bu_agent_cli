@@ -20,7 +20,7 @@
         FROM online_worker
         WHERE worker_id like concat(#{workerIdPrefix}, '%')
         and status = 'online'
-        order by update_time desc
+        order by create_time desc
         limit 1
     </select>
 

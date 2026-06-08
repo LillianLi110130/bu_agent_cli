@@ -422,8 +422,18 @@ def _release_file_name(info: UpdateInfo) -> str:
 
 
 def _installed_python_path() -> Path:
+    active_release_path = tg_agent_home() / "active-release.txt"
+    try:
+        active_release = active_release_path.read_text(encoding="ascii").strip()
+    except OSError:
+        active_release = ""
+
     if platform.system().lower() == "windows":
+        if active_release:
+            return tg_agent_home() / "releases" / active_release / ".venv" / "Scripts" / "python.exe"
         return tg_agent_home() / ".venv" / "Scripts" / "python.exe"
+    if active_release:
+        return tg_agent_home() / "releases" / active_release / ".venv" / "bin" / "python"
     return tg_agent_home() / ".venv" / "bin" / "python"
 
 

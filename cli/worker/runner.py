@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ class WorkerRunner:
         model: str | None,
         root_dir: str | Path | None,
         worker_no: str | None = None,
+        parent_pid: int | None = None,
         gateway_transport: str = "sse",
         stream_max_session_seconds: float = 20 * 60,
         result_poll_interval_seconds: float = 0.5,
@@ -41,6 +43,7 @@ class WorkerRunner:
     ) -> None:
         self.worker_id = worker_id
         self.worker_no = worker_no or worker_id
+        self.parent_pid = parent_pid
         self.gateway_client = gateway_client
         self.model = model
         self.root_dir = root_dir
@@ -63,6 +66,7 @@ class WorkerRunner:
         self._stop_event = asyncio.Event()
         self._completion_tasks: set[asyncio.Task[Any]] = set()
         self._worker_touch_task: asyncio.Task[Any] | None = None
+        self._parent_watch_task: asyncio.Task[Any] | None = None
 
     def stop(self) -> None:
         """Request the worker loop to stop."""
@@ -74,6 +78,8 @@ class WorkerRunner:
             raise RuntimeError(f"Failed to mark worker online for worker_id={self.worker_id}")
         self.bridge_store.touch_worker(force=True)
         self._worker_touch_task = asyncio.create_task(self._touch_worker_loop())
+        if self.parent_pid is not None:
+            self._parent_watch_task = asyncio.create_task(self._watch_parent_loop())
 
         try:
             if self.gateway_transport == "sse":
@@ -84,6 +90,8 @@ class WorkerRunner:
             self._stop_event.set()
             if self._worker_touch_task is not None:
                 await self._worker_touch_task
+            if self._parent_watch_task is not None:
+                await self._parent_watch_task
             if self._completion_tasks:
                 await asyncio.gather(*list(self._completion_tasks), return_exceptions=True)
             await self.cron_scheduler.wait_background_tasks()
@@ -102,6 +110,39 @@ class WorkerRunner:
                     self.bridge_store.touch_worker(force=True)
                 except Exception:
                     logger.exception("Failed to refresh local bridge worker activity")
+
+    async def _watch_parent_loop(self) -> None:
+        """Stop the worker when the parent CLI process is no longer alive."""
+        if self.parent_pid is None:
+            return
+
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=5.0)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+            if self._is_process_alive(self.parent_pid):
+                continue
+
+            logger.warning(
+                "Detected dead parent CLI process, stopping worker. worker_id=%s parent_pid=%s",
+                self.worker_id,
+                self.parent_pid,
+            )
+            self._stop_event.set()
+            return
+
+    def _is_process_alive(self, pid: int) -> bool:
+        """Return True when *pid* still refers to a running process."""
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
 
     def _gateway_kwargs(self, method_name: str, **kwargs: Any) -> dict[str, Any]:
         """Keep old test doubles working while passing worker_no to real clients."""

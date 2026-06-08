@@ -432,6 +432,7 @@ def _build_worker_process_command(
     gateway_base_url: str,
     config_dir: Path,
     root_dir: Path,
+    parent_pid: int,
     model: str | None = None,
 ) -> list[str]:
     """Build the worker subprocess command for source and frozen runtimes."""
@@ -452,6 +453,8 @@ def _build_worker_process_command(
             str(config_dir),
             "--root-dir",
             str(root_dir),
+            "--parent-pid",
+            str(parent_pid),
         ]
     )
     if model:
@@ -556,6 +559,7 @@ async def _start_im_worker_process(
         gateway_base_url=str(args.im_gateway_base_url),
         config_dir=Path(getattr(args, "config_dir", Path.cwd())).resolve(),
         root_dir=ctx.working_dir,
+        parent_pid=os.getpid(),
         model=model or (str(args.model) if args.model else None),
     )
 
