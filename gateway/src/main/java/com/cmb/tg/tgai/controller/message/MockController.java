@@ -25,12 +25,11 @@ public class MockController {
     @PostMapping("/messages")
     public SimpleOkResponse messages(@RequestBody MessageRequest request) {
         logger.info(
-            "Received mock message request. workerId={}, contentLength={}",
-            request.getWorkerNo(),
+            "Received mock message request.contentLength={}",
             request.getContent() == null ? 0 : request.getContent().length()
         );
         SimpleOkResponse response = workerGatewayService.acceptMockMessage(request);
-        logger.info("Completed mock message request. workerId={}, ok={}", request.getWorkerNo(), response.getOk());
+        logger.info("Completed mock message request. ok={}", response.getOk());
         return response;
     }
 }

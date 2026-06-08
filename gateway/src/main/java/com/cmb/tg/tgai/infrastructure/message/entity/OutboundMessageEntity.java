@@ -12,6 +12,7 @@ import java.time.LocalDateTime;
 public class OutboundMessageEntity {
     private Long id;
     private String sessionKey;
+    private String source;
     private String content;
     private String status;
     private LocalDateTime createdAt;

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agent_core.agent import CompactionConfig
+from agent_core.agent import Agent, CompactionConfig
 from agent_core.agent.context import (
     ACTIVE_TODO_SNAPSHOT_HEADER,
     FINISH_GUARD_PROMPT_PREFIX,
@@ -179,3 +179,54 @@ def test_level2_reuses_existing_artifact_path_for_old_summary() -> None:
     assert result.artifact_created_count == 0
     assert tool_message.context_artifact_path == "D:/tmp/call-2.artifact.txt"
     assert "reused artifact" in tool_message.text
+
+
+def test_level2_excludes_skill_view_by_default() -> None:
+    context = ContextManager()
+    context.add_message(UserMessage(content="round 1"), new_user_round=True)
+    original_content = "# Skill instructions\n" + ("Follow this workflow.\n" * 200)
+    tool_message = ToolMessage(
+        tool_call_id="call-skill-view",
+        tool_name="skill_view",
+        content=original_content,
+        context_policy="trim",
+        context_artifact_path="D:/tmp/call-skill-view.artifact.txt",
+    )
+    context.add_message(tool_message)
+    context.record_prompt_usage(
+        model="fake-model",
+        messages=context.get_messages(),
+        usage=_usage(200),
+    )
+    context.add_message(UserMessage(content="round 2"), new_user_round=True)
+    context.add_message(UserMessage(content="round 3"), new_user_round=True)
+    context.add_message(UserMessage(content="round 4"), new_user_round=True)
+
+    result = context.microcompact_tool_messages(
+        summarize_tool_message=lambda message, artifact_path: "unused",
+        min_chars=100,
+        preserve_recent_rounds=3,
+    )
+
+    assert result.microcompacted_count == 0
+    assert result.skipped_count == 0
+    assert tool_message.microcompacted is False
+    assert tool_message.text == original_content
+
+
+def test_level2_agent_micro_summary_uses_two_line_artifact_placeholder() -> None:
+    agent = Agent(llm=_FakeLLM(), tools=[])
+    message = ToolMessage(
+        tool_call_id="call-bash",
+        tool_name="bash",
+        content="large output",
+    )
+
+    summary = agent._microcompact_tool_message(message, "D:/tmp/call-bash.artifact.txt")
+
+    assert summary == "\n".join(
+        [
+            "[Previous: used bash]",
+            "Artifact: D:/tmp/call-bash.artifact.txt",
+        ]
+    )

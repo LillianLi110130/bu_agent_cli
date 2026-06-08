@@ -1,16 +1,16 @@
 package com.cmb.tg.tgai.infrastructure.message.mapper;
 
-import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorkerEntity;
+import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorker;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 @Mapper
 public interface OnlineWorkerMapper {
-    OnlineWorkerEntity findByWorkerId(@Param("workerId") String workerId);
+    OnlineWorker findByWorkerId(@Param("workerId") String workerId);
 
-    OnlineWorkerEntity findByWorkerIdPrefix(@Param("workerIdPrefix") String workerIdPrefix);
+    OnlineWorker findByWorkerIdPrefix(@Param("workerIdPrefix") String workerIdPrefix);
 
-    int insert(OnlineWorkerEntity entity);
+    int insert(OnlineWorker entity);
 
     int updateStatus(@Param("workerId") String workerId, @Param("status") String status);
 }

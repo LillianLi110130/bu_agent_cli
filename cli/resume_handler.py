@@ -94,7 +94,9 @@ class ResumeSlashHandler:
     def _print_pick_page(self) -> None:
         self._console.print()
         self._console.print("[bold cyan]选择要恢复的会话：[/bold cyan]")
-        self._console.print(f"[dim]第 {self._page_index + 1} 页[/dim]")
+        self._console.print(
+            f"[dim]第 {self._page_index + 1} 页 · 输入编号恢复，n 下一页，p 上一页，q 取消。[/dim]"
+        )
         self._console.print()
         start_number = self._current_page_start_number()
         for offset, session in enumerate(self._pick_options):
@@ -108,7 +110,6 @@ class ResumeSlashHandler:
                 f"  {display_index}. [cyan]{rich_escape(title)}[/cyan]   "
                 f"[dim]{session.message_count} messages   {age}[/dim]"
             )
-        self._console.print("[dim]输入编号恢复，n 下一页，p 上一页，q 取消。[/dim]")
 
     def _current_page_start_number(self) -> int:
         return self._page_index * self._page_size + 1

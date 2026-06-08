@@ -48,7 +48,7 @@
     FROM tgai.inbound_message
     WHERE session_key = #{sessionKey} AND
         source = 'web'
-    ORDER BY create_at DESC, id DESC
+    ORDER BY created_at DESC, id DESC
         LIMIT 1
 </select>
 </mapper>

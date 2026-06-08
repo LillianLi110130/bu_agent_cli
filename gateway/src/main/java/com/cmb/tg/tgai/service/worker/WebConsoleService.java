@@ -1,10 +1,11 @@
 package com.cmb.tg.tgai.service.worker;
 
+import com.cmb.tg.tgai.infrastructure.common.holder.TokenContextHolder;
 import com.cmb.tg.tgai.service.message.dto.SubmitWebMessageRequest;
 import com.cmb.tg.tgai.service.message.dto.SubmitWebMessageResponse;
 import com.cmb.tg.tgai.service.message.dto.WebWorkerSummaryResponse;
 import com.cmb.tg.tgai.infrastructure.message.entity.InboundMessageEntity;
-import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorkerEntity;
+import com.cmb.tg.tgai.infrastructure.message.entity.OnlineWorker;
 import com.cmb.tg.tgai.infrastructure.message.entity.OutboundMessageEntity;
 import com.cmb.tg.tgai.infrastructure.message.mapper.InboundMessageMapper;
 import com.cmb.tg.tgai.infrastructure.message.mapper.OnlineWorkerMapper;
@@ -57,12 +58,12 @@ public class WebConsoleService implements DisposableBean {
     private long streamEmitterTimeoutMillis;
 
     private boolean isWorkerOnline(String workerIdPrefix) {
-        OnlineWorkerEntity onlineWorker = onlineWorkerMapper.findByWorkerIdPrefix(workerIdPrefix);
+        OnlineWorker onlineWorker = onlineWorkerMapper.findByWorkerIdPrefix(workerIdPrefix);
         return onlineWorker != null && onlineWorker.getStatus().equals("online");
     }
 
     public WebWorkerSummaryResponse getWorkerSummary(String workerId) {
-        String workerIdPrefix = "userNo";
+        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
 
         return new WebWorkerSummaryResponse(
                 workerIdPrefix,
@@ -71,13 +72,13 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public SubmitWebMessageResponse submitMessage(SubmitWebMessageRequest request) {
-        String workerIdPrefix = "userNo";
+        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
         if (!isWorkerOnline(workerIdPrefix)) {
             logger.warn("Rejecting web request because worker is offline. workerIdPrefix={}", workerIdPrefix);
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "no_online_worker:" + workerIdPrefix);
         }
 
-        String sessionKey = "openId";
+        String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
         InboundMessageEntity inboundMessagePO = new InboundMessageEntity();
         inboundMessagePO.setSessionKey(sessionKey);
         inboundMessagePO.setSource("web");
@@ -89,16 +90,17 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public SseEmitter stream(String workerId) {
-        String workerIdPrefix = "userNo";
-        String sessionKey = "openId";
+        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
+        String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
+        String ystId = TokenContextHolder.getYstIdOfCurrentUser();
 
         SseEmitter emitter = createEmitter(streamEmitterTimeoutMillis);
-        StreamSession streamSession = new StreamSession("userNo", sessionKey, emitter);
+        StreamSession streamSession = new StreamSession(workerIdPrefix, sessionKey, emitter);
         logger.info(
                 "Opening web SSE stream. workerIdPrefix={}, sessionId={}, ystId={}, timeoutMillis={}",
                 workerIdPrefix,
                 streamSession.getSessionId(),
-                "ystId",
+                ystId,
                 streamEmitterTimeoutMillis
         );
 
@@ -127,7 +129,7 @@ public class WebConsoleService implements DisposableBean {
                 "SSE stream opened. workerIdPrefix={}, sessionId={}, ystId={}, heartbeatIntervalMillis={}",
                 workerIdPrefix,
                 streamSession.getSessionId(),
-                "ystId",
+                ystId,
                 streamHeartbeatIntervalMillis
         );
         return emitter;
@@ -189,15 +191,7 @@ public class WebConsoleService implements DisposableBean {
 
     private void sendHeartbeat(String sessionKey, StreamSession streamSession) {
         StreamSession currentSession = streamSessions.get(sessionKey);
-        String workerIdPrefix = currentSession.getUserNo();
         if (currentSession != streamSession) {
-            return;
-        }
-
-        if (!isWorkerOnline(workerIdPrefix)) {
-            logger.info("Closing web SSE stream because worker is offline in database. workerIdPrefix={}", workerIdPrefix);
-            removeStreamSession(sessionKey, streamSession);
-            streamSession.complete();
             return;
         }
         dispatchPendingWebEvents(sessionKey, true);
@@ -311,7 +305,7 @@ public class WebConsoleService implements DisposableBean {
 
     private String toWebEventType(String outboundStatus) {
         if (STATUS_PROGRESS.equalsIgnoreCase(outboundStatus)) {
-            return "processing";
+            return "progress";
         }
         if (STATUS_COMPLETED.equalsIgnoreCase(outboundStatus)) {
             return "completed";

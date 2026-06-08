@@ -9,8 +9,6 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class MessageRequest {
-    @JsonProperty("worker_no")
-    private String workerNo;
-
     private String content;
+    private String openId = "openId";
 }

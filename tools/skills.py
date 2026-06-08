@@ -16,7 +16,7 @@ def get_skill_runtime_service() -> SkillRuntimeService:
 @tool(
     "List currently visible skills with source and writability metadata.",
     context_policy="trim",
-    context_max_inline_chars=6000,
+    context_max_inline_chars=12800,
 )
 async def skill_list(
     service: Annotated[SkillRuntimeService, Depends(get_skill_runtime_service)],
