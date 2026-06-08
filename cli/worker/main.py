@@ -51,6 +51,12 @@ def parse_args() -> argparse.Namespace:
         help="Optional directory used to load worker config (default: config-dir)",
     )
     parser.add_argument("--root-dir", default=None, help="Optional workspace root directory")
+    parser.add_argument(
+        "--parent-pid",
+        type=int,
+        default=None,
+        help="Optional parent CLI process id used for worker self-exit detection",
+    )
     return parser.parse_args()
 
 
@@ -94,6 +100,7 @@ async def async_main() -> None:
     runner_kwargs: dict[str, Any] = {
         "worker_id": args.worker_id,
         "worker_no": args.worker_no or args.worker_id,
+        "parent_pid": args.parent_pid,
         "gateway_client": client,
         "model": args.model,
         "root_dir": args.root_dir,
@@ -102,6 +109,8 @@ async def async_main() -> None:
     }
     if "worker_no" not in inspect.signature(runner_cls).parameters:
         runner_kwargs.pop("worker_no", None)
+    if "parent_pid" not in inspect.signature(runner_cls).parameters:
+        runner_kwargs.pop("parent_pid", None)
     runner = runner_cls(**runner_kwargs)
     await runner.run_forever()
 
