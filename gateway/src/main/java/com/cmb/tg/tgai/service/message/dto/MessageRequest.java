@@ -10,4 +10,5 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class MessageRequest {
     private String content;
+    private String openId = "openId";
 }

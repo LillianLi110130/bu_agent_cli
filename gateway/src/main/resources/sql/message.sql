@@ -12,8 +12,8 @@ CREATE TABLE IF NOT EXISTS inbound_message (
     source VARCHAR(32) NOT NULL,
     content TEXT NOT NULL,
     status VARCHAR(32) NOT NULL,
-    msg_type VARCHAR(32) NOT NULL DEFAULE 'text',
-    created_at BIGINT NOT NULL
+    msg_type VARCHAR(32) NOT NULL DEFAULT 'text',
+    created_at TIMESTAMP NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS outbound_message (
@@ -22,5 +22,5 @@ CREATE TABLE IF NOT EXISTS outbound_message (
     session_key VARCHAR(255) NOT NULL,
     content TEXT NOT NULL,
     status VARCHAR(32) NOT NULL,
-    created_at BIGINT NOT NULL
+    created_at TIMESTAMP NOT NULL
 );

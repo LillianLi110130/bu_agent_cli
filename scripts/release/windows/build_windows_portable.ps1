@@ -663,17 +663,19 @@ Contents:
 First run:
 1. Extract this zip.
 2. Run deploy.bat once.
-3. Start crab-launcher.bat from the workspace you want to use.
+3. The extracted bundle can be deleted after deployment.
+4. Run `crab` or start the desktop shortcut from the workspace you want to use.
 
 Workspace behavior:
-- Running launcher from a terminal uses the current working directory as the workspace.
-- Double-clicking launcher from the bundle directory falls back to the Desktop directory.
+- Running `crab` from a terminal uses the current working directory as the workspace.
+- Double-clicking the desktop shortcut starts from the Desktop directory.
 - Global config stays in %USERPROFILE%\.tg_agent.
 - After deploy.bat, `crab` and `browser-harness` work in cmd, PowerShell, and Git Bash.
 
-- deploy.bat recreates %USERPROFILE%\.tg_agent\python-runtime and
-  %USERPROFILE%\.tg_agent\.venv from the bundled runtime.
-- deploy.bat removes old install-managed %USERPROFILE%\.tg_agent\bin before regenerating launchers.
+- deploy.bat installs each release under %USERPROFILE%\.tg_agent\releases and atomically switches active-release.txt.
+- The active release is retained during update. Older releases are removed unless a running process executable
+  is located under their release directory.
+- deploy.bat installs a stable launcher under %USERPROFILE%\.tg_agent\bin so the extracted bundle can be deleted.
 - crab and dependencies are installed offline from wheelhouse\.
 - deploy.bat also installs `crab` and `browser-harness` command shims into %USERPROFILE%\.tg_agent\bin and adds that directory to the user PATH.
 - deploy.bat registers the `crab://open` protocol for launching the local CLI from a browser.
@@ -682,7 +684,7 @@ Workspace behavior:
 - Existing %USERPROFILE%\.tg_agent\.env and tg_crab_worker.json are preserved.
 
 Browser harness:
-- deploy.bat installs browser-harness into %USERPROFILE%\.tg_agent\.venv.
+- deploy.bat installs browser-harness into a separate active release environment to avoid dependency conflicts.
 - Enable Chrome remote debugging at chrome://inspect/#remote-debugging.
 - Open a new cmd or PowerShell window and run: browser-harness --doctor.
 "@
@@ -699,7 +701,8 @@ function Write-WinDeployScript {
 param(
     [switch]$Update,
     [switch]$ForceRecreateVenv,
-    [switch]$SkipDesktopShortcut
+    [switch]$SkipDesktopShortcut,
+    [switch]$SkipProtocolRegistration
 )
 
 $ErrorActionPreference = "Stop"
@@ -710,13 +713,20 @@ $RuntimePython = Join-Path $RuntimeDir "python.exe"
 $WheelhouseDir = Join-Path $BundleRoot "wheelhouse"
 $AppDir = Join-Path $BundleRoot "app"
 $LauncherPath = Join-Path $BundleRoot "crab-launcher.bat"
+$LauncherPowerShellPath = Join-Path $BundleRoot "crab-launcher.ps1"
 $ShortcutIconPath = Join-Path $BundleRoot "crab.ico"
 $UserProfileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath("UserProfile") }
 $InstallRoot = Join-Path $UserProfileDir ".tg_agent"
-$InstalledRuntimeDir = Join-Path $InstallRoot "python-runtime"
+$ReleasesDir = Join-Path $InstallRoot "releases"
+$ActiveReleaseFile = Join-Path $InstallRoot "active-release.txt"
+$ReleaseId = "$(Get-Date -Format "yyyyMMddHHmmss")-$([guid]::NewGuid().ToString("N").Substring(0, 8))"
+$ReleaseDir = Join-Path $ReleasesDir $ReleaseId
+$InstalledRuntimeDir = Join-Path $ReleaseDir "python-runtime"
 $InstalledRuntimePython = Join-Path $InstalledRuntimeDir "python.exe"
-$VenvDir = Join-Path $InstallRoot ".venv"
+$VenvDir = Join-Path $ReleaseDir ".venv"
 $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+$BrowserHarnessVenvDir = Join-Path $ReleaseDir ".browser-harness-venv"
+$BrowserHarnessVenvPython = Join-Path $BrowserHarnessVenvDir "Scripts\python.exe"
 $BinDir = Join-Path $InstallRoot "bin"
 $EntryShim = Join-Path $BinDir "crab-entry.py"
 $CommandShim = Join-Path $BinDir "crab.cmd"
@@ -725,6 +735,9 @@ $BrowserHarnessCommandShim = Join-Path $BinDir "browser-harness.cmd"
 $BrowserHarnessBashShim = Join-Path $BinDir "browser-harness"
 $ProtocolLauncher = Join-Path $BinDir "crab-protocol-launcher.bat"
 $ProtocolLauncherPs1 = Join-Path $BinDir "crab-protocol-launcher.ps1"
+$InstalledLauncher = Join-Path $BinDir "crab-launcher.bat"
+$InstalledLauncherPowerShell = Join-Path $BinDir "crab-launcher.ps1"
+$InstalledShortcutIcon = Join-Path $BinDir "crab.ico"
 $LegacyCommandExe = Join-Path $BinDir "crab.exe"
 $LegacyCommandScript = Join-Path $BinDir "crab-script.py"
 $LegacyTgAgentEntryShim = Join-Path $BinDir "tg-agent-entry.py"
@@ -736,8 +749,6 @@ $EnvFile = Join-Path $InstallRoot ".env"
 $WorkerConfig = Join-Path $InstallRoot "tg_crab_worker.json"
 $PackagedEnvFile = Join-Path $AppDir ".env"
 $PackagedWorkerConfig = Join-Path $AppDir "tg_crab_worker.json"
-$UpdatesDir = Join-Path $InstallRoot "updates"
-$BackupsDir = Join-Path $UpdatesDir "backups"
 
 function Install-BundledRuntime {
     param(
@@ -750,10 +761,112 @@ function Install-BundledRuntime {
     )
 
     if (Test-Path -LiteralPath $TargetRuntimeDir) {
-        Remove-Item -LiteralPath $TargetRuntimeDir -Recurse -Force
+        throw "Refusing to overwrite release runtime: $TargetRuntimeDir"
     }
 
+    New-Item -ItemType Directory -Path $InstallRootDir -Force | Out-Null
     Copy-Item -LiteralPath $SourceRuntimeDir -Destination $InstallRootDir -Recurse -Force
+}
+
+function Set-ActiveRelease {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReleaseName
+    )
+
+    $tempPath = "$ActiveReleaseFile.tmp"
+    [System.IO.File]::WriteAllText(
+        $tempPath,
+        $ReleaseName + [Environment]::NewLine,
+        [System.Text.Encoding]::ASCII
+    )
+    if (Test-Path -LiteralPath $ActiveReleaseFile) {
+        $backupPath = "$ActiveReleaseFile.bak"
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        [System.IO.File]::Replace($tempPath, $ActiveReleaseFile, $backupPath)
+        Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        [System.IO.File]::Move($tempPath, $ActiveReleaseFile)
+    }
+}
+
+function Test-PathUnderRoot {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Root
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd('\')
+    return $fullPath.StartsWith("$fullRoot\", [System.StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-RunningExecutablePaths {
+    $paths = @()
+    foreach ($process in Get-Process -ErrorAction SilentlyContinue) {
+        try {
+            if (-not [string]::IsNullOrWhiteSpace($process.Path)) {
+                $paths += [System.IO.Path]::GetFullPath($process.Path)
+            }
+        }
+        catch {
+            # Access to some system process metadata is restricted.
+        }
+    }
+    return $paths
+}
+
+function Test-ReleaseInUse {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ReleasePath,
+        [Parameter(Mandatory = $true)]
+        [string[]]$RunningExecutablePaths
+    )
+
+    foreach ($executablePath in $RunningExecutablePaths) {
+        if (Test-PathUnderRoot -Path $executablePath -Root $ReleasePath) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Remove-StaleReleases {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ActiveReleaseName
+    )
+
+    $releaseDirs = @(
+        Get-ChildItem -LiteralPath $ReleasesDir -Directory -ErrorAction SilentlyContinue |
+            Sort-Object -Property LastWriteTimeUtc -Descending
+    )
+    $runningExecutablePaths = @(Get-RunningExecutablePaths)
+
+    foreach ($releaseDir in $releaseDirs) {
+        if ($releaseDir.Name -eq $ActiveReleaseName) {
+            continue
+        }
+        if (Test-ReleaseInUse -ReleasePath $releaseDir.FullName `
+                -RunningExecutablePaths $runningExecutablePaths) {
+            Write-Host "[portable] retaining in-use release: $($releaseDir.Name)"
+            continue
+        }
+        try {
+            if (-not (Test-PathUnderRoot -Path $releaseDir.FullName -Root $ReleasesDir)) {
+                throw "Refusing to clean a release outside the releases directory: $($releaseDir.FullName)"
+            }
+            Remove-Item -LiteralPath $releaseDir.FullName -Recurse -Force -ErrorAction Stop
+            Write-Host "[portable] removed stale release: $($releaseDir.Name)"
+        }
+        catch {
+            Write-Warning "Could not remove stale release '$($releaseDir.Name)'. Retaining it. $($_.Exception.Message)"
+        }
+    }
 }
 
 function Add-UserPathEntry {
@@ -951,27 +1064,9 @@ if (-not $browserHarnessWheel) {
 }
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-if ($Update) {
-    if (Test-Path -LiteralPath $BackupsDir) {
-        Remove-Item -LiteralPath $BackupsDir -Recurse -Force
-    }
-    $backupDir = Join-Path $BackupsDir (Get-Date -Format "yyyyMMdd-HHmmss")
-    New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
-    foreach ($installManagedPath in @($VenvDir, $BinDir, $InstalledRuntimeDir)) {
-        if (Test-Path -LiteralPath $installManagedPath) {
-            Copy-Item -LiteralPath $installManagedPath -Destination $backupDir -Recurse -Force
-        }
-    }
-    Write-Host "[portable] backup created: $backupDir"
-}
-$installManagedPaths = if ($Update) { @($VenvDir, $InstalledRuntimeDir) } else { @($VenvDir, $BinDir, $InstalledRuntimeDir) }
-foreach ($installManagedPath in $installManagedPaths) {
-    if (Test-Path -LiteralPath $installManagedPath) {
-        Remove-Item -LiteralPath $installManagedPath -Recurse -Force
-    }
-}
+New-Item -ItemType Directory -Path $ReleasesDir -Force | Out-Null
 New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
-Install-BundledRuntime -SourceRuntimeDir $RuntimeDir -InstallRootDir $InstallRoot -TargetRuntimeDir $InstalledRuntimeDir
+Install-BundledRuntime -SourceRuntimeDir $RuntimeDir -InstallRootDir $ReleaseDir -TargetRuntimeDir $InstalledRuntimeDir
 
 if (-not (Test-Path -LiteralPath $InstalledRuntimePython)) {
     throw "Installed Python runtime not found after copy: $InstalledRuntimePython"
@@ -982,9 +1077,19 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $VenvPython)) {
     throw "Failed to create virtual environment: $VenvDir"
 }
 
+& $InstalledRuntimePython -m venv $BrowserHarnessVenvDir
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $BrowserHarnessVenvPython)) {
+    throw "Failed to create browser-harness virtual environment: $BrowserHarnessVenvDir"
+}
+
 & $VenvPython -m ensurepip --upgrade
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to bootstrap pip into virtual environment: $VenvDir"
+}
+
+& $BrowserHarnessVenvPython -m ensurepip --upgrade
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to bootstrap pip into browser-harness virtual environment: $BrowserHarnessVenvDir"
 }
 
 & $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $projectWheel.FullName
@@ -992,9 +1097,24 @@ if ($LASTEXITCODE -ne 0) {
     throw "Failed to install crab from bundled wheelhouse"
 }
 
-& $VenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $browserHarnessWheel.FullName
+& $VenvPython -m pip check
+if ($LASTEXITCODE -ne 0) {
+    throw "Installed crab environment has dependency conflicts"
+}
+
+& $BrowserHarnessVenvPython -m pip install --no-index --find-links $WheelhouseDir --upgrade --force-reinstall $browserHarnessWheel.FullName
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to install browser-harness from bundled wheelhouse"
+}
+
+& $BrowserHarnessVenvPython -m pip check
+if ($LASTEXITCODE -ne 0) {
+    throw "Installed browser-harness environment has dependency conflicts"
+}
+
+& $VenvPython -c "import agent_core.updater"
+if ($LASTEXITCODE -ne 0) {
+    throw "Failed to validate crab updater import in staged release: $ReleaseDir"
 }
 
 $entryShimContent = @(
@@ -1010,6 +1130,11 @@ $commandShimContent = @(
     'setlocal EnableExtensions EnableDelayedExpansion',
     'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
     'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
+    'set "ACTIVE_RELEASE_FILE=%INSTALL_ROOT%\active-release.txt"',
+    'if exist "%ACTIVE_RELEASE_FILE%" (',
+    '    set /p "ACTIVE_RELEASE="<"%ACTIVE_RELEASE_FILE%"',
+    '    if defined ACTIVE_RELEASE set "VENV_PYTHON=%INSTALL_ROOT%\releases\!ACTIVE_RELEASE!\.venv\Scripts\python.exe"',
+    ')',
     'set "ENTRY_SHIM=%INSTALL_ROOT%\bin\crab-entry.py"',
     'set "POWERSHELL_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"',
     'if not exist "%POWERSHELL_EXE%" set "POWERSHELL_EXE=%WINDIR%\System32\WindowsPowerShell\v1.0\powershell.exe"',
@@ -1040,9 +1165,7 @@ $commandShimContent = @(
     '"%VENV_PYTHON%" -u "%ENTRY_SHIM%" %*',
     'exit /b %ERRORLEVEL%'
 ) -join "`r`n"
-if (-not ($Update -and (Test-Path -LiteralPath $CommandShim))) {
-    Set-Content -LiteralPath $CommandShim -Value $commandShimContent -Encoding ASCII
-}
+Set-Content -LiteralPath $CommandShim -Value $commandShimContent -Encoding ASCII
 
 $bashCommandShimContent = @(
     '#!/usr/bin/env bash',
@@ -1054,6 +1177,13 @@ $bashCommandShimContent = @(
     'fi',
     '',
     'venv_python="${install_root}/.venv/Scripts/python.exe"',
+    'active_release_file="${install_root}/active-release.txt"',
+    'if [ -f "$active_release_file" ]; then',
+    '  active_release="$(tr -d ''\r\n'' < "$active_release_file")"',
+    '  if [ -n "$active_release" ]; then',
+    '    venv_python="${install_root}/releases/${active_release}/.venv/Scripts/python.exe"',
+    '  fi',
+    'fi',
     'entry_shim="${install_root}/bin/crab-entry.py"',
     '',
     'if [ ! -x "$venv_python" ]; then',
@@ -1081,18 +1211,21 @@ $bashCommandShimContent = @(
     '',
     'exec "$venv_python" -u "$entry_shim" "$@"'
 ) -join "`n"
-if (-not ($Update -and (Test-Path -LiteralPath $BashCommandShim))) {
-    Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
-}
+Set-Content -LiteralPath $BashCommandShim -Value $bashCommandShimContent -Encoding ASCII
 
 $browserHarnessCommandShimContent = @(
     '@echo off',
-    'setlocal',
+    'setlocal EnableExtensions EnableDelayedExpansion',
     'set "INSTALL_ROOT=%USERPROFILE%\.tg_agent"',
-    'set "VENV_PYTHON=%INSTALL_ROOT%\.venv\Scripts\python.exe"',
+    'set "VENV_PYTHON=%INSTALL_ROOT%\.browser-harness-venv\Scripts\python.exe"',
+    'set "ACTIVE_RELEASE_FILE=%INSTALL_ROOT%\active-release.txt"',
+    'if exist "%ACTIVE_RELEASE_FILE%" (',
+    '    set /p "ACTIVE_RELEASE="<"%ACTIVE_RELEASE_FILE%"',
+    '    if defined ACTIVE_RELEASE set "VENV_PYTHON=%INSTALL_ROOT%\releases\!ACTIVE_RELEASE!\.browser-harness-venv\Scripts\python.exe"',
+    ')',
     '',
     'if not exist "%VENV_PYTHON%" (',
-    '    echo browser-harness is not installed because crab''s Python venv is missing.',
+    '    echo browser-harness is not installed because its Python venv is missing.',
     '    echo Run deploy.bat from the portable bundle first.',
     '    exit /b 1',
     ')',
@@ -1100,9 +1233,7 @@ $browserHarnessCommandShimContent = @(
     '"%VENV_PYTHON%" -m browser_harness.run %*',
     'exit /b %ERRORLEVEL%'
 ) -join "`r`n"
-if (-not ($Update -and (Test-Path -LiteralPath $BrowserHarnessCommandShim))) {
-    Set-Content -LiteralPath $BrowserHarnessCommandShim -Value $browserHarnessCommandShimContent -Encoding ASCII
-}
+Set-Content -LiteralPath $BrowserHarnessCommandShim -Value $browserHarnessCommandShimContent -Encoding ASCII
 
 $browserHarnessBashShimContent = @(
     '#!/usr/bin/env bash',
@@ -1113,18 +1244,35 @@ $browserHarnessBashShimContent = @(
     '  install_root="${USERPROFILE}/.tg_agent"',
     'fi',
     '',
-    'venv_python="${install_root}/.venv/Scripts/python.exe"',
+    'venv_python="${install_root}/.browser-harness-venv/Scripts/python.exe"',
+    'active_release_file="${install_root}/active-release.txt"',
+    'if [ -f "$active_release_file" ]; then',
+    '  active_release="$(tr -d ''\r\n'' < "$active_release_file")"',
+    '  if [ -n "$active_release" ]; then',
+    '    venv_python="${install_root}/releases/${active_release}/.browser-harness-venv/Scripts/python.exe"',
+    '  fi',
+    'fi',
     '',
     'if [ ! -x "$venv_python" ]; then',
-    '  echo "browser-harness is not installed because crab''s Python venv is missing." >&2',
+    '  echo "browser-harness is not installed because its Python venv is missing." >&2',
     '  echo "Run deploy.bat from the portable bundle first." >&2',
     '  exit 1',
     'fi',
     '',
     'exec "$venv_python" -m browser_harness.run "$@"'
 ) -join "`n"
-if (-not ($Update -and (Test-Path -LiteralPath $BrowserHarnessBashShim))) {
-    Set-Content -LiteralPath $BrowserHarnessBashShim -Value $browserHarnessBashShimContent -Encoding ASCII
+Set-Content -LiteralPath $BrowserHarnessBashShim -Value $browserHarnessBashShimContent -Encoding ASCII
+
+if (-not (Test-Path -LiteralPath $LauncherPath)) {
+    throw "Launcher missing: $LauncherPath"
+}
+if (-not (Test-Path -LiteralPath $LauncherPowerShellPath)) {
+    throw "PowerShell launcher missing: $LauncherPowerShellPath"
+}
+Copy-Item -LiteralPath $LauncherPath -Destination $InstalledLauncher -Force
+Copy-Item -LiteralPath $LauncherPowerShellPath -Destination $InstalledLauncherPowerShell -Force
+if (Test-Path -LiteralPath $ShortcutIconPath) {
+    Copy-Item -LiteralPath $ShortcutIconPath -Destination $InstalledShortcutIcon -Force
 }
 
 $protocolLauncherContent = @(
@@ -1205,7 +1353,7 @@ catch {
 "@
 $protocolLauncherPs1Content = $protocolLauncherPs1Content.Replace(
     '__LAUNCHER_PATH_B64__',
-    [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($LauncherPath))
+    [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($InstalledLauncher))
 )
 $protocolLauncherPs1Content = $protocolLauncherPs1Content.Replace('__PS_DOLLAR__', '$')
 $utf8WithBom = New-Object System.Text.UTF8Encoding($true)
@@ -1238,9 +1386,12 @@ if ((Test-Path -LiteralPath $PackagedWorkerConfig) -and -not (Test-Path -Literal
     Copy-Item -LiteralPath $PackagedWorkerConfig -Destination $WorkerConfig -Force
 }
 
-if (-not (Test-Path -LiteralPath $LauncherPath)) {
-    throw "Launcher missing: $LauncherPath"
+if (-not (Test-Path -LiteralPath $InstalledLauncher)) {
+    throw "Installed launcher missing: $InstalledLauncher"
 }
+Set-ActiveRelease -ReleaseName $ReleaseId
+Write-Host "[portable] active release: $ReleaseId"
+Remove-StaleReleases -ActiveReleaseName $ReleaseId
 
 $existingCrabCommands = @(
     Get-CommandCandidates -CommandName "crab" |
@@ -1252,23 +1403,25 @@ if (-not $Update) {
     $pathUpdated = Add-UserPathEntry -Entry $BinDir
     Notify-EnvironmentChange
 }
-Register-CrabProtocol -ProtocolLauncherPath $ProtocolLauncher
+if (-not $SkipProtocolRegistration) {
+    Register-CrabProtocol -ProtocolLauncherPath $ProtocolLauncher
+}
 
-if (-not $SkipDesktopShortcut -and -not $Update) {
+if (-not $SkipDesktopShortcut) {
     $desktopDir = [Environment]::GetFolderPath("Desktop")
     if (Test-Path -LiteralPath $desktopDir) {
         $shortcutPath = Join-Path $desktopDir "Crab Portable.lnk"
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = $LauncherPath
+        $shortcut.TargetPath = $InstalledLauncher
         $shortcut.WorkingDirectory = $desktopDir
-        if (Test-Path -LiteralPath $ShortcutIconPath) {
-            $shortcut.IconLocation = "$ShortcutIconPath,0"
+        if (Test-Path -LiteralPath $InstalledShortcutIcon) {
+            $shortcut.IconLocation = "$InstalledShortcutIcon,0"
         }
         $shortcut.Save()
         Write-Host "[portable] desktop shortcut created: $shortcutPath"
-        if (Test-Path -LiteralPath $ShortcutIconPath) {
-            Write-Host "[portable] desktop shortcut icon: $ShortcutIconPath"
+        if (Test-Path -LiteralPath $InstalledShortcutIcon) {
+            Write-Host "[portable] desktop shortcut icon: $InstalledShortcutIcon"
         }
     }
 }
@@ -1276,6 +1429,7 @@ if (-not $SkipDesktopShortcut -and -not $Update) {
 Write-Host "[portable] install root: $InstallRoot"
 Write-Host "[portable] installed runtime: $InstalledRuntimeDir"
 Write-Host "[portable] venv ready: $VenvDir"
+Write-Host "[portable] browser-harness venv ready: $BrowserHarnessVenvDir"
 Write-Host "[portable] command shim: $CommandShim"
 Write-Host "[portable] bash shim: $BashCommandShim"
 Write-Host "[portable] browser-harness shim: $BrowserHarnessCommandShim"
@@ -1287,8 +1441,13 @@ if ($pathUpdated) {
 else {
     Write-Host "[portable] user PATH already contains: $BinDir"
 }
-Write-Host "[portable] launcher: $LauncherPath"
-Write-Host "[portable] registered protocol: crab://open"
+Write-Host "[portable] launcher: $InstalledLauncher"
+if ($SkipProtocolRegistration) {
+    Write-Host "[portable] skipped protocol registration"
+}
+else {
+    Write-Host "[portable] registered protocol: crab://open"
+}
 Write-Host "[portable] open a new cmd window from Explorer and run: crab"
 Write-Host "[portable] in Git Bash, you can also run: crab"
 Write-Host "[portable] browser-harness: enable Chrome remote debugging, then run: browser-harness --doctor"

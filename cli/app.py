@@ -350,20 +350,28 @@ class _LoadingIndicator:
 class _SafeLoadingIndicator:
     """A loading indicator that avoids ANSI escapes and non-ASCII glyphs."""
 
-    def __init__(self, message: str = "思考中"):
+    def __init__(self, message: str = "思考中", started_at: float | None = None):
         self.message = message
+        self.started_at = started_at if started_at is not None else time.monotonic()
         self._stop_event = threading.Event()
         self._thread = None
         self._frames = ["-", "\\", "|", "/"]
+        self._last_render_width = 0
+
+    def _format_frame(self, frame: int) -> str:
+        elapsed = max(0, int(time.monotonic() - self.started_at))
+        return f"{self._frames[frame]} {self.message} ({elapsed}s)..."
 
     def _show_frame(self, frame: int):
         """Show a single frame."""
-        sys.stdout.write(f"\r{self._frames[frame]} {self.message}...")
+        rendered = self._format_frame(frame)
+        self._last_render_width = max(self._last_render_width, len(rendered))
+        sys.stdout.write(f"\r{rendered}")
         sys.stdout.flush()
 
     def _clear(self):
         """Clear the loading line."""
-        clear_width = len(self.message) + 6
+        clear_width = max(self._last_render_width, len(self._format_frame(0)))
         sys.stdout.write("\r" + (" " * clear_width) + "\r")
         sys.stdout.flush()
 
@@ -504,6 +512,8 @@ class TGAgentCLI:
         self._interactive_terminal_ui_enabled = True
         self._fixed_input_tui_enabled = False
         self._terminal_activity_status: str | None = None
+        self._terminal_activity_started_at: float | None = None
+        self._active_run_started_at: float | None = None
         self._terminal_ui_invalidator: Callable[[], None] | None = None
         self._terminal_approval_prompt: _TerminalApprovalPrompt | None = None
         self._prompter = InteractivePrompter(self._console)
@@ -1679,14 +1689,26 @@ class TGAgentCLI:
         final_content = self._last_command_final_content or mirror.export_text()
         return handled, final_content
 
-    def _start_loading(self, message: str = "思考中") -> _SafeLoadingIndicator:
+    def _start_loading(
+        self,
+        message: str = "思考中",
+        *,
+        started_at: float | None = None,
+    ) -> _SafeLoadingIndicator | None:
         """Start a loading animation."""
+        effective_started_at = (
+            started_at
+            if started_at is not None
+            else self._active_run_started_at
+            if self._active_run_started_at is not None
+            else time.monotonic()
+        )
+        if self._fixed_input_tui_enabled:
+            self._set_terminal_activity_status(message, started_at=effective_started_at)
+            return None
         if not self._interactive_terminal_ui_enabled:
             return None
-        if self._fixed_input_tui_enabled:
-            self._set_terminal_activity_status(message)
-            return None
-        loading = _SafeLoadingIndicator(message)
+        loading = _SafeLoadingIndicator(message, started_at=effective_started_at)
         loading.start()
         time.sleep(0.02)
         return loading
@@ -1698,12 +1720,27 @@ class TGAgentCLI:
         if loading:
             loading.stop()
 
-    def _set_terminal_activity_status(self, status: str | None) -> None:
+    def _set_terminal_activity_status(
+        self,
+        status: str | None,
+        *,
+        started_at: float | None = None,
+    ) -> None:
         self._terminal_activity_status = status
+        self._terminal_activity_started_at = (
+            None
+            if status is None
+            else started_at
+            if started_at is not None
+            else time.monotonic()
+        )
         self._invalidate_terminal_ui()
 
     def _get_terminal_activity_status(self) -> str | None:
         return self._terminal_activity_status
+
+    def _get_terminal_activity_started_at(self) -> float | None:
+        return self._terminal_activity_started_at
 
     def _set_terminal_ui_invalidator(
         self, invalidator: Callable[[], None] | None
@@ -2724,6 +2761,9 @@ class TGAgentCLI:
         self._interactive_terminal_ui_enabled = enable_interactive_terminal_ui
         show_thinking_output = True
         self._ensure_context_budget_hook(active_agent)
+        run_started_at = time.monotonic()
+        previous_active_run_started_at = self._active_run_started_at
+        self._active_run_started_at = run_started_at
 
         # Keep workspace instructions synchronized for the main CLI agent.
         # Dedicated helper agents like /init manage their own injection timing.
@@ -2731,9 +2771,9 @@ class TGAgentCLI:
             self._maybe_inject_agents_md()
 
         # Start loading animation
-        self._loading = self._start_loading("思考中")
+        self._loading = self._start_loading("思考中", started_at=run_started_at)
 
-        if not enable_interactive_terminal_ui:
+        if not enable_interactive_terminal_ui and not self._fixed_input_tui_enabled:
             self._console.print("[dim]思考中...[/dim]")
 
         run_cancel_event = cancel_event or asyncio.Event()
@@ -2826,8 +2866,11 @@ class TGAgentCLI:
                     self._print_tool_step_title(self._step_number, event.tool)
                     self._print_tool_args(event.args)
                     if not self._is_delegate_tool(event.tool):
-                        # Start loading while the tool runs.
-                        self._loading = self._start_loading("执行中")
+                        # Keep a single user-facing status for the whole turn.
+                        self._loading = self._start_loading(
+                            "思考中",
+                            started_at=run_started_at,
+                        )
 
                 elif isinstance(event, ToolResultEvent):
                     self._stop_loading(self._loading)
@@ -2843,7 +2886,10 @@ class TGAgentCLI:
                     # Restart loading for the next LLM call unless a foreground
                     # delegate run is still actively streaming its own progress.
                     if self._foreground_delegate_depth == 0:
-                        self._loading = self._start_loading("思考中")
+                        self._loading = self._start_loading(
+                            "思考中",
+                            started_at=run_started_at,
+                        )
 
                 elif isinstance(event, ThinkingEvent):
                     if show_thinking_output:
@@ -2903,6 +2949,7 @@ class TGAgentCLI:
         finally:
             if owns_cancel_event:
                 run_cancel_event.set()
+            self._active_run_started_at = previous_active_run_started_at
             self._interactive_terminal_ui_enabled = previous_interactive_terminal_ui_enabled
             self._restore_agent_tools(active_agent, disabled_tool_snapshot)
 

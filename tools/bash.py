@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from contextlib import suppress
 from typing import Annotated
 
 from agent_core.tools import Depends, tool
@@ -96,32 +97,25 @@ async def _run_shell_command(command: str, cwd: str, timeout: int) -> _AsyncShel
         popen_kwargs["start_new_session"] = True
 
     process = subprocess.Popen(command, **popen_kwargs)
-    wait_task = asyncio.create_task(asyncio.to_thread(process.wait))
 
     try:
-        done, _ = await asyncio.wait(
-            {wait_task},
-            timeout=timeout,
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if wait_task not in done:
-            await terminate_process_tree(process)
-            await asyncio.to_thread(process.wait)
-            _close_process_pipes(process)
-            raise asyncio.TimeoutError
+        # Drain stdout/stderr while waiting; waiting first can deadlock on large output.
+        stdout, stderr = await asyncio.to_thread(process.communicate, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        await terminate_process_tree(process)
+        with suppress(Exception):
+            # Reap the terminated process and release any buffered pipe data.
+            await asyncio.to_thread(process.communicate, timeout=2)
+        _close_process_pipes(process)
+        raise asyncio.TimeoutError from exc
     except asyncio.CancelledError:
         await terminate_process_tree(process)
-        await asyncio.to_thread(process.wait)
+        with suppress(Exception):
+            # Reap the terminated process and release any buffered pipe data.
+            await asyncio.to_thread(process.communicate, timeout=2)
         _close_process_pipes(process)
         raise
-    finally:
-        if wait_task.done():
-            try:
-                await wait_task
-            except Exception:
-                pass
 
-    stdout, stderr = await asyncio.to_thread(process.communicate)
     return _AsyncShellResult(
         returncode=process.returncode or 0,
         stdout=_decode_process_stream(stdout),
