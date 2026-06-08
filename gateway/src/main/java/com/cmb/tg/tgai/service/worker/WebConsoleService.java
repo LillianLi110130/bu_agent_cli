@@ -63,19 +63,21 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public WebWorkerSummaryResponse getWorkerSummary(String workerId) {
-        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
+        String ystId = TokenContextHolder.getYstIdOfCurrentUser();
+        String workerIdPrefix = TokenContextHolder.getOpenIdOfCurrentUser();
 
         return new WebWorkerSummaryResponse(
-                workerIdPrefix,
+                ystId,
                 isWorkerOnline(workerIdPrefix)
         );
     }
 
     public SubmitWebMessageResponse submitMessage(SubmitWebMessageRequest request) {
-        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
+        String workerIdPrefix = TokenContextHolder.getOpenIdOfCurrentUser();
+        String userNo = TokenContextHolder.getUserIdOfCurrentUser();
         if (!isWorkerOnline(workerIdPrefix)) {
-            logger.warn("Rejecting web request because worker is offline. workerIdPrefix={}", workerIdPrefix);
-            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "no_online_worker:" + workerIdPrefix);
+            logger.warn("Rejecting web request because worker is offline. no_online_worker={}", userNo);
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "no_online_worker:" + userNo);
         }
 
         String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
@@ -90,15 +92,16 @@ public class WebConsoleService implements DisposableBean {
     }
 
     public SseEmitter stream(String workerId) {
-        String workerIdPrefix = TokenContextHolder.getUserIdOfCurrentUser();
+        String userNo = TokenContextHolder.getUserIdOfCurrentUser();
         String sessionKey = TokenContextHolder.getOpenIdOfCurrentUser();
+
         String ystId = TokenContextHolder.getYstIdOfCurrentUser();
 
         SseEmitter emitter = createEmitter(streamEmitterTimeoutMillis);
-        StreamSession streamSession = new StreamSession(workerIdPrefix, sessionKey, emitter);
+        StreamSession streamSession = new StreamSession(userNo, sessionKey, emitter);
         logger.info(
-                "Opening web SSE stream. workerIdPrefix={}, sessionId={}, ystId={}, timeoutMillis={}",
-                workerIdPrefix,
+                "Opening web SSE stream. sessionKey={}, sessionId={}, ystId={}, timeoutMillis={}",
+                sessionKey,
                 streamSession.getSessionId(),
                 ystId,
                 streamEmitterTimeoutMillis
@@ -126,8 +129,8 @@ public class WebConsoleService implements DisposableBean {
         );
         streamSession.setHeartbeatFuture(heartbeatFuture);
         logger.info(
-                "SSE stream opened. workerIdPrefix={}, sessionId={}, ystId={}, heartbeatIntervalMillis={}",
-                workerIdPrefix,
+                "SSE stream opened. sessionKey={}, sessionId={}, ystId={}, heartbeatIntervalMillis={}",
+                sessionKey,
                 streamSession.getSessionId(),
                 ystId,
                 streamHeartbeatIntervalMillis
@@ -192,6 +195,7 @@ public class WebConsoleService implements DisposableBean {
     private void sendHeartbeat(String sessionKey, StreamSession streamSession) {
         StreamSession currentSession = streamSessions.get(sessionKey);
         if (currentSession != streamSession) {
+            streamSession.complete();
             return;
         }
         dispatchPendingWebEvents(sessionKey, true);
@@ -208,12 +212,11 @@ public class WebConsoleService implements DisposableBean {
         InboundMessageEntity inboundMessagePO = inboundMessageMapper.fetchInboundMessage(sessionKey);
         if (inboundMessagePO != null) {
             delivered = true;
-            String workerIdPrefix = streamSession.getUserNo();
             if ("RECEIVED".equalsIgnoreCase(inboundMessagePO.getStatus())) {
                 sendEventSafely(
                         streamSession,
                         "submitted",
-                        buildEventPayload("submitted", workerIdPrefix, inboundMessagePO.getCreatedAt(), null)
+                        buildEventPayload("submitted", streamSession.getUserNo(), inboundMessagePO.getCreatedAt(), null)
                 );
             } else if (
                     "CONSUMED".equalsIgnoreCase(inboundMessagePO.getStatus())
@@ -221,7 +224,7 @@ public class WebConsoleService implements DisposableBean {
                 sendEventSafely(
                         streamSession,
                         "processing",
-                        buildEventPayload("processing", workerIdPrefix, inboundMessagePO.getCreatedAt(), null)
+                        buildEventPayload("processing", streamSession.getUserNo(), inboundMessagePO.getCreatedAt(), null)
                 );
             }
         }
