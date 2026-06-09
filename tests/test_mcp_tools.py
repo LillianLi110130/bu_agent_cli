@@ -24,13 +24,14 @@ def anyio_backend() -> str:
 class FakeManager:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, dict]] = []
+        self.next_result = {"content": [{"type": "text", "text": "ok"}]}
 
     def status(self) -> dict:
         return {"workspaceRoot": "/workspace", "servers": [], "clients": []}
 
     async def call_tool(self, server: str, tool: str, arguments: dict):
         self.calls.append((server, tool, arguments))
-        return {"content": [{"type": "text", "text": "ok"}]}
+        return self.next_result
 
 
 def test_mcp_tool_schema_uses_claude_style_tool_alias() -> None:
@@ -56,6 +57,23 @@ async def test_mcp_tool_calls_manager(tmp_path: Path) -> None:
     assert result["ok"] is True
     assert result["server"] == "codegraph"
     assert manager.calls == [("codegraph", "codegraph_status", {})]
+
+
+@pytest.mark.anyio
+async def test_mcp_tool_result_is_not_truncated_by_formatter(tmp_path: Path) -> None:
+    ctx = SandboxContext.create(tmp_path)
+    manager = FakeManager()
+    long_text = "x" * 20000
+    manager.next_result = {"content": [{"type": "text", "text": long_text}]}
+    ctx.mcp_manager = manager
+
+    result = json.loads(
+        await mcp.func(server="codegraph", mcp_tool="codegraph_dump", arguments={}, ctx=ctx)
+    )
+
+    assert result["ok"] is True
+    assert "truncated" not in result
+    assert result["result"]["content"][0]["text"] == long_text
 
 
 @pytest.mark.anyio
