@@ -12,7 +12,9 @@ if "croniter" not in sys.modules:
     croniter_stub.croniter = object
     sys.modules["croniter"] = croniter_stub
 
-from tools.mcp import mcp, mcp_status
+from agent_core.mcp.formatter import format_tool_result
+from tools import ALL_TOOLS
+from tools.mcp import mcp_status
 from tools.sandbox import SandboxContext
 
 
@@ -22,53 +24,22 @@ def anyio_backend() -> str:
 
 
 class FakeManager:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, str, dict]] = []
-        self.next_result = {"content": [{"type": "text", "text": "ok"}]}
-
     def status(self) -> dict:
         return {"workspaceRoot": "/workspace", "servers": [], "clients": []}
 
-    async def call_tool(self, server: str, tool: str, arguments: dict):
-        self.calls.append((server, tool, arguments))
-        return self.next_result
+
+def test_unified_mcp_tool_is_not_exposed_by_default() -> None:
+    assert "mcp" not in {tool.name for tool in ALL_TOOLS}
 
 
-def test_mcp_tool_schema_uses_claude_style_tool_alias() -> None:
-    definition = mcp.definition
-    properties = definition.parameters["properties"]
-
-    assert "mcpServers" in definition.description
-    assert "server" in properties
-    assert "tool" in properties
-    assert "arguments" in properties
-
-
-@pytest.mark.anyio
-async def test_mcp_tool_calls_manager(tmp_path: Path) -> None:
-    ctx = SandboxContext.create(tmp_path)
-    manager = FakeManager()
-    ctx.mcp_manager = manager
-
-    result = json.loads(
-        await mcp.func(server="codegraph", mcp_tool="codegraph_status", arguments={}, ctx=ctx)
-    )
-
-    assert result["ok"] is True
-    assert result["server"] == "codegraph"
-    assert manager.calls == [("codegraph", "codegraph_status", {})]
-
-
-@pytest.mark.anyio
-async def test_mcp_tool_result_is_not_truncated_by_formatter(tmp_path: Path) -> None:
-    ctx = SandboxContext.create(tmp_path)
-    manager = FakeManager()
+def test_mcp_tool_result_is_not_truncated_by_formatter() -> None:
     long_text = "x" * 20000
-    manager.next_result = {"content": [{"type": "text", "text": long_text}]}
-    ctx.mcp_manager = manager
-
     result = json.loads(
-        await mcp.func(server="codegraph", mcp_tool="codegraph_dump", arguments={}, ctx=ctx)
+        format_tool_result(
+            server="codegraph",
+            tool="codegraph_dump",
+            result={"content": [{"type": "text", "text": long_text}]},
+        )
     )
 
     assert result["ok"] is True
