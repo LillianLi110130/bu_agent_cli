@@ -7,6 +7,7 @@ Pure UI logic - receives pre-configured Agent and context.
 import json
 import asyncio
 import io
+import inspect
 import logging
 import os
 import re
@@ -1498,6 +1499,22 @@ class TGAgentCLI:
                 result = await callback()
         return result, capture.get().strip()
 
+    async def _run_with_console_mirror(self, callback: Callable[[], Any]) -> tuple[Any, str]:
+        """Execute a callback while mirroring Rich output to a plain-text recorder."""
+        original_console = self._console
+        original_model_console = self._model_switch_service._console
+        mirror = _ConsoleMirror(original_console)
+        self._console = mirror
+        self._model_switch_service._console = mirror
+        try:
+            result = callback()
+            if inspect.isawaitable(result):
+                result = await result
+        finally:
+            self._console = original_console
+            self._model_switch_service._console = original_model_console
+        return result, mirror.export_text()
+
     def _print_remote_reset_console_output(self, final_content: str | None) -> None:
         """Print the local console hints for a remote `/reset` completion."""
         self._console.print("[yellow]会话上下文已重置。[/yellow]")
@@ -1671,22 +1688,15 @@ class TGAgentCLI:
         cancel_event: asyncio.Event | None = None,
     ) -> tuple[bool, str]:
         """Execute one slash command with live colored output and plain-text recording."""
-        original_console = self._console
-        original_model_console = self._model_switch_service._console
-        mirror = _ConsoleMirror(original_console)
-        self._console = mirror
-        self._model_switch_service._console = mirror
         self._store_command_final_content("")
-        try:
-            handled = await self._handle_slash_command(
+        handled, captured_output = await self._run_with_console_mirror(
+            lambda: self._handle_slash_command(
                 user_input,
                 source=source,
                 cancel_event=cancel_event,
             )
-        finally:
-            self._console = original_console
-            self._model_switch_service._console = original_model_console
-        final_content = self._last_command_final_content or mirror.export_text()
+        )
+        final_content = self._last_command_final_content or captured_output
         return handled, final_content
 
     def _start_loading(
@@ -3201,33 +3211,36 @@ class TGAgentCLI:
 
         # Handle numbered resume picker mode before normal command dispatch.
         if self._resume_handler.pick_active:
-            original_console = self._console
-            original_model_console = self._model_switch_service._console
-            mirror = _ConsoleMirror(original_console)
-            self._console = mirror
-            self._model_switch_service._console = mirror
-            try:
+            async def handle_resume_pick():
                 self._resume_handler.bind_console(self._console)
                 pick_result = self._resume_handler.handle_pick_input(user_input)
                 if pick_result.selected_session_id is not None:
                     await self._switch_resume_session(pick_result.selected_session_id)
-            finally:
-                self._console = original_console
-                self._model_switch_service._console = original_model_console
+                return pick_result
+
+            pick_result, captured_output = await self._run_with_console_mirror(handle_resume_pick)
 
             if pick_result.handled:
-                return _ExecutionOutcome(final_content=mirror.export_text())
+                return _ExecutionOutcome(final_content=captured_output)
 
         if self._settings_handler.active:
-            self._settings_handler.bind_console(self._console)
-            settings_result = self._settings_handler.handle_input(user_input)
+            def handle_settings_input():
+                self._settings_handler.bind_console(self._console)
+                return self._settings_handler.handle_input(user_input)
+
+            settings_result, captured_output = await self._run_with_console_mirror(
+                handle_settings_input
+            )
             if settings_result.handled:
-                return _ExecutionOutcome()
+                return _ExecutionOutcome(final_content=captured_output)
 
         # Handle numbered model picker mode
         if self._model_pick_active:
-            if await self._handle_model_pick_input(user_input):
-                return _ExecutionOutcome()
+            handled, captured_output = await self._run_with_console_mirror(
+                lambda: self._handle_model_pick_input(user_input)
+            )
+            if handled:
+                return _ExecutionOutcome(final_content=captured_output)
 
         # Handle quoted @ image command
         if is_image_command(user_input):

@@ -662,6 +662,44 @@ async def test_slash_command_final_content_is_captured(workspace_root, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_remote_settings_selection_returns_menu_output(workspace_root, monkeypatch):
+    monkeypatch.setenv("HOME", str(workspace_root / "home"))
+    cli, store = _create_cli(workspace_root, monkeypatch)
+
+    store.enqueue_text(
+        "/settings",
+        source="web",
+        remote_response_required=True,
+        request_id="remote-settings-open",
+    )
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    open_result = store.find_result("remote-settings-open")
+    assert open_result is not None
+    assert open_result.final_status == "completed"
+    assert open_result.final_content.strip()
+    assert "\x1b" not in open_result.final_content
+
+    store.enqueue_text(
+        "1",
+        source="web",
+        remote_response_required=True,
+        request_id="remote-settings-workspace",
+    )
+    should_continue = await cli._drain_bridge_queue()
+
+    assert should_continue is True
+    workspace_result = store.find_result("remote-settings-workspace")
+    assert workspace_result is not None
+    assert workspace_result.final_status == "completed"
+    assert workspace_result.input_content == "1"
+    assert workspace_result.final_content.strip()
+    assert workspace_result.final_content != open_result.final_content
+    assert "\x1b" not in workspace_result.final_content
+
+
+@pytest.mark.asyncio
 async def test_remote_resume_selection_returns_recent_history_preview(
     workspace_root,
     monkeypatch,
