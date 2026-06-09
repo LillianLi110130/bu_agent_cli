@@ -252,6 +252,7 @@ async def lsp_hover(
     "truncated is true, repeated calls return the same first results; use read or grep for "
     "code details instead.",
     context_policy="trim",
+    context_max_inline_chars=6400,
 )
 async def lsp_document_symbols(
     file_path: str,
@@ -272,6 +273,7 @@ async def lsp_document_symbols(
 @tool(
     "Search workspace symbols using file_path to choose one language server.",
     context_policy="trim",
+    context_max_inline_chars=6400,
 )
 async def lsp_workspace_symbols(
     query: str,
