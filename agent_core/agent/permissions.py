@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
@@ -31,6 +32,7 @@ class PermissionReason:
     message: str
     category: str | None = None
     severity: str | None = None
+    guidance: str | None = None
 
 
 @dataclass(frozen=True)
@@ -65,15 +67,18 @@ class PermissionEngine:
         if not isinstance(command, str) or not command.strip():
             return PermissionDecision.allow()
 
-        result = check_dangerous_command(command)
-        if result.action == "allow":
-            return PermissionDecision.allow()
+        safety_result = check_dangerous_command(command)
+        safety_reasons = _reasons_from_findings(safety_result.findings)
+        file_task_reasons = _evaluate_bash_file_task(command)
+        reasons = (*safety_reasons, *file_task_reasons)
 
-        reasons = _reasons_from_findings(result.findings)
-        if result.action == "block":
+        if safety_result.action == "block" or file_task_reasons:
             return PermissionDecision(decision="deny", reasons=reasons)
 
-        findings = result.ask_findings
+        if safety_result.action == "allow":
+            return PermissionDecision.allow()
+
+        findings = safety_result.ask_findings
         request = HumanApprovalRequest(
             tool_name="bash",
             tool_call_id=event.tool_call.id,
@@ -93,6 +98,125 @@ class PermissionEngine:
             reasons=_reasons_from_findings(findings),
             approval_request=request,
         )
+
+
+_BASH_FILE_DISCOVERY_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[;&|]\s*)"
+    r"(?:"
+    r"dir\b|"
+    r"ls\b|"
+    r"tree\b|"
+    r"fd\b|"
+    r"where\b|"
+    r"get-childitem\b|"
+    r"gci\b|"
+    r"git\s+ls-files\b"
+    r")"
+)
+_BASH_TEXT_SEARCH_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[;&|]\s*)"
+    r"(?:"
+    r"find\b(?![^;&|]*(?:-delete|-exec\s+(?:/\S*/)?rm\b))|"
+    r"findstr\b|"
+    r"grep\b|"
+    r"rg\b|"
+    r"select-string\b|"
+    r"git\s+grep\b"
+    r")"
+)
+_BASH_FILE_READ_RE = re.compile(
+    r"(?ix)"
+    r"(?:^|[;&|]\s*)"
+    r"(?:"
+    r"type\b|"
+    r"cat\b|"
+    r"more\b|"
+    r"get-content\b|"
+    r"gc\b|"
+    r"git\s+show\b"
+    r")"
+)
+_SHELL_TASK_LOG_PATH_RE = re.compile(
+    r"(?i)(?:^|[\\/\s\"'])(?:\.tg_agent|\.tgagent)[\\/]"
+    r"shell_tasks[\\/][^\\/\s\"']+[\\/]([A-Za-z0-9_-]+)\.log\b"
+)
+_HIDDEN_EXECUTION_RE = re.compile(
+    r"(?ix)"
+    r"\b(?:bash|sh|zsh|ksh)\s+-[^\s]*c(?:\s|$)|"
+    r"\b(?:python[23]?|perl|ruby|node)\s+-[ec]\s+|"
+    r"\b(?:python[23]?|perl|ruby|node)\s+<<"
+)
+
+
+def _evaluate_bash_file_task(command: str) -> tuple[PermissionReason, ...]:
+    if _HIDDEN_EXECUTION_RE.search(command):
+        return ()
+
+    shell_task_match = _SHELL_TASK_LOG_PATH_RE.search(command)
+    if shell_task_match and _BASH_FILE_READ_RE.search(command):
+        task_id = shell_task_match.group(1)
+        return (
+            PermissionReason(
+                source="bash_file_task",
+                rule_id="shell_task_log_read",
+                message="Bash command is polling or reading a background shell task log.",
+                category="tool_boundary",
+                severity="medium",
+                guidance=(
+                    f'Use `task_output(task_id="{task_id}", wait_for=..., timeout=...)` instead. '
+                    "`task_output` handles waiting and returns the task status, return code, "
+                    "log path, and output. Do not use `sleep` or `cat` to read this log."
+                ),
+            ),
+        )
+    if _BASH_FILE_DISCOVERY_RE.search(command):
+        return (
+            PermissionReason(
+                source="bash_file_task",
+                rule_id="file_discovery",
+                message="Bash command is doing file discovery or directory listing.",
+                category="tool_boundary",
+                severity="medium",
+                guidance=(
+                    "Use `glob_search` to list files and folders, and `resolve_path` first if "
+                    "the target path is fuzzy. Do not retry the same discovery step with `bash`, "
+                    "because that bypasses sandbox and .tgagentignore protections."
+                ),
+            ),
+        )
+    if _BASH_TEXT_SEARCH_RE.search(command):
+        return (
+            PermissionReason(
+                source="bash_file_task",
+                rule_id="text_search",
+                message="Bash command is doing text search inside files.",
+                category="tool_boundary",
+                severity="medium",
+                guidance=(
+                    "Use `grep` for content search, and `resolve_path` first when the search "
+                    "scope path is ambiguous. Do not retry the same search step with `bash`, "
+                    "because that bypasses sandbox and .tgagentignore protections."
+                ),
+            ),
+        )
+    if _BASH_FILE_READ_RE.search(command):
+        return (
+            PermissionReason(
+                source="bash_file_task",
+                rule_id="file_read",
+                message="Bash command is trying to read file contents.",
+                category="tool_boundary",
+                severity="medium",
+                guidance=(
+                    "Use `read` for text files. If the path is unclear, call `resolve_path` "
+                    "first. Do not retry the same read step with `bash`, because that bypasses "
+                    "sandbox and .tgagentignore protections."
+                ),
+            ),
+        )
+    return ()
 
 
 def _reasons_from_findings(

@@ -34,7 +34,6 @@ from agent_core import Agent
 from agent_core.agent import (
     AgentHook,
     AuditHook,
-    BashFileTaskGuardHook,
     PermissionEnforcementHook,
     SubagentCompletionHook,
 )
@@ -718,7 +717,6 @@ def build_agent_hooks() -> list[AgentHook]:
     """
     hooks: list[AgentHook] = [
         PermissionEnforcementHook(),
-        BashFileTaskGuardHook(),
         SubagentCompletionHook(),
         AuditHook(),
     ]

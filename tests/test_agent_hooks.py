@@ -9,7 +9,6 @@ from agent_core.agent import (
     Agent,
     AgentRunState,
     AuditHook,
-    BashFileTaskGuardHook,
     HumanApprovalDecision,
     HumanApprovalRequest,
     PermissionEnforcementHook,
@@ -306,7 +305,7 @@ async def test_permission_enforcement_hook_denies_block_command():
     tool_messages = [message for message in agent.messages if message.role == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0].is_error is True
-    assert "Dangerous bash command blocked" in tool_messages[0].text
+    assert "Bash command blocked by permission policy" in tool_messages[0].text
     assert "git_reset_hard" in tool_messages[0].text
 
 
@@ -481,8 +480,7 @@ async def test_permission_enforcement_hook_session_approval_skips_later_same_rul
     assert len(handler.requests) == 1
 
 
-@pytest.mark.asyncio
-async def test_bash_file_task_guard_hook_blocks_directory_listing_commands():
+async def _run_permission_enforced_bash(command: str):
     called = {"value": False}
 
     @tool("Execute shell command")
@@ -490,130 +488,6 @@ async def test_bash_file_task_guard_hook_blocks_directory_listing_commands():
         called["value"] = True
         return f"ran: {command}"
 
-    llm = FakeLLM(
-        [
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        function=Function(name="bash", arguments='{"command":"dir"}'),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(content="done"),
-        ]
-    )
-    agent = Agent(
-        llm=llm,
-        tools=[bash],
-        hooks=[BashFileTaskGuardHook()],
-    )
-
-    result = await agent.query("list files")
-
-    assert result == "done"
-    assert called["value"] is False
-    tool_messages = [message for message in agent.messages if message.role == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].is_error is True
-    assert "file discovery or directory listing" in tool_messages[0].text
-    assert "`glob_search`" in tool_messages[0].text
-
-
-@pytest.mark.asyncio
-async def test_bash_file_task_guard_hook_blocks_text_search_commands():
-    called = {"value": False}
-
-    @tool("Execute shell command")
-    async def bash(command: str) -> str:
-        called["value"] = True
-        return f"ran: {command}"
-
-    llm = FakeLLM(
-        [
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        function=Function(
-                            name="bash",
-                            arguments='{"command":"grep TODO src/app.py"}',
-                        ),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(content="done"),
-        ]
-    )
-    agent = Agent(
-        llm=llm,
-        tools=[bash],
-        hooks=[BashFileTaskGuardHook()],
-    )
-
-    result = await agent.query("search for TODO")
-
-    assert result == "done"
-    assert called["value"] is False
-    tool_messages = [message for message in agent.messages if message.role == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].is_error is True
-    assert "text search inside files" in tool_messages[0].text
-    assert "`grep`" in tool_messages[0].text
-
-
-@pytest.mark.asyncio
-async def test_bash_file_task_guard_hook_blocks_file_read_commands():
-    called = {"value": False}
-
-    @tool("Execute shell command")
-    async def bash(command: str) -> str:
-        called["value"] = True
-        return f"ran: {command}"
-
-    llm = FakeLLM(
-        [
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        function=Function(name="bash", arguments='{"command":"type README.md"}'),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(content="done"),
-        ]
-    )
-    agent = Agent(
-        llm=llm,
-        tools=[bash],
-        hooks=[BashFileTaskGuardHook()],
-    )
-
-    result = await agent.query("read the readme")
-
-    assert result == "done"
-    assert called["value"] is False
-    tool_messages = [message for message in agent.messages if message.role == "tool"]
-    assert len(tool_messages) == 1
-    assert tool_messages[0].is_error is True
-    assert "trying to read file contents" in tool_messages[0].text
-    assert "`read`" in tool_messages[0].text
-
-
-@pytest.mark.asyncio
-async def test_bash_file_task_guard_hook_points_shell_task_logs_to_task_output():
-    called = {"value": False}
-
-    @tool("Execute shell command")
-    async def bash(command: str) -> str:
-        called["value"] = True
-        return f"ran: {command}"
-
-    command = (
-        "sleep 3 && cat "
-        "/home/user/project/.tg_agent/shell_tasks/22b62dbb/58983d6c.log"
-    )
     llm = FakeLLM(
         [
             ChatInvokeCompletion(
@@ -633,53 +507,76 @@ async def test_bash_file_task_guard_hook_points_shell_task_logs_to_task_output()
     agent = Agent(
         llm=llm,
         tools=[bash],
-        hooks=[BashFileTaskGuardHook()],
+        hooks=[PermissionEnforcementHook()],
     )
+    result = await agent.query("run bash")
+    return result, called, agent
 
-    result = await agent.query("read the background task log")
+
+@pytest.mark.asyncio
+async def test_permission_enforcement_hook_blocks_directory_listing_commands():
+    result, called, agent = await _run_permission_enforced_bash("dir")
 
     assert result == "done"
     assert called["value"] is False
     tool_messages = [message for message in agent.messages if message.role == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0].is_error is True
+    assert "file_discovery" in tool_messages[0].text
+    assert "file discovery or directory listing" in tool_messages[0].text
+    assert "`glob_search`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_permission_enforcement_hook_blocks_text_search_commands():
+    result, called, agent = await _run_permission_enforced_bash("grep TODO src/app.py")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "text_search" in tool_messages[0].text
+    assert "text search inside files" in tool_messages[0].text
+    assert "`grep`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_permission_enforcement_hook_blocks_file_read_commands():
+    result, called, agent = await _run_permission_enforced_bash("type README.md")
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "file_read" in tool_messages[0].text
+    assert "trying to read file contents" in tool_messages[0].text
+    assert "`read`" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_permission_enforcement_hook_points_shell_task_logs_to_task_output():
+    command = (
+        "sleep 3 && cat "
+        "/home/user/project/.tg_agent/shell_tasks/22b62dbb/58983d6c.log"
+    )
+    result, called, agent = await _run_permission_enforced_bash(command)
+
+    assert result == "done"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "shell_task_log_read" in tool_messages[0].text
     assert "background shell task log" in tool_messages[0].text
     assert 'task_output(task_id="58983d6c"' in tool_messages[0].text
     assert "`sleep` or `cat`" in tool_messages[0].text
 
 
 @pytest.mark.asyncio
-async def test_bash_file_task_guard_hook_allows_non_file_shell_commands():
-    called = {"value": False}
-
-    @tool("Execute shell command")
-    async def bash(command: str) -> str:
-        called["value"] = True
-        return f"ran: {command}"
-
-    llm = FakeLLM(
-        [
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        function=Function(
-                            name="bash",
-                            arguments='{"command":"python -c \\"print(123)\\""}',
-                        ),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(content="done"),
-        ]
-    )
-    agent = Agent(
-        llm=llm,
-        tools=[bash],
-        hooks=[BashFileTaskGuardHook()],
-    )
-
-    result = await agent.query("run a script")
+async def test_permission_enforcement_hook_allows_non_file_shell_commands_when_approval_off():
+    result, called, _agent = await _run_permission_enforced_bash('python -c "print(123)"')
 
     assert result == "done"
     assert called["value"] is True
