@@ -219,7 +219,6 @@ Skill 可通过 `@` 调用：
 bash                  # 执行 shell 命令
 resolve_path          # 解析路径
 read                  # 读取文件
-read_excel            # 读取 Excel
 write                 # 写入文件
 edit                  # 编辑文件
 glob_search           # glob 文件查找

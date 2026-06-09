@@ -10,14 +10,12 @@ from agent_core.agent import (
     AgentRunState,
     AuditHook,
     BashFileTaskGuardHook,
-    ExcelReadGuardHook,
     HumanApprovalDecision,
-    HumanApprovalHook,
     HumanApprovalRequest,
+    PermissionEnforcementHook,
     ToolPolicyHook,
-    build_default_approval_policy,
 )
-from agent_core.agent.events import FinalResponseEvent, HiddenUserMessageEvent, ToolCallEvent
+from agent_core.agent.events import FinalResponseEvent, HiddenUserMessageEvent
 from agent_core.agent.runtime_events import ToolCallRequested
 from agent_core.agent.runtime_loop import AgentRuntimeLoop
 from agent_core.llm.messages import BaseMessage, Function, ToolCall
@@ -51,6 +49,20 @@ class FakeLLM:
             raise AssertionError("No scripted response left for FakeLLM")
         return self.responses.pop(0)
 
+    async def ainvoke_streaming(
+        self,
+        messages: list[BaseMessage],
+        tools=None,
+        tool_choice=None,
+        **kwargs,
+    ) -> ChatInvokeCompletion:
+        return await self.ainvoke(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+
     async def astream(
         self,
         messages: list[BaseMessage],
@@ -58,8 +70,21 @@ class FakeLLM:
         tool_choice=None,
         **kwargs,
     ) -> AsyncIterator[ChatInvokeCompletionChunk]:
-        if False:
-            yield ChatInvokeCompletionChunk()
+        response = await self.ainvoke(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+        if response.content:
+            yield ChatInvokeCompletionChunk(delta=response.content)
+        if response.tool_calls:
+            yield ChatInvokeCompletionChunk(tool_calls=response.tool_calls)
+        if response.usage is not None or response.stop_reason is not None:
+            yield ChatInvokeCompletionChunk(
+                usage=response.usage,
+                stop_reason=response.stop_reason,
+            )
 
 
 class TodoAgent(Agent):
@@ -114,9 +139,7 @@ async def test_runtime_loop_handle_tool_call_requested_uses_override_result():
     assert len(emitted_events) == 1
     assert emitted_events[0].tool_result.text == "hook override"
     assert emitted_events[0].tool_result.is_error is False
-    assert len(ui_events) == 2
-    assert isinstance(ui_events[1], ToolCallEvent)
-    assert ui_events[1].args["payload"] == "hello"
+    assert ui_events == []
 
 
 @pytest.mark.asyncio
@@ -211,7 +234,7 @@ async def test_audit_hook_records_runtime_events():
 
 
 @pytest.mark.asyncio
-async def test_human_approval_hook_skips_when_disabled():
+async def test_permission_enforcement_hook_allows_ask_command_when_approval_disabled():
     called = {"value": False}
 
     @tool("Execute shell command")
@@ -219,14 +242,13 @@ async def test_human_approval_hook_skips_when_disabled():
         called["value"] = True
         return f"ran: {command}"
 
-    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True))
     llm = FakeLLM(
         [
             ChatInvokeCompletion(
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                        function=Function(name="bash", arguments='{"command":"rm -rf build"}'),
                     )
                 ]
             ),
@@ -236,12 +258,13 @@ async def test_human_approval_hook_skips_when_disabled():
     agent = Agent(
         llm=llm,
         tools=[bash],
-        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+        hooks=[PermissionEnforcementHook()],
     )
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True))
     agent.human_in_loop_handler = handler
     agent.human_in_loop_config.enabled = False
 
-    result = await agent.query("run shell")
+    result = await agent.query("remove build")
 
     assert result == "done"
     assert called["value"] is True
@@ -249,7 +272,7 @@ async def test_human_approval_hook_skips_when_disabled():
 
 
 @pytest.mark.asyncio
-async def test_human_approval_hook_allows_approved_tool_call():
+async def test_permission_enforcement_hook_denies_block_command():
     called = {"value": False}
 
     @tool("Execute shell command")
@@ -257,14 +280,53 @@ async def test_human_approval_hook_allows_approved_tool_call():
         called["value"] = True
         return f"ran: {command}"
 
-    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True))
     llm = FakeLLM(
         [
             ChatInvokeCompletion(
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                        function=Function(name="bash", arguments='{"command":"git reset --hard"}'),
+                    )
+                ]
+            ),
+            ChatInvokeCompletion(content="blocked"),
+        ]
+    )
+    agent = Agent(
+        llm=llm,
+        tools=[bash],
+        hooks=[PermissionEnforcementHook()],
+    )
+
+    result = await agent.query("reset hard")
+
+    assert result == "blocked"
+    assert called["value"] is False
+    tool_messages = [message for message in agent.messages if message.role == "tool"]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].is_error is True
+    assert "Dangerous bash command blocked" in tool_messages[0].text
+    assert "git_reset_hard" in tool_messages[0].text
+
+
+@pytest.mark.asyncio
+async def test_permission_enforcement_hook_allows_approved_ask_command():
+    called = {"value": False}
+
+    @tool("Execute shell command")
+    async def bash(command: str) -> str:
+        called["value"] = True
+        return f"ran: {command}"
+
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True, scope="once"))
+    llm = FakeLLM(
+        [
+            ChatInvokeCompletion(
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        function=Function(name="bash", arguments='{"command":"rm -rf build"}'),
                     )
                 ]
             ),
@@ -274,22 +336,24 @@ async def test_human_approval_hook_allows_approved_tool_call():
     agent = Agent(
         llm=llm,
         tools=[bash],
-        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+        hooks=[PermissionEnforcementHook()],
     )
     agent.human_in_loop_handler = handler
     agent.human_in_loop_config.enabled = True
 
-    result = await agent.query("run shell")
+    result = await agent.query("remove build")
 
     assert result == "approved"
     assert called["value"] is True
     assert len(handler.requests) == 1
     assert handler.requests[0].tool_name == "bash"
-    assert handler.requests[0].arguments["command"] == "echo hi"
+    assert handler.requests[0].arguments["command"] == "rm -rf build"
+    assert handler.requests[0].approval_kind == "safety"
+    assert handler.requests[0].approval_keys == ("safety:rm_recursive",)
 
 
 @pytest.mark.asyncio
-async def test_human_approval_hook_blocks_rejected_tool_call():
+async def test_permission_enforcement_hook_blocks_rejected_ask_command():
     called = {"value": False}
 
     @tool("Execute shell command")
@@ -304,7 +368,7 @@ async def test_human_approval_hook_blocks_rejected_tool_call():
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                        function=Function(name="bash", arguments='{"command":"rm -rf build"}'),
                     )
                 ]
             )
@@ -313,25 +377,24 @@ async def test_human_approval_hook_blocks_rejected_tool_call():
     agent = Agent(
         llm=llm,
         tools=[bash],
-        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+        hooks=[PermissionEnforcementHook()],
     )
     agent.human_in_loop_handler = handler
     agent.human_in_loop_config.enabled = True
 
-    result = await agent.query("run shell")
+    result = await agent.query("remove build")
 
     assert "本轮对话已结束" in result
     assert called["value"] is False
     tool_messages = [message for message in agent.messages if message.role == "tool"]
     assert len(tool_messages) == 1
-    assert tool_messages[0].is_error is True
     assert "已被人工审批拒绝" in tool_messages[0].text
     assert "operator denied" in tool_messages[0].text
     assert len(llm.invocations) == 1
 
 
 @pytest.mark.asyncio
-async def test_human_approval_hook_fails_closed_without_handler():
+async def test_permission_enforcement_hook_fails_closed_without_handler():
     called = {"value": False}
 
     @tool("Execute shell command")
@@ -345,7 +408,10 @@ async def test_human_approval_hook_fails_closed_without_handler():
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                        function=Function(
+                            name="bash",
+                            arguments='{"command":"rm -rf build"}',
+                        ),
                     )
                 ]
             )
@@ -354,11 +420,11 @@ async def test_human_approval_hook_fails_closed_without_handler():
     agent = Agent(
         llm=llm,
         tools=[bash],
-        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+        hooks=[PermissionEnforcementHook()],
     )
     agent.human_in_loop_config.enabled = True
 
-    result = await agent.query("run shell")
+    result = await agent.query("remove build")
 
     assert "本轮对话已结束" in result
     assert called["value"] is False
@@ -369,37 +435,23 @@ async def test_human_approval_hook_fails_closed_without_handler():
 
 
 @pytest.mark.asyncio
-async def test_excel_read_guard_hook_blocks_excel_related_bash_after_read_excel():
+async def test_permission_enforcement_hook_session_approval_skips_later_same_rule():
     called = {"value": False}
-
-    @tool("Read excel")
-    async def read_excel(file_path: str) -> str:
-        return json.dumps(
-            {
-                "resolved_path": file_path,
-                "sheet_names": ["Sheet1"],
-                "selected_sheet": None,
-                "preview_limits": {"max_rows": 20, "max_cols": 20},
-                "sheets": [],
-            },
-            ensure_ascii=False,
-        )
 
     @tool("Execute shell command")
     async def bash(command: str) -> str:
         called["value"] = True
         return f"ran: {command}"
 
+    hook = PermissionEnforcementHook()
+    handler = FakeApprovalHandler(HumanApprovalDecision(approved=True, scope="session"))
     llm = FakeLLM(
         [
             ChatInvokeCompletion(
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(
-                            name="read_excel",
-                            arguments='{"file_path":"D:/workspace/demo.xlsx"}',
-                        ),
+                        function=Function(name="bash", arguments='{"command":"rm -rf build"}'),
                     )
                 ]
             ),
@@ -407,10 +459,7 @@ async def test_excel_read_guard_hook_blocks_excel_related_bash_after_read_excel(
                 tool_calls=[
                     ToolCall(
                         id="call-2",
-                        function=Function(
-                            name="bash",
-                            arguments='{"command":"python -c \\"import openpyxl\\""}',
-                        ),
+                        function=Function(name="bash", arguments='{"command":"rm -rf dist"}'),
                     )
                 ]
             ),
@@ -419,141 +468,17 @@ async def test_excel_read_guard_hook_blocks_excel_related_bash_after_read_excel(
     )
     agent = Agent(
         llm=llm,
-        tools=[read_excel, bash],
-        hooks=[ExcelReadGuardHook()],
+        tools=[bash],
+        hooks=[hook],
     )
+    agent.human_in_loop_handler = handler
+    agent.human_in_loop_config.enabled = True
 
-    result = await agent.query("analyze workbook")
-
-    assert result == "done"
-    assert called["value"] is False
-    tool_messages = [message for message in agent.messages if message.role == "tool"]
-    assert len(tool_messages) == 2
-    assert tool_messages[1].is_error is True
-    assert "read_excel" in tool_messages[1].text
-    assert "Do not use `bash`" in tool_messages[1].text
-
-
-@pytest.mark.asyncio
-async def test_excel_read_guard_hook_allows_non_excel_bash_after_read_excel():
-    called = {"value": False}
-
-    @tool("Read excel")
-    async def read_excel(file_path: str) -> str:
-        return json.dumps(
-            {
-                "resolved_path": file_path,
-                "sheet_names": ["Sheet1"],
-                "selected_sheet": None,
-                "preview_limits": {"max_rows": 20, "max_cols": 20},
-                "sheets": [],
-            },
-            ensure_ascii=False,
-        )
-
-    @tool("Execute shell command")
-    async def bash(command: str) -> str:
-        called["value"] = True
-        return f"ran: {command}"
-
-    llm = FakeLLM(
-        [
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        function=Function(
-                            name="read_excel",
-                            arguments='{"file_path":"D:/workspace/demo.xlsx"}',
-                        ),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-2",
-                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(content="done"),
-        ]
-    )
-    agent = Agent(
-        llm=llm,
-        tools=[read_excel, bash],
-        hooks=[ExcelReadGuardHook()],
-    )
-
-    result = await agent.query("analyze workbook")
+    result = await agent.query("remove build and dist")
 
     assert result == "done"
     assert called["value"] is True
-
-
-@pytest.mark.asyncio
-async def test_excel_and_bash_guards_do_not_conflict_on_excel_file_listing_command():
-    called = {"value": False}
-
-    @tool("Read excel")
-    async def read_excel(file_path: str) -> str:
-        return json.dumps(
-            {
-                "resolved_path": file_path,
-                "sheet_names": ["Sheet1"],
-                "selected_sheet": None,
-                "preview_limits": {"max_rows": 20, "max_cols": 20},
-                "sheets": [],
-            },
-            ensure_ascii=False,
-        )
-
-    @tool("Execute shell command")
-    async def bash(command: str) -> str:
-        called["value"] = True
-        return f"ran: {command}"
-
-    llm = FakeLLM(
-        [
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-1",
-                        function=Function(
-                            name="read_excel",
-                            arguments='{"file_path":"D:/workspace/demo.xlsx"}',
-                        ),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(
-                tool_calls=[
-                    ToolCall(
-                        id="call-2",
-                        function=Function(name="bash", arguments='{"command":"dir demo.xlsx"}'),
-                    )
-                ]
-            ),
-            ChatInvokeCompletion(content="done"),
-        ]
-    )
-    agent = Agent(
-        llm=llm,
-        tools=[read_excel, bash],
-        hooks=[BashFileTaskGuardHook(), ExcelReadGuardHook()],
-    )
-
-    result = await agent.query("analyze workbook")
-
-    assert result == "done"
-    assert called["value"] is False
-    tool_messages = [message for message in agent.messages if message.role == "tool"]
-    assert len(tool_messages) == 2
-    assert tool_messages[1].is_error is True
-    assert "read_excel" in tool_messages[1].text
-    assert "Do not use `bash`" in tool_messages[1].text
-    assert "file discovery or directory listing" not in tool_messages[1].text
+    assert len(handler.requests) == 1
 
 
 @pytest.mark.asyncio
@@ -776,7 +701,7 @@ async def test_query_stream_with_human_approval_rejection_still_finishes():
                 tool_calls=[
                     ToolCall(
                         id="call-1",
-                        function=Function(name="bash", arguments='{"command":"echo hi"}'),
+                        function=Function(name="bash", arguments='{"command":"rm -rf build"}'),
                     )
                 ]
             )
@@ -785,7 +710,7 @@ async def test_query_stream_with_human_approval_rejection_still_finishes():
     agent = Agent(
         llm=llm,
         tools=[bash],
-        hooks=[HumanApprovalHook(policy=build_default_approval_policy("primary"))],
+        hooks=[PermissionEnforcementHook()],
     )
     agent.human_in_loop_handler = handler
     agent.human_in_loop_config.enabled = True

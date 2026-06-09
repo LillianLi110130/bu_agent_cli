@@ -1,9 +1,9 @@
 """Tools for Claude Code CLI."""
 
 from tools.agent_tool import delegate, delegate_parallel
-from tools.cronjob import cronjob
 from tools.bash import bash
 from tools.browser_harness import browser_harness
+from tools.cronjob import cronjob
 from tools.files import edit, read, write
 from tools.image_analysis import analyze_image
 from tools.message import message
@@ -26,17 +26,13 @@ from tools.team_tool import (
 )
 from tools.todos import done, todo
 from tools.web import web_fetch
-from tools.xlsx import read_excel
 
 ALL_TOOLS = [
     bash,
     browser_harness,
     resolve_path,
     read,
-    read_excel,
     analyze_image,
-    # read_excel,
-    write,
     edit,
     write,
     glob_search,
@@ -71,7 +67,6 @@ __all__ = [
     "browser_harness",
     "resolve_path",
     "read",
-    "read_excel",
     "analyze_image",
     "write",
     "edit",

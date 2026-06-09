@@ -8,7 +8,6 @@ import pytest
 
 from agent_core import Agent
 from agent_core.llm.messages import Function, ToolCall
-from agent_core.tools import tool
 from cli.session_runtime import CLISessionRuntime
 from cli.worker.runtime_factory import EchoLLM
 from tools.bash import _AsyncShellResult, bash
@@ -97,10 +96,10 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
         return _AsyncShellResult(
             returncode=1,
             stdout="".join(
-                f"stdout line {index:04d} " + ("x" * 40) + "\n" for index in range(1, 91)
+                f"stdout line {index:04d} " + ("x" * 40) + "\n" for index in range(1, 161)
             ),
             stderr="".join(
-                f"stderr line {index:04d} " + ("y" * 40) + "\n" for index in range(1, 81)
+                f"stderr line {index:04d} " + ("y" * 40) + "\n" for index in range(1, 141)
             ),
         )
 
@@ -137,12 +136,12 @@ async def test_bash_context_policy_trims_large_output_and_saves_artifact(
     assert "Exit code: 1" in tool_message.text
     assert "context-limited summary of the bash result" in tool_message.text
     assert "Do not repeat the same bash call with identical arguments" in tool_message.text
-    assert "Stdout: 90 lines" in tool_message.text
-    assert "Stderr: 80 lines" in tool_message.text
+    assert "Stdout: 160 lines" in tool_message.text
+    assert "Stderr: 140 lines" in tool_message.text
     assert "stdout line 0001" in tool_message.text
-    assert "stdout line 0090" in tool_message.text
+    assert "stdout line 0160" in tool_message.text
     assert "stderr line 0001" in tool_message.text
-    assert "stderr line 0080" in tool_message.text
+    assert "stderr line 0140" in tool_message.text
     assert "Artifact file:" in tool_message.text
     assert "This artifact contains the full raw tool result." in tool_message.text
 
@@ -167,7 +166,10 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     target = workspace / "large.txt"
-    target.write_text("".join(f"line {i:04d} " + ("x" * 40) + "\n" for i in range(1, 181)), "utf-8")
+    target.write_text(
+        "".join(f"line {i:04d} " + ("x" * 40) + "\n" for i in range(1, 261)),
+        "utf-8",
+    )
 
     sandbox = SandboxContext.create(workspace)
     runtime = CLISessionRuntime.create_for_context(sandbox)
@@ -193,7 +195,7 @@ async def test_read_context_policy_trims_large_output_and_saves_artifact(
     assert isinstance(raw_result, str)
     assert len(raw_result) > read.context_config.max_inline_chars
     assert tool_message.text != raw_result
-    assert "Read result: [Lines 1-180 of 180]" in tool_message.text
+    assert "Read result: [Lines 1-260 of 260]" in tool_message.text
     assert "This is a context-limited preview of the requested file slice" in tool_message.text
     assert "Do not repeat the same read call with identical file_path" in tool_message.text
     assert "Context preview:" in tool_message.text
@@ -240,99 +242,6 @@ async def test_read_context_policy_keeps_small_output_inline(
 
     assert tool_message.text == raw_result
     assert "[Lines 1-3 of 3]" in tool_message.text
-
-
-@pytest.mark.asyncio
-async def test_read_excel_context_policy_summarizes_large_match_payload(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    @tool(
-        "Read workbook",
-        name="read_excel",
-        context_policy="summarize",
-        context_max_inline_chars=2200,
-    )
-    async def fake_read_excel() -> str:
-        payload = {
-            "resolved_path": "/workspace/orders.xlsx",
-            "sheet_names": ["Sheet1"],
-            "selected_sheet": "Sheet1",
-            "preview_limits": {
-                "find_text": "是",
-                "offset_row": 1,
-                "context_rows": 0,
-                "max_matches": 500,
-                "max_rows": 10,
-                "max_cols": 15,
-            },
-            "matches": [
-                {
-                    "sheet": "Sheet1",
-                    "row": index,
-                    "matched_columns": [7],
-                    "preview_rows": [
-                        {
-                            "row": index,
-                            "values": [
-                                f"工单{index}",
-                                "托管业务机房维护申请",
-                                "是",
-                                "定期提数",
-                                "2025-01-01",
-                                "附加说明" * 8,
-                            ],
-                        }
-                    ],
-                }
-                for index in range(2, 202)
-            ],
-            "sheets": [
-                {
-                    "name": "Sheet1",
-                    "row_count": 1955,
-                    "column_count": 42,
-                    "preview_rows": [
-                        {"row": 1, "values": ["标题1", "标题2", "标题3"]},
-                        {"row": 2, "values": ["示例", "是", "定期提数"]},
-                    ],
-                }
-            ],
-        }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
-
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    sandbox = SandboxContext.create(workspace)
-    runtime = CLISessionRuntime.create_for_context(sandbox)
-    agent = Agent(
-        llm=EchoLLM(prefix="echo:"),
-        tools=[fake_read_excel],
-        system_prompt="test",
-    )
-    agent.bind_session_runtime(runtime)
-
-    tool_message = await agent._execute_tool_call(
-        ToolCall(
-            id="call-excel",
-            function=Function(name="read_excel", arguments="{}"),
-        )
-    )
-
-    assert "Excel workbook: /workspace/orders.xlsx" in tool_message.text
-    assert "Matches returned: 200" in tool_message.text
-    assert "Sheet summary: Sheet1 rows=1955, cols=42" in tool_message.text
-    assert "Top matches:" in tool_message.text
-    assert "This is a context-limited summary of the workbook result" in tool_message.text
-    assert "Artifact file:" in tool_message.text
-
-    artifact_path = runtime.artifacts_dir / "tool" / "call-excel.artifact.txt"
-    header, body = _read_artifact_parts(artifact_path)
-    assert header["tool_name"] == "read_excel"
-    assert header["content_format"] == "json"
-    assert "\"matches\"" in body
 
 
 @pytest.mark.asyncio

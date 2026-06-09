@@ -34,7 +34,6 @@ class AgentSlashHandler:
         "bash",
         "resolve_path",
         "read",
-        "read_excel",
         "write",
         "edit",
         "glob_search",

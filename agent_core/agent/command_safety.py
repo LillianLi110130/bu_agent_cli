@@ -5,15 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Pattern
-
-from agent_core.agent.runtime_events import ToolCallRequested
-from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
-
-if TYPE_CHECKING:
-    from agent_core.agent.hitl import HumanApprovalRequest
-    from agent_core.agent.hooks import HookContext
-
+from typing import Literal, Pattern
 
 CommandSafetyAction = Literal["allow", "ask", "block"]
 CommandSafetySeverity = Literal["low", "medium", "high", "critical"]
@@ -447,50 +439,6 @@ def safety_session_label(findings: tuple[CommandSafetyFinding, ...]) -> str:
         labels.append(finding.session_label)
         seen.add(finding.session_label)
     return "、".join(labels)
-
-
-def build_command_safety_approval_policy():
-    """Build a mandatory approval policy for ask-level bash safety findings."""
-
-    from agent_core.agent.hitl import HumanApprovalRequest
-
-    def policy(event: ToolCallRequested, ctx: "HookContext") -> HumanApprovalRequest | None:
-        del ctx
-        if event.tool_call.function.name != "bash":
-            return None
-        try:
-            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
-        except ToolArgumentsError:
-            return None
-
-        command = args.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
-
-        result = check_dangerous_command(command)
-        if result.action != "ask":
-            return None
-
-        findings = result.ask_findings
-        risk_level = _highest_severity(findings)
-        label = safety_session_label(findings)
-        reason = (
-            "该 bash 命令命中安全审查规则，需要人工确认。\n"
-            f"Matched safety rule(s):\n{format_findings(findings)}"
-        )
-        return HumanApprovalRequest(
-            tool_name="bash",
-            tool_call_id=event.tool_call.id,
-            arguments=args,
-            reason=reason,
-            risk_level=risk_level,
-            command_preview=command_preview(command, max_chars=200),
-            approval_kind="safety",
-            approval_keys=tuple(finding.approval_key for finding in findings),
-            session_approval_label=label,
-        )
-
-    return policy
 
 
 def _highest_severity(findings: tuple[CommandSafetyFinding, ...]) -> CommandSafetySeverity:

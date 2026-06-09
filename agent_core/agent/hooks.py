@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
 
-from agent_core.agent.command_safety import (
-    check_dangerous_command,
-    command_preview,
-    format_findings,
-)
 from agent_core.agent.events import HiddenUserMessageEvent
-from agent_core.agent.hitl import HumanApprovalRequest
+from agent_core.agent.permissions import PermissionDecision, PermissionEngine
 from agent_core.agent.runtime_events import (
     FinishRequested,
     IterationStarted,
@@ -33,7 +27,6 @@ if TYPE_CHECKING:
     from agent_core.task import SubagentTaskResult
 
 logger = logging.getLogger("agent_core.agent.hooks")
-_EXCEL_COMMAND_RE = re.compile(r"(?i)(openpyxl|\.xlsx\b|\.xlsm\b|\.xltx\b|\.xltm\b)")
 _BASH_FILE_DISCOVERY_RE = re.compile(
     r"(?ix)"
     r"(?:^|[;&|]\s*)"
@@ -260,11 +253,12 @@ class ToolPolicyHook(BaseAgentHook):
 
 
 @dataclass
-class ExcelReadGuardHook(BaseAgentHook):
-    """Block Excel-related shell retries after a successful read_excel call."""
+class PermissionEnforcementHook(BaseAgentHook):
+    """Enforce PermissionEngine decisions before tool execution."""
 
-    priority: int = 16
-    state_attr: str = "_successful_excel_reads"
+    engine: PermissionEngine = field(default_factory=PermissionEngine)
+    priority: int = 12
+    _session_approval_keys: set[str] = field(default_factory=set)
 
     async def before_event(
         self,
@@ -274,75 +268,118 @@ class ExcelReadGuardHook(BaseAgentHook):
         if not isinstance(event, ToolCallRequested):
             return None
 
-        if event.tool_call.function.name != "bash":
+        decision = self.engine.evaluate_tool_call(event, ctx)
+        if decision.decision == "allow":
+            return None
+        if decision.decision == "deny":
+            return self._deny_tool_call(event, decision)
+        if decision.decision == "ask":
+            return await self._ask_or_allow(event, ctx, decision)
+        return None
+
+    async def _ask_or_allow(
+        self,
+        event: ToolCallRequested,
+        ctx: HookContext,
+        decision: PermissionDecision,
+    ) -> HookDecision | None:
+        request = decision.approval_request
+        if request is None:
             return None
 
-        successful_reads = self._get_successful_reads(ctx)
-        if not successful_reads:
+        if self._is_session_approved(request):
+            return None
+        if not ctx.agent.human_in_loop_config.enabled:
             return None
 
-        try:
-            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
-        except ToolArgumentsError:
+        handler = ctx.agent.human_in_loop_handler
+        if handler is None:
+            return self._terminate_current_turn(
+                event,
+                "需要人工审批，但当前未配置审批处理器",
+            )
+
+        human_decision = await handler.request_approval(request)
+        if human_decision.approved:
+            if human_decision.scope == "session":
+                self._session_approval_keys.update(request.approval_keys)
             return None
 
-        command = args.get("command")
-        if not isinstance(command, str) or not _EXCEL_COMMAND_RE.search(command):
-            return None
+        return self._terminate_current_turn(
+            event,
+            human_decision.reason or "该工具调用已被人工审批拒绝",
+        )
 
-        listed_paths = "\n".join(f"- {path}" for path in successful_reads)
+    @staticmethod
+    def _deny_tool_call(
+        event: ToolCallRequested,
+        decision: PermissionDecision,
+    ) -> HookDecision:
+        tool_name = event.tool_call.function.name
+        reason_lines = "\n".join(
+            f"- {reason.rule_id or reason.source}: {reason.message}"
+            for reason in decision.reasons
+        )
+        content = (
+            "Error: Dangerous bash command blocked.\n\n"
+            "Command was not executed.\n\n"
+            f"Matched safety rule(s):\n{reason_lines}\n\n"
+            "This command is classified as a hard-blocked destructive operation. "
+            "Do not retry it or rephrase it through another shell/interpreter. "
+            "Ask the user for a safer, narrower operation instead."
+        )
         return HookDecision(
             action=HookAction.OVERRIDE_RESULT,
             override_result=ToolMessage(
                 tool_call_id=event.tool_call.id,
-                tool_name="bash",
-                content=(
-                    "Error: `read_excel` already succeeded for the current turn.\n"
-                    f"Resolved Excel file(s):\n{listed_paths}\n"
-                    "Do not use `bash` to reopen or enumerate Excel workbooks. "
-                    "Answer from the existing `read_excel` result, or call `read_excel` "
-                    "again on the same resolved path with a different `sheet_name`, "
-                    "`find_text`, `offset_row`, `max_rows`, or `max_cols` if you need more detail."
-                ),
+                tool_name=tool_name,
+                content=content,
                 is_error=True,
             ),
-            reason="blocked Excel-related bash retry after read_excel",
+            reason="permission denied by PermissionEngine",
         )
 
-    async def after_event(
-        self,
-        event: RuntimeEvent,
-        ctx: HookContext,
-        emitted_events: list[RuntimeEvent],
-    ) -> HookDecision | None:
-        if not isinstance(event, ToolResultReceived):
-            return None
+    def _is_session_approved(self, request) -> bool:
+        if request.approval_kind != "safety":
+            return False
+        if not request.approval_keys:
+            return False
+        return all(key in self._session_approval_keys for key in request.approval_keys)
 
-        if event.tool_call.function.name != "read_excel":
-            return None
-
-        try:
-            payload = json.loads(event.tool_result.content)
-        except (TypeError, json.JSONDecodeError):
-            return None
-
-        resolved_path = payload.get("resolved_path")
-        if not isinstance(resolved_path, str) or not resolved_path:
-            return None
-
-        successful_reads = self._get_successful_reads(ctx)
-        if resolved_path not in successful_reads:
-            successful_reads.append(resolved_path)
-        return None
-
-    def _get_successful_reads(self, ctx: HookContext) -> list[str]:
-        reads = getattr(ctx.state, self.state_attr, None)
-        if isinstance(reads, list):
-            return reads
-
-        reads = []
-        setattr(ctx.state, self.state_attr, reads)
-        return reads
+    @staticmethod
+    def _terminate_current_turn(
+        event: ToolCallRequested,
+        reason: str,
+    ) -> HookDecision:
+        tool_name = event.tool_call.function.name
+        normalized_reason = " ".join(reason.split())
+        message = f"工具 '{tool_name}' 已被人工审批拒绝"
+        if normalized_reason:
+            message += f"（{normalized_reason}）"
+        final_response = (
+            f"工具 '{tool_name}' 未执行，因为人工审批未通过。"
+            "本轮对话已结束，请输入你的下一条请求。"
+        )
+        return HookDecision(
+            action=HookAction.ABORT,
+            emitted_events=[
+                ToolResultReceived(
+                    tool_call=event.tool_call,
+                    tool_result=ToolMessage(
+                        tool_call_id=event.tool_call.id,
+                        tool_name=tool_name,
+                        content=message,
+                        is_error=True,
+                    ),
+                    iteration=event.iteration,
+                ),
+                RunFinished(
+                    final_response=final_response,
+                    iterations=event.iteration,
+                ),
+            ],
+            reason=final_response,
+        )
 
 
 @dataclass
@@ -420,182 +457,11 @@ class BashFileTaskGuardHook(BaseAgentHook):
         if _BASH_FILE_READ_RE.search(command):
             return (
                 "Error: This `bash` command is trying to read file contents.\n"
-                "Use `read` for text files, or `read_excel` for Excel workbooks. If the path is "
-                "unclear, call `resolve_path` first.\n"
+                "Use `read` for text files. If the path is unclear, call `resolve_path` first.\n"
                 "Do not retry the same read step with `bash`, because that bypasses sandbox and "
                 ".tgagentignore protections."
             )
         return None
-
-
-@dataclass
-class DangerousBashCommandGuardHook(BaseAgentHook):
-    """Hard-block bash commands classified as destructive by command safety rules."""
-
-    priority: int = 12
-
-    async def before_event(
-        self,
-        event: RuntimeEvent,
-        ctx: HookContext,
-    ) -> HookDecision | None:
-        del ctx
-        if not isinstance(event, ToolCallRequested):
-            return None
-
-        if event.tool_call.function.name != "bash":
-            return None
-
-        try:
-            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
-        except ToolArgumentsError:
-            return None
-
-        command = args.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
-
-        result = check_dangerous_command(command)
-        if result.action != "block":
-            return None
-
-        findings = result.blocked_findings or result.findings
-        content = (
-            "Error: Dangerous bash command blocked.\n\n"
-            "Command was not executed.\n\n"
-            f"Command preview: {command_preview(command)}\n\n"
-            f"Matched safety rule(s):\n{format_findings(findings)}\n\n"
-            "This command is classified as a hard-blocked destructive operation. "
-            "Do not retry it or rephrase it through another shell/interpreter. "
-            "Ask the user for a safer, narrower operation instead."
-        )
-        return HookDecision(
-            action=HookAction.OVERRIDE_RESULT,
-            override_result=ToolMessage(
-                tool_call_id=event.tool_call.id,
-                tool_name="bash",
-                content=content,
-                is_error=True,
-            ),
-            reason="dangerous bash command blocked",
-        )
-
-
-@dataclass
-class HumanApprovalHook(BaseAgentHook):
-    """Request human approval before executing selected tool calls."""
-
-    policy: Any = None
-    mandatory_policy: Any = None
-    priority: int = 18
-    _session_approval_keys: set[str] = field(default_factory=set)
-
-    async def before_event(
-        self,
-        event: RuntimeEvent,
-        ctx: HookContext,
-    ) -> HookDecision | None:
-        if not isinstance(event, ToolCallRequested):
-            return None
-
-        if not ctx.agent.human_in_loop_config.enabled:
-            return None
-
-        mandatory_request = self._build_mandatory_request(event, ctx)
-        if mandatory_request is not None:
-            if self._is_session_approved(mandatory_request):
-                return None
-            return await self._request_or_terminate(event, ctx, mandatory_request)
-
-        request = self._build_request(event, ctx)
-        if request is None:
-            return None
-
-        return await self._request_or_terminate(event, ctx, request)
-
-    async def _request_or_terminate(
-        self,
-        event: ToolCallRequested,
-        ctx: HookContext,
-        request: HumanApprovalRequest,
-    ) -> HookDecision | None:
-        handler = ctx.agent.human_in_loop_handler
-        if handler is None:
-            return self._terminate_current_turn(
-                event,
-                "需要人工审批，但当前未配置审批处理器",
-            )
-
-        decision = await handler.request_approval(request)
-        if decision.approved:
-            if decision.scope == "session":
-                self._session_approval_keys.update(request.approval_keys)
-            return None
-
-        return self._terminate_current_turn(
-            event,
-            decision.reason or "该工具调用已被人工审批拒绝",
-        )
-
-    def _build_request(
-        self,
-        event: ToolCallRequested,
-        ctx: HookContext,
-    ) -> HumanApprovalRequest | None:
-        if self.policy is None:
-            return None
-        return self.policy(event, ctx)
-
-    def _build_mandatory_request(
-        self,
-        event: ToolCallRequested,
-        ctx: HookContext,
-    ) -> HumanApprovalRequest | None:
-        if self.mandatory_policy is None:
-            return None
-        return self.mandatory_policy(event, ctx)
-
-    def _is_session_approved(self, request: HumanApprovalRequest) -> bool:
-        if request.approval_kind != "safety":
-            return False
-        if not request.approval_keys:
-            return False
-        return all(key in self._session_approval_keys for key in request.approval_keys)
-
-    @staticmethod
-    def _terminate_current_turn(
-        event: ToolCallRequested,
-        reason: str,
-    ) -> HookDecision:
-        tool_name = event.tool_call.function.name
-        normalized_reason = " ".join(reason.split())
-        message = f"工具 '{tool_name}' 已被人工审批拒绝"
-        if normalized_reason:
-            message += f"（{normalized_reason}）"
-        final_response = (
-            f"工具 '{tool_name}' 未执行，因为人工审批未通过。"
-            "本轮对话已结束，请输入你的下一条请求。"
-        )
-        return HookDecision(
-            action=HookAction.ABORT,
-            emitted_events=[
-                ToolResultReceived(
-                    tool_call=event.tool_call,
-                    tool_result=ToolMessage(
-                        tool_call_id=event.tool_call.id,
-                        tool_name=tool_name,
-                        content=message,
-                        is_error=True,
-                    ),
-                    iteration=event.iteration,
-                ),
-                RunFinished(
-                    final_response=final_response,
-                    iterations=event.iteration,
-                ),
-            ],
-            reason=final_response,
-        )
 
 
 @dataclass
@@ -663,7 +529,10 @@ class SubagentCompletionHook(BaseAgentHook):
         title = (
             f"Background subagent '{result.description or result.subagent_name}' completed."
             if result.status == "completed"
-            else f"Background subagent '{result.description or result.subagent_name}' finished with status '{result.status}'."
+            else (
+                f"Background subagent '{result.description or result.subagent_name}' "
+                f"finished with status '{result.status}'."
+            )
         )
         body = result.final_response.strip() or (result.error or "").strip() or "(no output)"
         message = (

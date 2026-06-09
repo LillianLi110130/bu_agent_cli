@@ -35,20 +35,11 @@ from agent_core.agent import (
     AgentHook,
     AuditHook,
     BashFileTaskGuardHook,
-    DangerousBashCommandGuardHook,
-    ExcelReadGuardHook,
-    HumanApprovalHook,
+    PermissionEnforcementHook,
     SubagentCompletionHook,
-    build_command_safety_approval_policy,
 )
 from agent_core.agent.config import AgentConfig
 from agent_core.agent.registry import AgentRegistry, default_agent_sources
-from agent_core.team import (
-    TeamRuntime,
-    is_team_experiment_enabled,
-    team_experiment_disabled_message,
-)
-from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG, TERMINAL_TEAM_STATUSES
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.llm import ChatOpenAI
 from agent_core.memory.review import MemoryReviewHook, MemoryReviewRunner
@@ -67,6 +58,12 @@ from agent_core.skill.discovery import default_skill_dirs
 from agent_core.skill.review import SkillReviewHook, SkillReviewRunner
 from agent_core.skill.runtime_service import SkillRuntimeService
 from agent_core.task import SubagentTaskManager
+from agent_core.team import (
+    TeamRuntime,
+    is_team_experiment_enabled,
+    team_experiment_disabled_message,
+)
+from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG, TERMINAL_TEAM_STATUSES
 from cli.app import TGAgentCLI
 from cli.at_commands import AtCommand, AtCommandRegistry
 from cli.im_bridge import FileBridgeStore, get_bridge_store, resolve_session_binding_id
@@ -717,12 +714,8 @@ def build_agent_hooks() -> list[AgentHook]:
     only adds optional extra hooks.
     """
     hooks: list[AgentHook] = [
-        DangerousBashCommandGuardHook(),
-        HumanApprovalHook(
-            mandatory_policy=build_command_safety_approval_policy(),
-        ),
+        PermissionEnforcementHook(),
         BashFileTaskGuardHook(),
-        ExcelReadGuardHook(),
         SubagentCompletionHook(),
         AuditHook(),
     ]
