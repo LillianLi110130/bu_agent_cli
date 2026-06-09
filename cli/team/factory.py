@@ -9,6 +9,8 @@ from typing import Any
 
 from agent_core import Agent
 from agent_core.lsp import attach_lsp_manager
+from agent_core.mcp import attach_mcp_manager
+from agent_core.mcp.registry import bind_mcp_dynamic_tools
 from agent_core.agent.config import AgentConfig
 from agent_core.llm import ChatOpenAI
 from agent_core.skill.runtime_service import SkillRuntimeService
@@ -144,6 +146,7 @@ def create_team_member_agent(
     bootstrap = _bootstrap_module()
     ctx = SandboxContext.create(root_dir)
     attach_lsp_manager(ctx)
+    attach_mcp_manager(ctx)
     base_llm = bootstrap.create_llm(model)
     runtime = runtime_registries or bootstrap.create_runtime_registries(
         workspace_root=ctx.working_dir,
@@ -204,4 +207,5 @@ def create_team_member_agent(
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
     ctx.current_agent = agent
+    bind_mcp_dynamic_tools(agent, ctx)
     return agent, ctx, runtime

@@ -155,7 +155,7 @@ class LSPClient:
     async def shutdown(self) -> None:
         if self.process is None:
             return
-        if self.is_running:
+        if self.is_running and self._initialized:
             try:
                 await self.request("shutdown", {}, timeout=2.0)
                 await self.notify("exit", {})
@@ -168,6 +168,10 @@ class LSPClient:
             except asyncio.TimeoutError:
                 self.process.kill()
                 await self.process.wait()
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+            with contextlib.suppress(Exception):
+                await self.process.stdin.wait_closed()
         if self._read_task is not None:
             self._read_task.cancel()
             try:
@@ -186,6 +190,9 @@ class LSPClient:
 
     def terminate_nowait(self) -> None:
         """Best-effort process cleanup for synchronous shutdown fallbacks."""
+        if self.process is not None and self.process.stdin is not None:
+            with contextlib.suppress(Exception):
+                self.process.stdin.close()
         if self.process is not None and self.process.returncode is None:
             with contextlib.suppress(ProcessLookupError):
                 self.process.terminate()

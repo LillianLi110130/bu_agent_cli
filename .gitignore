@@ -13,6 +13,8 @@ __pycache__/
 .coverage
 .idea/
 .claude/
+.codegraph/
+.mcp.json
 .vscode/
 .bu_agent/
 .pytest_tmp/

@@ -189,7 +189,11 @@ class LSPManager:
         )
         try:
             await client.start()
-        except Exception as exc:
+        except BaseException as exc:
+            with contextlib.suppress(BaseException):
+                await client.shutdown()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             logger.warning(
                 "[%s] spawn/initialize failed for %s: %s",
                 server.name,
@@ -197,8 +201,6 @@ class LSPManager:
                 exc,
             )
             self._broken.add(key)
-            with contextlib.suppress(Exception):
-                await client.shutdown()
             raise
         self._clients[key] = client
         return client

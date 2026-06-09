@@ -162,6 +162,7 @@ class SandboxContext:
     bridge_store: Any | None = None
     team_runtime: Any | None = None
     lsp_manager: Any | None = None
+    mcp_manager: Any | None = None
 
     def __post_init__(self) -> None:
         if self.subagent_events is None:

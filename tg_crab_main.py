@@ -51,6 +51,8 @@ from agent_core.team import (
 from agent_core.team.runtime import TEAM_WORKER_INTERNAL_FLAG, TERMINAL_TEAM_STATUSES
 from agent_core.bootstrap.agent_factory import build_project_context
 from agent_core.lsp import attach_lsp_manager, shutdown_lsp_manager
+from agent_core.mcp import attach_mcp_manager, shutdown_mcp_manager
+from agent_core.mcp.registry import bind_mcp_dynamic_tools
 from agent_core.llm import ChatOpenAI
 from agent_core.memory.review import MemoryReviewHook, MemoryReviewRunner
 from agent_core.memory.store import MemoryStore
@@ -744,6 +746,7 @@ def create_agent(
     """
     ctx = SandboxContext.create(root_dir)
     attach_lsp_manager(ctx)
+    attach_mcp_manager(ctx)
     llm = create_llm(model)
     runtime = runtime_registries or create_runtime_registries(
         workspace_root=ctx.working_dir,
@@ -819,6 +822,7 @@ def create_agent(
 
     subagent_executor.set_main_agent(agent)
     ctx.current_agent = agent
+    bind_mcp_dynamic_tools(agent, ctx)
 
     return agent, ctx, runtime
 
@@ -875,6 +879,7 @@ async def main():
             await ctx.shell_task_manager.shutdown(cancel_running=True)
         if ctx.subagent_executor is not None:
             await ctx.subagent_executor.shutdown(cancel_running=True)
+        await shutdown_mcp_manager(ctx)
         await shutdown_lsp_manager(ctx)
         await _close_llm_runtime(agent.llm)
         await _mark_worker_offline(

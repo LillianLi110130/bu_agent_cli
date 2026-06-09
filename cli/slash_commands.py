@@ -165,6 +165,22 @@ class SlashCommandRegistry:
                 category="配置",
             ),
             SlashCommand(
+                name="mcp",
+                description="查看和管理 MCP servers 与 tools",
+                usage="/mcp [status|tools [server]|instructions [server]|stop <server>|reconnect <server>|disable <server>|enable <server>]",
+                examples=[
+                    "/mcp",
+                    "/mcp status",
+                    "/mcp tools",
+                    "/mcp tools codegraph",
+                    "/mcp instructions codegraph",
+                    "/mcp reconnect codegraph",
+                    "/mcp disable codegraph",
+                    "/mcp enable codegraph",
+                ],
+                category="配置",
+            ),
+            SlashCommand(
                 name="update",
                 description="检查 Crab CLI 更新状态",
                 usage="/update [check|status]",

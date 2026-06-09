@@ -7,6 +7,7 @@ from tools.browser_harness import browser_harness
 from tools.files import edit, read, write
 from tools.image_analysis import analyze_image
 from tools.lsp import lsp
+from tools.mcp import mcp
 from tools.message import message
 from tools.resolve_path import resolve_path
 from tools.sandbox import SandboxContext, SecurityError, get_sandbox_context
@@ -37,6 +38,7 @@ ALL_TOOLS = [
     read_excel,
     analyze_image,
     lsp,
+    mcp,
     # read_excel,
     write,
     edit,
@@ -76,6 +78,7 @@ __all__ = [
     "read_excel",
     "analyze_image",
     "lsp",
+    "mcp",
     "write",
     "edit",
     "glob_search",

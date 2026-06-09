@@ -110,6 +110,7 @@ from cli.init_agent import build_init_agent, build_init_user_prompt, validate_in
 from cli.im_bridge import BridgeRequest, SqliteBridgeStore
 from cli.interactive_input import InteractivePrompter
 from cli.lsp_handler import LspSlashHandler
+from cli.mcp_handler import MCPSlashHandler
 from cli.model_switch_service import ModelAutoState, ModelSwitchService
 from cli.memory_handler import MemoryReviewHistoryItem, MemorySlashHandler
 from cli.plugins_handler import PluginSlashHandler
@@ -631,6 +632,10 @@ class TGAgentCLI:
             console=self._console,
             workspace_dir=self._ctx.working_dir,
             on_workspace_selected=self._apply_workspace_selection,
+        )
+        self._mcp_handler = MCPSlashHandler(
+            manager=getattr(self._ctx, "mcp_manager", None),
+            console=self._console,
         )
         if self._bridge_store is not None:
             self._bridge_store.initialize()
@@ -2350,6 +2355,13 @@ class TGAgentCLI:
                 console=self._console,
             ).handle(args)
 
+        if command_name == "mcp":
+            self._mcp_handler = MCPSlashHandler(
+                manager=getattr(self._ctx, "mcp_manager", None),
+                console=self._console,
+            )
+            return await self._mcp_handler.handle(args)
+
         if command_name == "update":
             return await UpdateSlashHandler(console=self._console).handle(args)
 
@@ -3229,6 +3241,11 @@ class TGAgentCLI:
             self._settings_handler.bind_console(self._console)
             settings_result = self._settings_handler.handle_input(user_input)
             if settings_result.handled:
+                return _ExecutionOutcome()
+
+        if self._mcp_handler.active:
+            self._mcp_handler.bind_console(self._console)
+            if await self._mcp_handler.handle_input(user_input):
                 return _ExecutionOutcome()
 
         # Handle numbered model picker mode
