@@ -3,7 +3,6 @@ Agent module for running agentic loops with tool calling.
 """
 
 from agent_core.agent.budget import BudgetAssessment, ContextBudgetEngine
-from agent_core.agent.command_safety import build_command_safety_approval_policy
 from agent_core.agent.compaction import (
     CompactionConfig,
     CompactionResult,
@@ -31,17 +30,16 @@ from agent_core.agent.hooks import (
     AgentHook,
     AuditHook,
     BashFileTaskGuardHook,
-    DangerousBashCommandGuardHook,
-    ExcelReadGuardHook,
     FinishGuardHook,
     HookContext,
     HookDecision,
     HookManager,
-    HumanApprovalHook,
+    PermissionEnforcementHook,
     SubagentCompletionHook,
     ToolPolicyHook,
 )
 from agent_core.agent.model_routing_hook import ModelRoutingHook
+from agent_core.agent.permissions import PermissionDecision, PermissionEngine, PermissionReason
 from agent_core.agent.registry import AgentRegistry, get_agent_registry
 from agent_core.agent.runtime_events import RuntimeEvent
 from agent_core.agent.runtime_state import AgentRunState
@@ -68,17 +66,17 @@ __all__ = [
     "ToolPolicyHook",
     "AuditHook",
     "BashFileTaskGuardHook",
-    "DangerousBashCommandGuardHook",
-    "ExcelReadGuardHook",
+    "PermissionEnforcementHook",
     "SubagentCompletionHook",
     "ModelRoutingHook",
+    "PermissionEngine",
+    "PermissionDecision",
+    "PermissionReason",
     "HumanApprovalRequest",
     "HumanApprovalDecision",
     "HumanInLoopConfig",
     "HumanInLoopHandler",
-    "HumanApprovalHook",
     "build_default_approval_policy",
-    "build_command_safety_approval_policy",
     # Compaction
     "CompactionConfig",
     "CompactionResult",
