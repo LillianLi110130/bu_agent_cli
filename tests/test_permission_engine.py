@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from agent_core.agent.permissions import PermissionEngine
 from agent_core.agent.runtime_events import ToolCallRequested
 from agent_core.llm.messages import Function, ToolCall
+from tools.sandbox import SandboxContext
 
 
 def _event(tool_name: str, arguments: dict) -> ToolCallRequested:
@@ -20,6 +21,14 @@ def _event(tool_name: str, arguments: dict) -> ToolCallRequested:
 
 def _bash_event(command: str) -> ToolCallRequested:
     return _event("bash", {"command": command})
+
+
+def _ctx_with_sandbox(root) -> SimpleNamespace:
+    return SimpleNamespace(
+        agent=SimpleNamespace(
+            _sandbox_context=SandboxContext.create(root),
+        )
+    )
 
 
 def test_permission_engine_allows_non_bash_tool() -> None:
@@ -161,19 +170,88 @@ def test_permission_engine_keeps_hidden_execution_in_command_safety_only() -> No
         assert {reason.source for reason in decision.reasons} == {"command_safety"}
 
 
-def test_permission_engine_denies_existing_git_file_task_commands() -> None:
+def test_permission_engine_allows_safe_git_read_commands() -> None:
     engine = PermissionEngine()
 
     cases = [
-        ("git ls-files", "file_discovery"),
-        ('git grep "TODO"', "text_search"),
-        ("git show HEAD:README.md", "file_read"),
+        "git show HEAD",
+        "git show --stat HEAD",
+        "git show HEAD --stat",
+        "git show --name-only HEAD",
+        "git show HEAD -- agent_core/agent/permissions.py",
+        "git show HEAD:agent_core/agent/permissions.py",
+        'git grep "PermissionEngine" HEAD -- agent_core/',
+        'git grep "PermissionEngine" -n HEAD -- agent_core/',
+        "git ls-files agent_core/",
+        "git diff -- agent_core/agent/permissions.py",
+        "git show HEAD --stat 2>&1",
     ]
-    for command, rule_id in cases:
+    for command in cases:
         decision = engine.evaluate_tool_call(_bash_event(command), SimpleNamespace())
-        assert decision.decision == "deny"
-        assert decision.reasons[0].source == "bash_file_task"
-        assert decision.reasons[0].rule_id == rule_id
+        assert decision.decision == "allow"
+        assert decision.reasons == ()
+
+
+def test_permission_engine_allows_safe_cd_git_read_commands(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "agent_core").mkdir()
+    ctx = _ctx_with_sandbox(workspace)
+    engine = PermissionEngine()
+
+    cases = [
+        "cd agent_core && git show HEAD -- agent/permissions.py",
+        f"cd /d {workspace} && git show HEAD",
+    ]
+    for command in cases:
+        decision = engine.evaluate_tool_call(_bash_event(command), ctx)
+        assert decision.decision == "allow"
+        assert decision.reasons == ()
+
+
+def test_permission_engine_allows_safe_git_read_pipeline_filters() -> None:
+    engine = PermissionEngine()
+    cases = [
+        'git diff -- agent_core/agent/permissions.py | grep PermissionEngine',
+        'git diff -- agent_core/agent/permissions.py | grep -n "PermissionEngine"',
+        "git diff -- agent_core/agent/permissions.py | findstr PermissionEngine",
+    ]
+    for command in cases:
+        decision = engine.evaluate_tool_call(_bash_event(command), SimpleNamespace())
+        assert decision.decision == "allow"
+        assert decision.reasons == ()
+
+
+def test_permission_engine_denies_unsafe_git_read_commands(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "agent_core").mkdir()
+    ctx = _ctx_with_sandbox(workspace)
+    engine = PermissionEngine()
+
+    cases = [
+        r"git -C C:\outside show HEAD",
+        r"git --git-dir C:\outside\.git show HEAD",
+        r"git --work-tree C:\outside show HEAD",
+        "git show HEAD -- ../secret",
+        r"git show HEAD:C:\secret",
+        "git show HEAD:../secret",
+        "cd ../outside && git show HEAD",
+        "git show HEAD > out.txt",
+        "git diff -- agent_core/agent/permissions.py > out.txt",
+        "git show HEAD 2> err.txt",
+        "git show HEAD | tee out.txt",
+        "git diff -- agent_core/agent/permissions.py | tee out.txt",
+        "git show HEAD | grep TODO /etc/passwd",
+        "git show HEAD | grep -f patterns.txt",
+        "git show HEAD | grep -r TODO",
+        "git show HEAD | grep TODO | wc -l",
+        "cd agent_core && git show HEAD && cat secret",
+    ]
+    for command in cases:
+        decision = engine.evaluate_tool_call(_bash_event(command), ctx)
+        assert decision.decision == "deny", command
+        assert any(reason.source == "bash_file_task" for reason in decision.reasons)
 
 
 def test_permission_engine_denies_shell_task_log_read_with_task_output_guidance() -> None:
