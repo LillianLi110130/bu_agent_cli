@@ -143,6 +143,58 @@ def test_skills_slash_handler_lists_reload_and_show(tmp_path: Path, monkeypatch)
     assert "可修改" in output.getvalue()
 
 
+def test_skill_view_includes_root_path_rule_and_top_level_entries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    user_root = home / ".tg_agent" / "skills"
+    skill_path = _write_skill(user_root, "demo")
+    skill_root = skill_path.parent
+    (skill_root / "kb").mkdir()
+    (skill_root / "examples").mkdir()
+    (skill_root / "agent-workspace").mkdir()
+    (skill_root / "README.md").write_text("# demo", encoding="utf-8")
+
+    registry = AtCommandRegistry(skill_dirs=[user_root])
+    service = SkillRuntimeService(skill_registry=registry)
+    skill = registry.get("demo")
+    assert skill is not None
+    registered_path = Path(skill.path)
+    registered_root = registered_path.parent
+
+    viewed = service.view("demo")
+
+    assert "Skill: demo" in viewed
+    assert "Source: user" in viewed
+    assert f"Path: {registered_path}" in viewed
+    assert f"Skill root: {registered_root}" in viewed
+    assert "本 SKILL.md 中提到的相对路径，都相对于 Skill root 解析。" in viewed
+    assert "- agent-workspace/" in viewed
+    assert "- examples/" in viewed
+    assert "- kb/" in viewed
+    assert "- README.md" in viewed
+    assert f"# demo" in viewed
+
+
+def test_skill_view_limits_top_level_entries(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    user_root = home / ".tg_agent" / "skills"
+    skill_path = _write_skill(user_root, "demo")
+    skill_root = skill_path.parent
+    for index in range(105):
+        (skill_root / f"entry-{index:03d}.txt").write_text("x", encoding="utf-8")
+
+    registry = AtCommandRegistry(skill_dirs=[user_root])
+    service = SkillRuntimeService(skill_registry=registry)
+
+    viewed = service.view("demo")
+
+    assert "- ... 6 more entries" in viewed
+
+
 def test_skills_slash_handler_shows_review_history(tmp_path: Path, monkeypatch) -> None:
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
