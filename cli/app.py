@@ -1736,6 +1736,17 @@ class TGAgentCLI:
         if loading:
             loading.stop()
 
+    def _start_tool_loading(
+        self,
+        tool_name: str,
+        *,
+        started_at: float,
+    ) -> _SafeLoadingIndicator | None:
+        return self._start_loading(
+            self._format_tool_activity_status(tool_name),
+            started_at=started_at,
+        )
+
     def _set_terminal_activity_status(
         self,
         status: str | None,
@@ -1757,6 +1768,11 @@ class TGAgentCLI:
 
     def _get_terminal_activity_started_at(self) -> float | None:
         return self._terminal_activity_started_at
+
+    @staticmethod
+    def _format_tool_activity_status(tool_name: str) -> str:
+        tool_name = tool_name.strip() or "tool"
+        return f"Running tool: {tool_name}"
 
     def _set_terminal_ui_invalidator(
         self, invalidator: Callable[[], None] | None
@@ -2895,9 +2911,8 @@ class TGAgentCLI:
                     self._print_tool_step_title(self._step_number, event.tool)
                     self._print_tool_args(event.args)
                     if not self._is_delegate_tool(event.tool):
-                        # Keep a single user-facing status for the whole turn.
-                        self._loading = self._start_loading(
-                            "思考中",
+                        self._loading = self._start_tool_loading(
+                            event.tool,
                             started_at=run_started_at,
                         )
 
