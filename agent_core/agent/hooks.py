@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -18,7 +17,6 @@ from agent_core.agent.runtime_events import (
     ToolCallRequested,
     ToolResultReceived,
 )
-from agent_core.agent.tool_args import ToolArgumentsError, parse_tool_arguments_for_execution
 from agent_core.llm.messages import BaseMessage, ToolMessage, UserMessage
 
 if TYPE_CHECKING:
@@ -27,48 +25,6 @@ if TYPE_CHECKING:
     from agent_core.task import SubagentTaskResult
 
 logger = logging.getLogger("agent_core.agent.hooks")
-_BASH_FILE_DISCOVERY_RE = re.compile(
-    r"(?ix)"
-    r"(?:^|[;&|]\s*)"
-    r"(?:"
-    r"dir\b|"
-    r"ls\b|"
-    r"tree\b|"
-    r"fd\b|"
-    r"where\b|"
-    r"get-childitem\b|"
-    r"gci\b|"
-    r"git\s+ls-files\b"
-    r")"
-)
-_BASH_TEXT_SEARCH_RE = re.compile(
-    r"(?ix)"
-    r"(?:^|[;&|]\s*)"
-    r"(?:"
-    r"find\b|"
-    r"findstr\b|"
-    r"grep\b|"
-    r"rg\b|"
-    r"select-string\b|"
-    r"git\s+grep\b"
-    r")"
-)
-_BASH_FILE_READ_RE = re.compile(
-    r"(?ix)"
-    r"(?:^|[;&|]\s*)"
-    r"(?:"
-    r"type\b|"
-    r"cat\b|"
-    r"more\b|"
-    r"get-content\b|"
-    r"gc\b|"
-    r"git\s+show\b"
-    r")"
-)
-_SHELL_TASK_LOG_PATH_RE = re.compile(
-    r"(?i)(?:^|[\\/\s\"'])(?:\.tg_agent|\.tgagent)[\\/]"
-    r"shell_tasks[\\/][^\\/\s\"']+[\\/]([A-Za-z0-9_-]+)\.log\b"
-)
 
 
 class HookAction(str, Enum):
@@ -317,17 +273,26 @@ class PermissionEnforcementHook(BaseAgentHook):
     ) -> HookDecision:
         tool_name = event.tool_call.function.name
         reason_lines = "\n".join(
-            f"- {reason.rule_id or reason.source}: {reason.message}"
+            f"- {reason.source}:{reason.rule_id or 'unknown'}: {reason.message}"
             for reason in decision.reasons
         )
-        content = (
-            "Error: Dangerous bash command blocked.\n\n"
-            "Command was not executed.\n\n"
-            f"Matched safety rule(s):\n{reason_lines}\n\n"
-            "This command is classified as a hard-blocked destructive operation. "
-            "Do not retry it or rephrase it through another shell/interpreter. "
-            "Ask the user for a safer, narrower operation instead."
+        guidance_lines = tuple(
+            dict.fromkeys(reason.guidance for reason in decision.reasons if reason.guidance)
         )
+        if not guidance_lines:
+            guidance_lines = (
+                "This command is classified as a hard-blocked destructive operation. "
+                "Do not retry it or rephrase it through another shell/interpreter. "
+                "Ask the user for a safer, narrower operation instead.",
+            )
+
+        content_parts = [
+            "Error: Bash command blocked by permission policy.",
+            "Command was not executed.",
+            f"Matched rule(s):\n{reason_lines}",
+            "Guidance:\n" + "\n".join(f"- {line}" for line in guidance_lines),
+        ]
+        content = "\n\n".join(content_parts)
         return HookDecision(
             action=HookAction.OVERRIDE_RESULT,
             override_result=ToolMessage(
@@ -380,88 +345,6 @@ class PermissionEnforcementHook(BaseAgentHook):
             ],
             reason=final_response,
         )
-
-
-@dataclass
-class BashFileTaskGuardHook(BaseAgentHook):
-    """Block bash when the agent tries to use it as a file inspection tool."""
-
-    priority: int = 17
-
-    async def before_event(
-        self,
-        event: RuntimeEvent,
-        ctx: HookContext,
-    ) -> HookDecision | None:
-        if not isinstance(event, ToolCallRequested):
-            return None
-
-        if event.tool_call.function.name != "bash":
-            return None
-
-        try:
-            args = parse_tool_arguments_for_execution(event.tool_call.function.arguments)
-        except ToolArgumentsError:
-            return None
-
-        command = args.get("command")
-        if not isinstance(command, str):
-            return None
-
-        normalized = command.strip()
-        if not normalized:
-            return None
-
-        guidance = self._build_guidance(normalized)
-        if guidance is None:
-            return None
-
-        return HookDecision(
-            action=HookAction.OVERRIDE_RESULT,
-            override_result=ToolMessage(
-                tool_call_id=event.tool_call.id,
-                tool_name="bash",
-                content=guidance,
-                is_error=True,
-            ),
-            reason="blocked file-oriented bash usage",
-        )
-
-    @staticmethod
-    def _build_guidance(command: str) -> str | None:
-        shell_task_match = _SHELL_TASK_LOG_PATH_RE.search(command)
-        if shell_task_match and _BASH_FILE_READ_RE.search(command):
-            task_id = shell_task_match.group(1)
-            return (
-                "Error: This `bash` command is polling or reading a background shell task log.\n"
-                f'Use `task_output(task_id="{task_id}", wait_for=..., timeout=...)` instead.\n'
-                "`task_output` handles waiting and returns the task status, return code, log path, "
-                "and output. Do not use `sleep` or `cat` to read this log."
-            )
-        if _BASH_FILE_DISCOVERY_RE.search(command):
-            return (
-                "Error: This `bash` command is doing file discovery or directory listing.\n"
-                "Use `glob_search` to list files and folders, and `resolve_path` first if the "
-                "target path is fuzzy.\n"
-                "Do not retry the same discovery step with `bash`, because that bypasses "
-                "sandbox and .tgagentignore protections."
-            )
-        if _BASH_TEXT_SEARCH_RE.search(command):
-            return (
-                "Error: This `bash` command is doing text search inside files.\n"
-                "Use `grep` for content search, and `resolve_path` first when the search "
-                "scope path is ambiguous.\n"
-                "Do not retry the same search step with `bash`, because that bypasses sandbox and "
-                ".tgagentignore protections."
-            )
-        if _BASH_FILE_READ_RE.search(command):
-            return (
-                "Error: This `bash` command is trying to read file contents.\n"
-                "Use `read` for text files. If the path is unclear, call `resolve_path` first.\n"
-                "Do not retry the same read step with `bash`, because that bypasses sandbox and "
-                ".tgagentignore protections."
-            )
-        return None
 
 
 @dataclass

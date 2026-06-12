@@ -29,7 +29,6 @@ from agent_core.agent.hitl import (
 from agent_core.agent.hooks import (
     AgentHook,
     AuditHook,
-    BashFileTaskGuardHook,
     FinishGuardHook,
     HookContext,
     HookDecision,
@@ -65,7 +64,6 @@ __all__ = [
     "FinishGuardHook",
     "ToolPolicyHook",
     "AuditHook",
-    "BashFileTaskGuardHook",
     "PermissionEnforcementHook",
     "SubagentCompletionHook",
     "ModelRoutingHook",

@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from agent_core.plugin import PluginManager
     from cli.at_commands import AtCommand, AtCommandRegistry
 
+_TOP_LEVEL_ENTRY_LIMIT = 100
+
 
 @dataclass(frozen=True, slots=True)
 class SkillReloadResult:
@@ -60,7 +62,7 @@ class SkillRuntimeService:
         skill = self.show(name)
         if skill is None:
             raise ValueError(f"Skill not found: {name}")
-        return skill.path.read_text(encoding="utf-8")
+        return _format_skill_view(skill)
 
     def reload(self, *, refresh_agent_prompt: bool = True) -> SkillReloadResult:
         self.skill_registry.discover_skills(skill_dirs=list(self.skill_registry._skill_dirs))
@@ -110,3 +112,45 @@ class SkillRuntimeService:
     @staticmethod
     def path_of(skill: "AtCommand") -> Path:
         return Path(skill.path)
+
+
+def _format_skill_view(skill: "AtCommand") -> str:
+    skill_path = Path(skill.path)
+    skill_root = skill_path.parent
+    content = skill_path.read_text(encoding="utf-8")
+    metadata = [
+        f"Skill: {skill.name}",
+        f"Source: {SkillRuntimeService.source_of(skill)}",
+        f"Path: {skill_path}",
+        f"Skill root: {skill_root}",
+        "",
+        "路径规则：",
+        "本 SKILL.md 中提到的相对路径，都相对于 Skill root 解析。",
+        "",
+        "Top-level entries:",
+        _format_top_level_entries(skill_root),
+        "",
+        "---",
+        "",
+    ]
+    return "\n".join(metadata) + content
+
+
+def _format_top_level_entries(skill_root: Path) -> str:
+    try:
+        entries = sorted(skill_root.iterdir(), key=lambda path: path.name.lower())
+    except OSError as exc:
+        return f"- <unavailable: {exc}>"
+
+    if not entries:
+        return "- <empty>"
+
+    visible_entries = entries[:_TOP_LEVEL_ENTRY_LIMIT]
+    lines = [
+        f"- {entry.name}/" if entry.is_dir() else f"- {entry.name}"
+        for entry in visible_entries
+    ]
+    remaining_count = len(entries) - len(visible_entries)
+    if remaining_count > 0:
+        lines.append(f"- ... {remaining_count} more entries")
+    return "\n".join(lines)
