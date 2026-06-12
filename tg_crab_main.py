@@ -743,22 +743,19 @@ def create_agent(
         workspace_root=ctx.working_dir,
     )
     memory_store = MemoryStore()
-    frozen_memory_context = memory_store.render_context(memory_store.load_from_disk())
 
-    system_prompt = _build_system_prompt(
-        ctx.working_dir,
-        skill_registry=runtime.skill_registry,
-        agent_registry=runtime.agent_registry,
-        memory_context=frozen_memory_context,
-    )
+    def memory_context_builder() -> str:
+        return memory_store.render_context(memory_store.load_from_disk())
 
     def system_prompt_builder() -> str:
         return _build_system_prompt(
             ctx.working_dir,
             skill_registry=runtime.skill_registry,
             agent_registry=runtime.agent_registry,
-            memory_context=frozen_memory_context,
+            memory_context=memory_context_builder(),
         )
+
+    system_prompt = system_prompt_builder()
 
     skill_runtime_service = SkillRuntimeService(
         skill_registry=runtime.skill_registry,
@@ -796,7 +793,8 @@ def create_agent(
     skill_runtime_service.bind_agent(agent)
     setattr(agent, "_skill_runtime_service", skill_runtime_service)
     setattr(agent, "_memory_store", memory_store)
-    setattr(agent, "_memory_context_snapshot", frozen_memory_context)
+    setattr(agent, "_memory_context_builder", memory_context_builder)
+    setattr(agent, "_system_prompt_builder", system_prompt_builder)
     setattr(agent, "_sandbox_context", ctx)
     setattr(ctx, "skill_runtime_service", skill_runtime_service)
     setattr(ctx, "memory_store", memory_store)
@@ -845,12 +843,7 @@ async def main():
         at_registry=runtime.skill_registry,
         agent_registry=runtime.agent_registry,
         plugin_manager=runtime.plugin_manager,
-        system_prompt_builder=lambda: _build_system_prompt(
-            ctx.working_dir,
-            skill_registry=runtime.skill_registry,
-            agent_registry=runtime.agent_registry,
-            memory_context=getattr(agent, "_memory_context_snapshot", None),
-        ),
+        system_prompt_builder=getattr(agent, "_system_prompt_builder", None),
         skill_runtime_service=getattr(agent, "_skill_runtime_service", None),
         bridge_store=bridge_store,
         session_runtime=session_runtime,

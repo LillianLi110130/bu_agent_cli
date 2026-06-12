@@ -42,7 +42,7 @@ from agent_core.agent.events import (
     ThinkingStartEvent,
 )
 from agent_core.agent.hooks import BaseAgentHook
-from agent_core.agent.registry import AgentRegistry
+from agent_core.agent.registry import AgentRegistry, default_agent_sources
 from agent_core.agent.runtime_events import (
     ContextMaintenanceRequested,
     LLMResponseReceived,
@@ -1023,6 +1023,7 @@ class TGAgentCLI:
         self._conversation_session_created = False
         self._last_transcript_flushed_idx = 0
         self._sync_gateway_llm_context(self._agent)
+        self._reload_prompt_snapshot()
         self._agent.clear_history()
         clear_todo_store(self._ctx.session_id)
 
@@ -1036,6 +1037,53 @@ class TGAgentCLI:
         os.system("cls" if os.name == "nt" else "clear")
         self._print_welcome()
         await self._refresh_empty_context_budget_display()
+
+    def _reload_prompt_snapshot(self) -> None:
+        """Refresh local prompt metadata without rebuilding process-level runtime."""
+        self._reload_non_plugin_skills()
+        self._reload_non_plugin_agents()
+        if self._system_prompt_builder is not None:
+            self._agent.system_prompt = self._system_prompt_builder()
+
+    def _reload_non_plugin_skills(self) -> None:
+        if self._at_registry is None:
+            return
+
+        plugin_skills = [
+            skill
+            for skill in self._at_registry.get_all()
+            if str(getattr(skill, "source", "")).startswith("plugin:")
+        ]
+        skill_dirs = list(getattr(self._at_registry, "_skill_dirs", []))
+        if skill_dirs:
+            self._at_registry.discover_skills(skill_dirs=skill_dirs)
+        for skill in plugin_skills:
+            self._at_registry.register(skill)
+
+    def _reload_non_plugin_agents(self) -> None:
+        if self._agent_registry is None:
+            return
+
+        plugin_configs = []
+        for agent_name in self._agent_registry.list_agents():
+            config = self._agent_registry.get_config(agent_name)
+            if config is not None and ":" in agent_name:
+                plugin_configs.append(config)
+
+        builtin_agents_dir = application_root() / "agent_core" / "prompts" / "agents"
+        fresh_registry = AgentRegistry(
+            agent_sources=default_agent_sources(
+                self._ctx.working_dir,
+                builtin_agents_dir=builtin_agents_dir,
+            )
+        )
+        self._agent_registry._configs = fresh_registry._configs
+        self._agent_registry._config_sources = fresh_registry._config_sources
+        for config in plugin_configs:
+            self._agent_registry.register(config)
+        import agent_core.agent.registry as registry_module
+
+        registry_module._global_registry = self._agent_registry
 
     def _ensure_context_budget_hook(self, agent: Agent) -> None:
         key = id(agent)

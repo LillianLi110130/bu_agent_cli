@@ -9,6 +9,7 @@ from rich.console import Console
 
 import cli.app as app_module
 from agent_core import Agent
+from agent_core.agent.registry import AgentRegistry, default_agent_sources
 from agent_core.llm.messages import (
     AssistantMessage,
     BaseMessage,
@@ -18,7 +19,9 @@ from agent_core.llm.messages import (
     UserMessage,
 )
 from agent_core.llm.views import ChatInvokeCompletion, ChatInvokeCompletionChunk
+from agent_core.memory.store import MemoryStore
 from cli.app import TGAgentCLI
+from cli.at_commands import AtCommandRegistry
 from cli.resume_handler import ResumeSlashHandler
 from cli.session_store import CLISessionStore, workspace_identity
 from cli.slash_commands import SlashCommandRegistry
@@ -98,6 +101,51 @@ def _make_cli(
     return cli
 
 
+def _write_skill(
+    skills_root: Path,
+    directory_name: str,
+    *,
+    name: str,
+    description: str,
+) -> Path:
+    skill_dir = skills_root / directory_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"description: {description}",
+                "---",
+                "",
+                "# Test Skill",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return skill_path
+
+
+def _write_agent_config(agents_root: Path, *, name: str, description: str) -> Path:
+    agents_root.mkdir(parents=True, exist_ok=True)
+    agent_path = agents_root / f"{name}.md"
+    agent_path.write_text(
+        "\n".join(
+            [
+                "---",
+                f"name: {name}",
+                f"description: {description}",
+                "---",
+                "",
+                "Agent instructions.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return agent_path
+
+
 def _seed_session(
     store: CLISessionStore,
     *,
@@ -150,6 +198,100 @@ def test_cli_startup_does_not_create_empty_session_row(
     _root, workspace_key = workspace_identity(workspace)
     assert cli._session_store.list_sessions(workspace_key=workspace_key) == []
     assert cli._conversation_session_created is False
+
+
+@pytest.mark.asyncio
+async def test_new_refreshes_prompt_snapshot_without_replacing_agent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(app_module, "InteractivePrompter", _DummyPrompter)
+    monkeypatch.setattr(app_module.os, "system", lambda _command: 0)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    skills_root = workspace / "skills"
+    agents_root = workspace / ".tg_agent" / "agents"
+    builtin_agents_root = tmp_path / "builtin-agents"
+    builtin_agents_root.mkdir()
+    _write_skill(skills_root, "demo", name="demo", description="old skill")
+    _write_agent_config(agents_root, name="worker", description="old agent")
+
+    memory_store = MemoryStore(base_dir=home / ".tg_agent" / "memories")
+    memory_store.add("user", "old user memory")
+    skill_registry = AtCommandRegistry(skill_dirs=[skills_root])
+    agent_registry = AgentRegistry(
+        agent_sources=default_agent_sources(
+            workspace,
+            builtin_agents_dir=builtin_agents_root,
+        )
+    )
+
+    def build_prompt() -> str:
+        memory_context = memory_store.render_context(memory_store.load_from_disk())
+        skills = ", ".join(
+            f"{skill.name}:{skill.description}"
+            for skill in sorted(skill_registry.get_all(), key=lambda item: item.name)
+        )
+        agents = ", ".join(
+            f"{name}:{agent_registry.get_config(name).description}"
+            for name in sorted(agent_registry.list_agents())
+            if agent_registry.get_config(name) is not None
+        )
+        return f"prompt\n{memory_context}\nskills={skills}\nagents={agents}"
+
+    agent = Agent(llm=FakeLLM(), tools=[], system_prompt=build_prompt())
+    context = SandboxContext.create(workspace)
+    cli = TGAgentCLI(
+        agent=agent,
+        context=context,
+        slash_registry=SlashCommandRegistry(),
+        at_registry=skill_registry,
+        agent_registry=agent_registry,
+        system_prompt_builder=build_prompt,
+    )
+    cli._console = Console(file=io.StringIO(), force_terminal=False, color_system=None, width=160)
+
+    async def noop_refresh_budget() -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_print_welcome", lambda: None)
+    monkeypatch.setattr(cli, "_refresh_empty_context_budget_display", noop_refresh_budget)
+
+    original_agent_id = id(cli._agent)
+    memory_store.replace("user", "old user memory", "new user memory")
+    _write_skill(skills_root, "demo", name="demo", description="new skill")
+    _write_agent_config(agents_root, name="worker", description="new agent")
+
+    await cli._handle_new_command()
+
+    assert id(cli._agent) == original_agent_id
+    assert "new user memory" in cli._agent.system_prompt
+    assert "old user memory" not in cli._agent.system_prompt
+    assert "demo:new skill" in cli._agent.system_prompt
+    assert "worker:new agent" in cli._agent.system_prompt
+    assert cli._agent.messages == []
+
+
+@pytest.mark.asyncio
+async def test_reset_keeps_existing_prompt_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _make_cli(tmp_path, monkeypatch)
+
+    async def noop_refresh_budget() -> None:
+        return None
+
+    monkeypatch.setattr(cli, "_refresh_empty_context_budget_display", noop_refresh_budget)
+    cli._agent.system_prompt = "existing prompt"
+
+    await cli._handle_reset_command()
+
+    assert cli._agent.system_prompt == "existing prompt"
 
 
 def test_session_store_filters_workspace_and_excludes_current(tmp_path: Path) -> None:
